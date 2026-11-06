@@ -18,8 +18,13 @@ class NicProfile:
     description: str
     status: ProfileStatus
     notes: str
-    # The PHC only runs after hwstamp_ctl has turned hardware timestamping on.
-    needs_hwstamp_ctl: bool = False
+    # Arguments for hwstamp_ctl, for drivers whose PHC only runs once hardware
+    # timestamping has been turned on. None means hwstamp_ctl isn't needed.
+    hwstamp_ctl_args: tuple[str, ...] | None = None
+
+    @property
+    def needs_hwstamp_ctl(self) -> bool:
+        return self.hwstamp_ctl_args is not None
 
 
 PROFILES: dict[str, NicProfile] = {
@@ -43,8 +48,8 @@ PROFILES: dict[str, NicProfile] = {
                 "hwstamp_ctl must run before the PHC runs. It has one transmit "
                 "timestamp slot, so only one PTP process can use it."
             ),
-            # TODO: copy the exact hwstamp_ctl arguments from the reference build.
-            needs_hwstamp_ctl=True,
+            # Transmit timestamps on, receive filter HWTSTAMP_FILTER_PTP_V2_EVENT.
+            hwstamp_ctl_args=("-t", "1", "-r", "12"),
         ),
         NicProfile(
             driver="igb",
