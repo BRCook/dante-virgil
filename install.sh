@@ -14,6 +14,9 @@ CONFIG_DIR=/etc/dante-virgil
 UNIT_DIR=/usr/local/lib/systemd/system
 TMPFILES_DIR=/usr/local/lib/tmpfiles.d
 POLKIT_DIR=/etc/polkit-1/rules.d
+APPARMOR_PROFILE=/etc/apparmor.d/usr.sbin.chronyd
+APPARMOR_LOCAL=/etc/apparmor.d/local/usr.sbin.chronyd
+APPARMOR_RULE='/run/dante-virgil-generated/chrony.conf r,'
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 say() { printf '\n==> %s\n' "$*"; }
@@ -50,9 +53,21 @@ install -m 644 "$REPO/system/polkit/50-dante-virgil.rules" "$POLKIT_DIR/"
 systemd-tmpfiles --create "$TMPFILES_DIR/dante-virgil.conf"
 systemctl daemon-reload
 
+if [[ -e "$APPARMOR_PROFILE" ]]; then
+    say "Letting chronyd read Virgil's config through AppArmor"
+    # Debian's profile includes this local file, which is meant for additions like this one.
+    if ! grep -qxF "$APPARMOR_RULE" "$APPARMOR_LOCAL" 2>/dev/null; then
+        install -d "$(dirname "$APPARMOR_LOCAL")"
+        printf '# Added by Virgil\n%s\n' "$APPARMOR_RULE" >> "$APPARMOR_LOCAL"
+    fi
+    if [[ -d /sys/kernel/security/apparmor ]] && command -v apparmor_parser >/dev/null; then
+        apparmor_parser -r "$APPARMOR_PROFILE"
+    fi
+fi
+
 say "Handing timekeeping over from Debian's chrony to Virgil"
 systemctl disable --now chrony.service >/dev/null 2>&1 || true
-systemctl mask chrony.service >/dev/null
+systemctl mask chrony.service >/dev/null 2>&1
 
 say "Setting up $CONFIG_DIR"
 install -d -m 750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$CONFIG_DIR"

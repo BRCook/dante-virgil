@@ -265,6 +265,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"virgilctl: {error}", file=sys.stderr)
         return 1
+    except PermissionError as error:
+        print(f"virgilctl: can't read {error.filename}. Try again with sudo.", file=sys.stderr)
+        return 1
     except (CliError, ConfigError, RequestError, ServiceError, UnsafeFileError) as error:
         print(f"virgilctl: {error}", file=sys.stderr)
         return 1

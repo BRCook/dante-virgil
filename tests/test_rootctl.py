@@ -164,3 +164,13 @@ def test_hwstamp(tmp_path):
     run = Recorder()
     assert hwstamp(_prepare(tmp_path, _follower("enp1s0")), run) == 0
     assert run.calls == []
+
+
+def test_an_unreadable_request_is_a_permission_error(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root can read anything")
+    path = tmp_path / "request.json"
+    path.write_text(to_json(_follower()))
+    path.chmod(0)
+    with pytest.raises(PermissionError):
+        prepare(path, tmp_path / "generated", lookup)
