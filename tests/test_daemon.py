@@ -289,3 +289,31 @@ def test_leader_request_uses_the_current_networks(tmp_path):
     a.networks = ("10.10.100.0/24",)
     request = a.build_request(Target(Role.LEADER))
     assert request.allow == ("10.10.100.0/24",)
+
+
+def test_networks_are_known_before_the_election_can_start(tmp_path, monkeypatch):
+    import virgil.daemon as daemon_module
+
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.mgmt_interface = "enp5s0"
+    config_file.save(config, paths["A"])
+    a = Daemon(paths["A"], identities["A"])
+    monkeypatch.setattr(daemon_module, "ipv4_addresses", lambda name: ["10.0.0.5"])
+    monkeypatch.setattr(daemon_module, "ipv4_networks", lambda name: ["10.0.0.0/24"])
+    seen = []
+
+    class SlowDiscovery:
+        def __init__(self, on_advert):
+            pass
+
+        async def start(self, *args):
+            # The election could run while discovery starts; the networks must already be set.
+            seen.append(a.networks)
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(daemon_module.discovery, "Discovery", SlowDiscovery)
+    asyncio.run(a.check_network())
+    assert seen == [("10.0.0.0/24",)]
