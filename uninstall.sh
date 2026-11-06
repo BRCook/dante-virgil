@@ -14,6 +14,8 @@ CONFIG_DIR=/etc/dante-virgil
 UNIT_DIR=/usr/local/lib/systemd/system
 TMPFILES_DIR=/usr/local/lib/tmpfiles.d
 POLKIT_DIR=/etc/polkit-1/rules.d
+APPARMOR_PROFILE=/etc/apparmor.d/usr.sbin.chronyd
+APPARMOR_LOCAL=/etc/apparmor.d/local/usr.sbin.chronyd
 
 [[ $EUID -eq 0 ]] || { echo "uninstall.sh: run this with sudo" >&2; exit 1; }
 purge=false
@@ -29,6 +31,14 @@ rm -f "$UNIT_DIR"/dante-virgil-*.service "$TMPFILES_DIR/dante-virgil.conf" \
     "$POLKIT_DIR/50-dante-virgil.rules" /usr/local/bin/virgilctl
 rm -rf "$PREFIX" /run/dante-virgil /run/dante-virgil-generated
 systemctl daemon-reload
+
+if [[ -e "$APPARMOR_LOCAL" ]]; then
+    echo "Removing Virgil's AppArmor rule"
+    sed -i -e '\|^# Added by Virgil$|d' -e '\|^/run/dante-virgil-generated/chrony\.conf r,$|d' "$APPARMOR_LOCAL"
+    if [[ -d /sys/kernel/security/apparmor ]] && command -v apparmor_parser >/dev/null; then
+        apparmor_parser -r "$APPARMOR_PROFILE"
+    fi
+fi
 
 echo "Giving timekeeping back to Debian's chrony"
 systemctl unmask chrony.service >/dev/null 2>&1 || true

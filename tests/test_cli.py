@@ -106,3 +106,12 @@ def test_role_rejects_a_bad_leader(box, tmp_path, monkeypatch):
 def test_missing_config(tmp_path, capsys):
     assert cli.main(["--config", str(tmp_path / "nope.toml"), "config", "show"]) == 1
     assert "config init" in capsys.readouterr().err
+
+
+def test_role_show_without_permission(box, tmp_path, monkeypatch, capsys):
+    def denied(systemd, path):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(cli, "current_request", denied)
+    assert cli.main(["--config", str(box), "--request", "/run/dante-virgil/request.json", "role", "show"]) == 1
+    assert "Try again with sudo" in capsys.readouterr().err

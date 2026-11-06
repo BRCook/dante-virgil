@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "sync":
             return sync(args.generated)
         return hwstamp(args.generated)
-    except (RequestError, PrepareError, UnsafeFileError) as error:
+    except (RequestError, PrepareError, UnsafeFileError, OSError) as error:
         print(f"virgil-root: {error}", file=sys.stderr)
         return 1
 

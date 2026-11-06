@@ -46,6 +46,8 @@ def read_small_file(path: Path, limit: int) -> bytes:
     """Read a regular file without following symlinks, refusing anything over the limit."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except PermissionError:
+        raise
     except OSError as error:
         raise UnsafeFileError(f"{path}: {error.strerror}") from error
     try:
