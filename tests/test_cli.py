@@ -1,8 +1,11 @@
+import shutil
+
 import pytest
 
-from virgil import cli
+from virgil import cli, tls
 from virgil import config as config_file
 from virgil import interfaces as ifc
+from virgil.group import InviteToken
 from virgil.interfaces import Interface, TimestampingInfo
 
 HARDWARE = ifc.TX_HARDWARE | ifc.RX_HARDWARE | ifc.RAW_HARDWARE | ifc.TX_SOFTWARE | ifc.RX_SOFTWARE | ifc.SOFTWARE
@@ -115,3 +118,63 @@ def test_role_show_without_permission(box, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "current_request", denied)
     assert cli.main(["--config", str(box), "--request", "/run/dante-virgil/request.json", "role", "show"]) == 1
     assert "Try again with sudo" in capsys.readouterr().err
+
+needs_openssl = pytest.mark.skipif(shutil.which("openssl") is None, reason="needs openssl")
+
+
+@pytest.fixture
+def tls_box(box, tmp_path, monkeypatch):
+    tls_dir = tmp_path / "tls"
+    monkeypatch.setattr(cli, "ipv4_addresses", lambda name: ["192.168.20.21"])
+    assert cli.main(["--config", str(box), "--tls-dir", str(tls_dir), "tls", "init"]) == 0
+    return box, tls_dir
+
+
+def _group(box, tls_dir, *args):
+    return cli.main(["--config", str(box), "--tls-dir", str(tls_dir), "group", *args])
+
+
+@needs_openssl
+def test_tls_init_keeps_an_existing_certificate(tls_box, capsys):
+    box, tls_dir = tls_box
+    before = (tls_dir / "cert.pem").read_text()
+    assert cli.main(["--config", str(box), "--tls-dir", str(tls_dir), "tls", "init"]) == 0
+    assert (tls_dir / "cert.pem").read_text() == before
+    assert "Keeping" in capsys.readouterr().out
+
+
+@needs_openssl
+def test_group_create_and_show(tls_box, capsys):
+    box, tls_dir = tls_box
+    assert _group(box, tls_dir, "create") == 0
+    assert _group(box, tls_dir, "create") == 1
+    config = config_file.load(box)
+    assert list(config.group.members) == [config.id]
+    capsys.readouterr()
+    assert _group(box, tls_dir, "show") == 0
+    assert "(this box)" in capsys.readouterr().out
+
+
+@needs_openssl
+def test_invite_needs_a_group_and_a_management_interface(tls_box):
+    box, tls_dir = tls_box
+    assert _group(box, tls_dir, "invite") == 1
+    _group(box, tls_dir, "create")
+    assert _group(box, tls_dir, "invite") == 1
+    _set(box, "mgmt_interface", "enp1s0")
+    assert _group(box, tls_dir, "invite") == 0
+
+
+@needs_openssl
+def test_invite_token(tls_box, capsys):
+    box, tls_dir = tls_box
+    _group(box, tls_dir, "create")
+    _set(box, "mgmt_interface", "enp1s0")
+    capsys.readouterr()
+    assert _group(box, tls_dir, "invite", "--minutes", "5") == 0
+    token = InviteToken.decode(capsys.readouterr().out.strip())
+    config = config_file.load(box)
+    assert token.group_id == config.group.id
+    assert token.addresses == ("192.168.20.21",)
+    assert token.fingerprint == tls.fingerprint((tls_dir / "cert.pem").read_text())
+    assert len(config.group.invites) == 1

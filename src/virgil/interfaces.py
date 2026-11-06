@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import ctypes
 import fcntl
+import json
 import os
 import socket
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -183,3 +185,23 @@ def get_interface(
     if not entry.exists():
         return None
     return _interface(entry, timestamping)
+
+
+def ipv4_addresses(name: str, run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> list[str]:
+    """The IPv4 addresses on an interface."""
+    try:
+        result = run(["ip", "-j", "-4", "addr", "show", "dev", name], capture_output=True, text=True)
+    except FileNotFoundError:
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        entries = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+    return [
+        info["local"]
+        for entry in entries
+        for info in entry.get("addr_info", [])
+        if info.get("family") == "inet" and "local" in info
+    ]

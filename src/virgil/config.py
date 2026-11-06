@@ -16,6 +16,7 @@ from typing import Any
 import tomli_w
 
 from virgil.files import atomic_write
+from virgil.group import Group, Member
 
 DEFAULT_PATH = Path("/etc/dante-virgil/virgil.toml")
 
@@ -41,6 +42,7 @@ class Config:
     mgmt_interface: str | None = None
     trim_ppb: int = 0
     devices: dict[str, DeviceSettings] = field(default_factory=dict)
+    group: Group | None = None
 
 
 def new_config() -> Config:
@@ -71,6 +73,21 @@ def from_dict(data: dict[str, Any]) -> Config:
             native_ptpv2=_expect(settings, "native_ptpv2", bool, optional=True) or False,
             aes67=_expect(settings, "aes67", bool, optional=True) or False,
         )
+    group = None
+    group_data = _expect(data, "group", dict, optional=True)
+    if group_data is not None:
+        members = {}
+        for box_id, member in (_expect(group_data, "members", dict, optional=True) or {}).items():
+            if not isinstance(member, dict):
+                raise ConfigError(f"group.members.{box_id} must be a table")
+            members[box_id] = Member(name=_expect(member, "name", str), cert=_expect(member, "cert", str))
+        invites = {}
+        for key, expires in (_expect(group_data, "invites", dict, optional=True) or {}).items():
+            if isinstance(expires, bool) or not isinstance(expires, int):
+                raise ConfigError("group.invites must map to expiry times")
+            invites[key] = expires
+        group = Group(id=_expect(group_data, "id", str), members=members, invites=invites)
+
     return Config(
         id=_expect(data, "id", str),
         name=_expect(data, "name", str),
@@ -79,6 +96,7 @@ def from_dict(data: dict[str, Any]) -> Config:
         mgmt_interface=_expect(data, "mgmt_interface", str, optional=True),
         trim_ppb=_expect(data, "trim_ppb", int, optional=True) or 0,
         devices=devices,
+        group=group,
     )
 
 
@@ -94,6 +112,15 @@ def to_dict(config: Config) -> dict[str, Any]:
         data["devices"] = {
             mac: {"native_ptpv2": settings.native_ptpv2, "aes67": settings.aes67}
             for mac, settings in sorted(config.devices.items())
+        }
+    if config.group is not None:
+        data["group"] = {
+            "id": config.group.id,
+            "members": {
+                box_id: {"name": member.name, "cert": member.cert}
+                for box_id, member in sorted(config.group.members.items())
+            },
+            "invites": dict(sorted(config.group.invites.items())),
         }
     return data
 

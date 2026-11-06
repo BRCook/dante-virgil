@@ -5,14 +5,19 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 from virgil import __version__
 from virgil import config as config_file
 from virgil.config import ConfigError
 from virgil.files import UnsafeFileError
+from virgil import group as groups
+from virgil import tls
 from virgil.generate import Role
-from virgil.interfaces import Interface, Timestamping, get_interface, list_interfaces
+from virgil.group import GroupError, InviteToken
+from virgil.interfaces import Interface, Timestamping, get_interface, ipv4_addresses, list_interfaces
 from virgil.request import REQUEST_PATH, RequestError, TimingRequest, from_json, to_json
 from virgil.roles import CHRONY, PHC2SYS, PTP4L, ServiceError, Systemd, apply, current_request, write_request
 
@@ -218,11 +223,79 @@ def cmd_role(args: argparse.Namespace) -> int:
     return 0
 
 
+# tls
+
+
+def cmd_tls_init(args: argparse.Namespace) -> int:
+    identity = tls.default_identity(args.tls_dir)
+    if identity.cert_path.exists():
+        print(f"Keeping the existing certificate in {args.tls_dir}")
+        return 0
+    tls.generate(identity)
+    code = tls.short_code(tls.fingerprint(identity.cert_pem))
+    print(f"Created a certificate in {args.tls_dir} ({code})")
+    return 0
+
+
+# group
+
+
+def cmd_group_create(args: argparse.Namespace) -> int:
+    config = config_file.load(args.config)
+    if config.group is not None:
+        raise CliError("this box is already in a group")
+    cert = tls.default_identity(args.tls_dir).cert_pem
+    config.group = groups.create(config.id, config.name, cert)
+    config_file.save(config, args.config)
+    print(f"Created group {config.group.id}, with {config.name} as its first member")
+    return 0
+
+
+def cmd_group_invite(args: argparse.Namespace) -> int:
+    config = config_file.load(args.config)
+    if config.group is None:
+        raise CliError("this box isn't in a group. Create one with 'virgilctl group create'")
+    if config.mgmt_interface is None:
+        raise CliError("choose a management interface first: virgilctl config set mgmt_interface <name>")
+    addresses = ipv4_addresses(config.mgmt_interface)
+    if not addresses:
+        raise CliError(f"{config.mgmt_interface} has no IPv4 address")
+    cert = tls.default_identity(args.tls_dir).cert_pem
+    secret, expires = groups.create_invite(config.group, time.time(), lifetime=args.minutes * 60)
+    config_file.save(config, args.config)
+    token = InviteToken(config.group.id, tuple(addresses), groups.PUBLIC_PORT, tls.fingerprint(cert), secret, expires)
+    print(token.encode())
+    until = datetime.fromtimestamp(expires).strftime("%H:%M")
+    print(f"\nThis token can be used once, until {until}. On the new box, run:\n", file=sys.stderr)
+    print("  sudo virgilctl group join <token>", file=sys.stderr)
+    return 0
+
+
+def cmd_group_show(args: argparse.Namespace) -> int:
+    config = config_file.load(args.config)
+    if config.group is None:
+        print("Not in a group")
+        return 0
+    print(f"Group {config.group.id}")
+    for box_id, member in sorted(config.group.members.items(), key=lambda item: item[1].name):
+        marker = " (this box)" if box_id == config.id else ""
+        try:
+            code = tls.short_code(tls.fingerprint(member.cert))
+        except tls.TlsError:
+            code = "bad certificate"
+        print(f"  {member.name}{marker}  {box_id}  {code}")
+    pending = [e for e in config.group.invites.values() if e > time.time()]
+    if pending:
+        print(f"{len(pending)} unused invite(s) outstanding")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="virgilctl", description="Control Virgil.")
     parser.add_argument("--version", action="version", version=f"Virgil {__version__}")
     parser.add_argument("--config", type=Path, default=config_file.DEFAULT_PATH, help=argparse.SUPPRESS)
     parser.add_argument("--request", type=Path, default=REQUEST_PATH, help=argparse.SUPPRESS)
+    parser.add_argument("--tls-dir", type=Path, default=tls.TLS_DIR, help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", required=True)
 
     interfaces = commands.add_parser("interfaces", help="list network interfaces and their PTP support")
@@ -252,6 +325,18 @@ def build_parser() -> argparse.ArgumentParser:
     role_commands.add_parser("show", help="show the current role")
     role.set_defaults(func=cmd_role)
 
+    tls_parser = commands.add_parser("tls", help="this box's TLS certificate")
+    tls_commands = tls_parser.add_subparsers(dest="tls_command", required=True)
+    tls_commands.add_parser("init", help="create the certificate, if there isn't one").set_defaults(func=cmd_tls_init)
+
+    group = commands.add_parser("group", help="create, join or show the group")
+    group_commands = group.add_subparsers(dest="group_command", required=True)
+    group_commands.add_parser("create", help="start a new group with this box").set_defaults(func=cmd_group_create)
+    invite = group_commands.add_parser("invite", help="make a one-time invite token for another box")
+    invite.add_argument("--minutes", type=int, default=60, help="how long the token works for (default 60)")
+    invite.set_defaults(func=cmd_group_invite)
+    group_commands.add_parser("show", help="show the group's members").set_defaults(func=cmd_group_show)
+
     return parser
 
 
@@ -268,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     except PermissionError as error:
         print(f"virgilctl: can't read {error.filename}. Try again with sudo.", file=sys.stderr)
         return 1
-    except (CliError, ConfigError, RequestError, ServiceError, UnsafeFileError) as error:
+    except (CliError, ConfigError, GroupError, RequestError, ServiceError, UnsafeFileError, tls.TlsError) as error:
         print(f"virgilctl: {error}", file=sys.stderr)
         return 1
 
