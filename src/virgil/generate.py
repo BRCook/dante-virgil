@@ -146,6 +146,7 @@ def phc2sys_args(setup: TimingSetup, tuning: Tuning = DEFAULT_TUNING) -> list[st
         "-I", str(tuning.phc2sys_ki),
         "-S", "0.001",
         "-m",
+        "-q",
     ]
 
 

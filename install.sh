@@ -79,6 +79,10 @@ fi
 "$VENV/bin/virgilctl" tls init
 chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR/tls"
 
+say "Starting virgild"
+systemctl enable dante-virgil.service >/dev/null 2>&1
+systemctl restart dante-virgil.service
+
 say "Done"
 cat << MESSAGE
 Virgil is installed, and this box's config is at $CONFIG_DIR/virgil.toml.

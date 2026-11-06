@@ -22,12 +22,13 @@ purge=false
 [[ "${1:-}" == --purge ]] && purge=true
 
 echo "Stopping Virgil"
+systemctl disable --now dante-virgil.service 2>/dev/null || true
 for unit in dante-virgil-phc2sys dante-virgil-ptp4l dante-virgil-chrony; do
     systemctl stop "$unit.service" 2>/dev/null || true
 done
 
 echo "Removing Virgil's files"
-rm -f "$UNIT_DIR"/dante-virgil-*.service "$TMPFILES_DIR/dante-virgil.conf" \
+rm -f "$UNIT_DIR"/dante-virgil.service "$UNIT_DIR"/dante-virgil-*.service "$TMPFILES_DIR/dante-virgil.conf" \
     "$POLKIT_DIR/50-dante-virgil.rules" /usr/local/bin/virgilctl
 rm -rf "$PREFIX" /run/dante-virgil /run/dante-virgil-generated
 systemctl daemon-reload
