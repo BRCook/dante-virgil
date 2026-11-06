@@ -296,3 +296,36 @@ def test_random_outages_always_settle(seed):
     for virgil_id in ids:
         if virgil_id != leader:
             assert group.state(virgil_id) == (State.FOLLOWER, leader)
+
+
+def test_a_rebooted_virgil_that_led_alone_yields_to_the_established_leader():
+    """The bench test: A reboots, can't hear the group for a while, leads alone, then meets the leader."""
+    # B is an established leader with a follower. A reboots, and draws a far higher coin.
+    group = Group({"A": [10, 999], "B": [20, 1], "C": [5]}, ids=("A", "B", "C"))
+    group.connect()
+    group.run(15)
+    assert group.leaders() == ["B"] and group.members["B"].established
+    group.power_off("A")
+    group.run(5)
+    group.boot("A")
+    group.cut("A", "B")
+    group.cut("A", "C")
+    group.run(15)
+    assert group.leaders() == ["A", "B"] and not group.members["A"].established
+    group.connect()
+    group.run(5, check=None)
+    assert group.leaders() == ["B"]
+    assert group.state("A") == (State.FOLLOWER, "B")
+
+
+def test_split_leaders_are_equals_and_the_coin_decides():
+    group = Group({"A": [50, 50, 1], "B": [10, 60], "C": [5]}, ids=("A", "B", "C"))
+    group.connect()
+    group.run(15)
+    group.cut("A", "B")
+    group.cut("A", "C")
+    group.run(40)
+    assert group.members["A"].established and group.members["B"].established
+    group.connect()
+    group.run(5)
+    assert group.leaders() == ["B"]

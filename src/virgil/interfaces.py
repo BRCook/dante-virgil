@@ -204,8 +204,16 @@ def ipv4_addresses(name: str, run: Callable[..., subprocess.CompletedProcess] = 
         info["local"]
         for entry in entries
         for info in entry.get("addr_info", [])
-        if info.get("family") == "inet" and "local" in info
+        if info.get("family") == "inet" and "local" in info and not _link_local(info["local"])
     ]
+
+
+def _link_local(address: str) -> bool:
+    """A self-assigned 169.254.x.x address, which can't reach the rest of the network."""
+    try:
+        return ipaddress.ip_address(address).is_link_local
+    except ValueError:
+        return True
 
 
 def ipv4_networks(name: str, run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> list[str]:
@@ -223,7 +231,8 @@ def ipv4_networks(name: str, run: Callable[..., subprocess.CompletedProcess] = s
     networks = []
     for entry in entries:
         for info in entry.get("addr_info", []):
-            if info.get("family") == "inet" and "local" in info and "prefixlen" in info:
+            if info.get("family") == "inet" and "local" in info and "prefixlen" in info \
+                    and not _link_local(info["local"]):
                 network = str(ipaddress.ip_network(f"{info['local']}/{info['prefixlen']}", strict=False))
                 if network not in networks:
                     networks.append(network)

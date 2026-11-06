@@ -40,3 +40,17 @@ def test_bad_heartbeats(change):
 def test_not_an_object():
     with pytest.raises(HeartbeatError):
         decode([1, 2])
+
+
+def test_established_round_trip():
+    from dataclasses import replace
+
+    beat = replace(BEAT, state=State.LEADER, leader=None, established=True)
+    decoded = decode(beat.encode())
+    assert decoded.established and decoded.view(1.0).established
+
+
+def test_older_heartbeats_without_established():
+    data = BEAT.encode()
+    del data["established"]
+    assert decode(data).established is False
