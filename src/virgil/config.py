@@ -6,9 +6,7 @@ the web password and tuning will be added as those parts are built.
 
 from __future__ import annotations
 
-import os
 import socket
-import tempfile
 import tomllib
 import uuid
 from dataclasses import dataclass, field
@@ -16,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 import tomli_w
+
+from virgil.files import atomic_write
 
 DEFAULT_PATH = Path("/etc/dante-virgil/virgil.toml")
 
@@ -109,14 +109,4 @@ def load(path: Path = DEFAULT_PATH) -> Config:
 
 def save(config: Config, path: Path = DEFAULT_PATH) -> None:
     """Write the config atomically, so a crash never leaves half a file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            tomli_w.dump(to_dict(config), f)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        os.unlink(tmp)
-        raise
+    atomic_write(path, tomli_w.dumps(to_dict(config)).encode(), mode=0o640)

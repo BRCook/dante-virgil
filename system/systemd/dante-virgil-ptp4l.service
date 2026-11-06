@@ -1,0 +1,10 @@
+[Unit]
+Description=Virgil: PTP grandmaster
+Documentation=https://github.com/BRCook/dante-virgil
+After=dante-virgil-sync.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/ptp4l -f /run/dante-virgil-generated/ptp4l.conf -m -q
+Restart=always
+RestartSec=2

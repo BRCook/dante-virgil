@@ -11,6 +11,7 @@ dependencies = [
 
 [project.scripts]
 virgilctl = "virgil.cli:main"
+virgil-root = "virgil.rootctl:main"
 
 [dependency-groups]
 dev = [

@@ -1,0 +1,10 @@
+[Unit]
+Description=Virgil: set the clocks before the timing services start
+Documentation=https://github.com/BRCook/dante-virgil
+After=dante-virgil-prepare.service network-online.target
+Wants=network-online.target
+Before=dante-virgil-chrony.service dante-virgil-ptp4l.service dante-virgil-phc2sys.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dante-virgil/venv/bin/virgil-root sync
