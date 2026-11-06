@@ -197,6 +197,15 @@ STATUS = {
         ],
     },
     "other_virgils": [{"id": "d" * 32, "name": "Spare", "group_id": None, "addresses": ["10.10.100.9"]}],
+    "ptp": {
+        "watching": True,
+        "identity": "aa:bb:cc:ff:fe:00:00:01",
+        "local_devices": [
+            {"address": "10.10.100.50", "ptpv1": True, "follows_this_virgil": True, "seen_ago": 0.2},
+            {"address": "10.10.100.60", "ptpv1": True, "follows_this_virgil": False, "seen_ago": 0.9},
+        ],
+        "warnings": ["Another PTP grandmaster is on this network (00:1d:c1:ff:fe:12:34:56, from 10.10.100.77)"],
+    },
 }
 
 
@@ -208,6 +217,10 @@ def test_status(monkeypatch, capsys):
     assert "Virgil B: follower of Virgil A, heard 0.4 s ago, at 10.10.100.252" in out
     assert "Virgil C: not heard from, address unknown" in out
     assert "Spare (no group), at 10.10.100.9" in out
+    assert "PTP grandmaster: aa:bb:cc:ff:fe:00:00:01" in out
+    assert "Local Dante device 10.10.100.50: following this Virgil" in out
+    assert "Local Dante device 10.10.100.60: NOT following this Virgil" in out
+    assert "WARNING: Another PTP grandmaster" in out
 
 
 @needs_openssl

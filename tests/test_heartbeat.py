@@ -54,3 +54,19 @@ def test_older_heartbeats_without_established():
     data = BEAT.encode()
     del data["established"]
     assert decode(data).established is False
+
+
+def test_ptp_fields_round_trip():
+    from dataclasses import replace
+
+    beat = replace(BEAT, ptp_identity="aa:bb:cc:ff:fe:00:00:01", ptp_warnings=("PTP from Box B is crossing the link",))
+    assert decode(beat.encode()) == beat
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"ptp_identity": "nope"}, {"ptp_warnings": "x"}, {"ptp_warnings": ["x"] * 9}, {"ptp_warnings": ["x" * 201]}],
+)
+def test_bad_ptp_fields(change):
+    with pytest.raises(HeartbeatError):
+        decode({**BEAT.encode(), **change})

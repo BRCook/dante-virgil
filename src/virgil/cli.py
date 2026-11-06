@@ -364,6 +364,18 @@ def cmd_status(args: argparse.Namespace) -> int:
     if status.get("waiting_for_network"):
         observing += "  (waiting for the management network before electing)"
     print(f"{status['name']} (this Virgil): {_describe(status['state'], status['leader'])}{observing}")
+    ptp = status.get("ptp") or {}
+    if ptp.get("watching"):
+        identity = ptp.get("identity") or "not announced yet"
+        print(f"  PTP grandmaster: {identity}")
+        devices = ptp.get("local_devices") or []
+        if not devices:
+            print("  Local Dante devices: none heard yet")
+        for device in devices:
+            following = "following this Virgil" if device["follows_this_virgil"] else "NOT following this Virgil"
+            print(f"  Local Dante device {device['address']}: {following}")
+    for warning in ptp.get("warnings") or []:
+        print(f"  WARNING: {warning}")
     group = status.get("group")
     if group is None:
         print("Not in a group")
@@ -378,6 +390,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             else:
                 line += ", address unknown"
             print(line)
+            for warning in member.get("ptp_warnings") or []:
+                print(f"    WARNING from {member['name']}: {warning}")
     others = status.get("other_virgils") or []
     if others:
         print("Other Virgils on the network:")

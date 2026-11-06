@@ -11,6 +11,9 @@ from virgil.election import PeerView, State
 HEARTBEAT_PATH = "/group/v1/heartbeat"
 VIRGIL_ID = re.compile(r"^[0-9a-f]{32}$")
 MAX_COIN = 2**64 - 1
+PTP_IDENTITY = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){7}$")
+MAX_WARNINGS = 8
+MAX_WARNING_LENGTH = 200
 
 
 class HeartbeatError(Exception):
@@ -31,6 +34,9 @@ class Heartbeat:
     observing: bool = False
     # A leader that had heard from the group before it started leading.
     established: bool = False
+    # This Virgil's PTP grandmaster identity, once known, and any PTP warnings.
+    ptp_identity: str | None = None
+    ptp_warnings: tuple[str, ...] = ()
 
     def encode(self) -> dict[str, Any]:
         return {
@@ -44,6 +50,8 @@ class Heartbeat:
             "handover_to": self.handover_to,
             "observing": self.observing,
             "established": self.established,
+            "ptp_identity": self.ptp_identity,
+            "ptp_warnings": list(self.ptp_warnings),
         }
 
     def view(self, heard_at: float) -> PeerView:
@@ -81,6 +89,13 @@ def decode(data: Any) -> Heartbeat:
     established = data.get("established", False)
     if not all(isinstance(flag, bool) for flag in (lost, observing, established)):
         raise HeartbeatError("bad flags")
+    ptp_identity = data.get("ptp_identity")
+    if ptp_identity is not None and (not isinstance(ptp_identity, str) or not PTP_IDENTITY.match(ptp_identity)):
+        raise HeartbeatError("bad ptp_identity")
+    warnings = data.get("ptp_warnings", [])
+    if (not isinstance(warnings, list) or len(warnings) > MAX_WARNINGS
+            or not all(isinstance(w, str) and len(w) <= MAX_WARNING_LENGTH for w in warnings)):
+        raise HeartbeatError("bad ptp_warnings")
     return Heartbeat(
         id=virgil_id,
         name=name,
@@ -92,4 +107,6 @@ def decode(data: Any) -> Heartbeat:
         handover_to=_optional_id(data, "handover_to"),
         observing=observing,
         established=established,
+        ptp_identity=ptp_identity,
+        ptp_warnings=tuple(warnings),
     )
