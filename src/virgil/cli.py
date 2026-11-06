@@ -5,14 +5,40 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from virgil import __version__
-from virgil.interfaces import Interface, Timestamping, list_interfaces
+from virgil import config as config_file
+from virgil.config import ConfigError
+from virgil.files import UnsafeFileError
+from virgil.generate import Role
+from virgil.interfaces import Interface, Timestamping, get_interface, list_interfaces
+from virgil.request import REQUEST_PATH, RequestError, TimingRequest, from_json, to_json
+from virgil.roles import CHRONY, PHC2SYS, PTP4L, ServiceError, Systemd, apply, current_request, write_request
 
 SOFTWARE_WARNING = (
     "Software timestamping does not work. It is not stable enough for "
     "production use. You can continue if you insist, but you're on your own."
 )
+
+
+class CliError(Exception):
+    pass
+
+
+def confirm(question: str, default: bool, assume_yes: bool) -> bool:
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        return default
+    hint = "[Y/n]" if default else "[y/N]"
+    answer = input(f"{question} {hint} ").strip().lower()
+    if not answer:
+        return default
+    return answer in ("y", "yes")
+
+
+# interfaces
 
 
 def _interface_json(interface: Interface) -> dict:
@@ -83,21 +109,165 @@ def cmd_interfaces(args: argparse.Namespace) -> int:
     return 0
 
 
+# config
+
+
+def cmd_config_init(args: argparse.Namespace) -> int:
+    if args.config.exists():
+        raise CliError(f"{args.config} already exists")
+    config = config_file.new_config()
+    config_file.save(config, args.config)
+    print(f"Created {args.config} for box {config.name} ({config.id})")
+    return 0
+
+
+def cmd_config_show(args: argparse.Namespace) -> int:
+    print(args.config.read_text(), end="")
+    return 0
+
+
+def _choose_ptp_interface(name: str, assume_yes: bool) -> tuple[str, str | None]:
+    """Check a PTP interface with the person, and return it with the NIC profile to use."""
+    interface = get_interface(name)
+    if interface is None:
+        raise CliError(f"there's no interface called {name}")
+    if not interface.physical or interface.mode is Timestamping.NONE:
+        raise CliError(f"{name} can't be used for PTP")
+
+    if interface.mode is Timestamping.SOFTWARE:
+        print(f"{name} only supports software timestamping.")
+        print(SOFTWARE_WARNING)
+        if not confirm("Use it anyway?", default=False, assume_yes=assume_yes):
+            raise CliError("not changed")
+        return name, None
+
+    profile = interface.profile
+    if profile is None:
+        print(f"{name} uses the {interface.driver} driver, which hasn't been tested. It will use Virgil's defaults.")
+        return name, None
+    if not profile.needs_hwstamp_ctl:
+        return name, interface.driver
+
+    print(f"{name} is a {profile.description}, which is known to need different settings from Virgil's defaults:")
+    print(f"  {profile.notes}")
+    if confirm("Apply these settings instead of the defaults?", default=True, assume_yes=assume_yes):
+        return name, interface.driver
+    print("Using the defaults. This NIC will probably not work with them.")
+    return name, None
+
+
+def cmd_config_set(args: argparse.Namespace) -> int:
+    config = config_file.load(args.config)
+    key, value = args.key, args.value
+    if key == "name":
+        config.name = value
+    elif key == "ptp_interface":
+        config.ptp_interface, config.nic_profile = _choose_ptp_interface(value, args.yes)
+    elif key == "mgmt_interface":
+        if get_interface(value) is None:
+            raise CliError(f"there's no interface called {value}")
+        config.mgmt_interface = value
+    elif key == "trim_ppb":
+        try:
+            config.trim_ppb = int(value)
+        except ValueError as error:
+            raise CliError("trim_ppb must be a whole number") from error
+    config_file.save(config, args.config)
+    print(f"Set {key}")
+    return 0
+
+
+# role
+
+
+def _request_for(role: Role, args: argparse.Namespace) -> TimingRequest:
+    config = config_file.load(args.config)
+    if config.ptp_interface is None:
+        raise CliError("choose a PTP interface first: virgilctl config set ptp_interface <name>")
+    leader = args.leader if role is Role.FOLLOWER else None
+    allow = args.allow or ([leader] if leader else [])
+    request = TimingRequest(
+        role=role,
+        ptp_interface=config.ptp_interface,
+        leader=leader,
+        allow=tuple(allow),
+        trim_ppb=config.trim_ppb,
+        use_nic_profile=config.nic_profile is not None,
+    )
+    # Check it exactly as virgil-root will.
+    return from_json(to_json(request))
+
+
+def cmd_role(args: argparse.Namespace) -> int:
+    systemd = Systemd()
+    old = current_request(systemd, args.request)
+    if args.role == "show":
+        if old is None:
+            print("Stopped")
+        else:
+            print(f"Role: {old.role.value}")
+            if old.leader:
+                print(f"Leader: {old.leader}")
+        for unit in (CHRONY, PTP4L, PHC2SYS):
+            print(f"  {unit}: {'active' if systemd.is_active(unit) else 'inactive'}")
+        return 0
+
+    new = None if args.role == "stop" else _request_for(Role(args.role), args)
+    apply(old, new, systemd, write=lambda r: write_request(r, args.request), log=print)
+    print("Done")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="virgilctl", description="Control Virgil.")
     parser.add_argument("--version", action="version", version=f"Virgil {__version__}")
+    parser.add_argument("--config", type=Path, default=config_file.DEFAULT_PATH, help=argparse.SUPPRESS)
+    parser.add_argument("--request", type=Path, default=REQUEST_PATH, help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", required=True)
 
     interfaces = commands.add_parser("interfaces", help="list network interfaces and their PTP support")
     interfaces.add_argument("--json", action="store_true", help="print JSON instead of a table")
     interfaces.set_defaults(func=cmd_interfaces)
 
+    config = commands.add_parser("config", help="show or change this box's settings")
+    config_commands = config.add_subparsers(dest="config_command", required=True)
+    config_commands.add_parser("init", help="create the config file").set_defaults(func=cmd_config_init)
+    config_commands.add_parser("show", help="print the config file").set_defaults(func=cmd_config_show)
+    config_set = config_commands.add_parser("set", help="change a setting")
+    config_set.add_argument("key", choices=["name", "ptp_interface", "mgmt_interface", "trim_ppb"])
+    config_set.add_argument("value")
+    config_set.add_argument("--yes", action="store_true", help="accept warnings and NIC profiles without asking")
+    config_set.set_defaults(func=cmd_config_set)
+
+    role = commands.add_parser("role", help="set this box's role by hand (until the daemon does it)")
+    role_commands = role.add_subparsers(dest="role", required=True)
+    leader = role_commands.add_parser("leader", help="lead: run free and serve the time")
+    leader.add_argument("--allow", action="append", required=True, metavar="ADDRESS",
+                        help="an address or network to serve NTP to (repeatable)")
+    follower = role_commands.add_parser("follower", help="follow a leader")
+    follower.add_argument("--leader", required=True, metavar="ADDRESS", help="the leader's address")
+    follower.add_argument("--allow", action="append", metavar="ADDRESS",
+                          help="an address or network to serve NTP to (default: the leader)")
+    role_commands.add_parser("stop", help="stop the timing services")
+    role_commands.add_parser("show", help="show the current role")
+    role.set_defaults(func=cmd_role)
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except FileNotFoundError as error:
+        if Path(error.filename or "") == args.config:
+            print(f"virgilctl: no config file at {args.config}. Run 'virgilctl config init' first.", file=sys.stderr)
+        else:
+            print(f"virgilctl: {error}", file=sys.stderr)
+        return 1
+    except (CliError, ConfigError, RequestError, ServiceError, UnsafeFileError) as error:
+        print(f"virgilctl: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

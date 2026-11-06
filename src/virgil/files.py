@@ -9,11 +9,24 @@ from pathlib import Path
 
 
 def atomic_write(path: Path, data: bytes, mode: int = 0o644) -> None:
-    """Write a file atomically, so a crash never leaves half a file."""
+    """Write a file atomically, so a crash never leaves half a file.
+
+    The new file keeps the owner of the file it replaces, or takes the owner
+    of its directory if it's new. That way, running virgilctl with sudo
+    doesn't leave root-owned files that the daemon can't read.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        owner = os.stat(path)
+    except FileNotFoundError:
+        owner = os.stat(path.parent)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
         with os.fdopen(fd, "wb") as f:
+            try:
+                os.fchown(f.fileno(), owner.st_uid, owner.st_gid)
+            except PermissionError:
+                pass  # Only root can give a file away; anyone else already owns it.
             os.fchmod(f.fileno(), mode)
             f.write(data)
             f.flush()
