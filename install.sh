@@ -70,7 +70,9 @@ systemctl disable --now chrony.service >/dev/null 2>&1 || true
 systemctl mask chrony.service >/dev/null 2>&1
 
 say "Setting up $CONFIG_DIR"
-install -d -m 750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$CONFIG_DIR"
+# 751: anyone can reach the public certificate inside (for virgilctl status),
+# but only dante-virgil can list the directory. The config and key stay private.
+install -d -m 751 -o "$SERVICE_USER" -g "$SERVICE_USER" "$CONFIG_DIR"
 if [[ -e "$CONFIG_DIR/virgil.toml" ]]; then
     echo "Keeping the existing config."
 else
@@ -78,6 +80,9 @@ else
 fi
 "$VENV/bin/virgilctl" tls init
 chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR/tls"
+chmod 755 "$CONFIG_DIR/tls"
+chmod 644 "$CONFIG_DIR/tls/cert.pem"
+chmod 600 "$CONFIG_DIR/tls/key.pem"
 
 say "Starting virgild"
 systemctl enable dante-virgil.service >/dev/null 2>&1

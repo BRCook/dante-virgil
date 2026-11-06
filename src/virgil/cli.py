@@ -337,7 +337,11 @@ def fetch_status(tls_dir: Path, port: int = groups.PUBLIC_PORT) -> dict:
     """Ask the local virgild for its status, trusting only this Virgil's own certificate."""
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.check_hostname = False
-    context.load_verify_locations(cafile=tls.default_identity(tls_dir).cert_path)
+    cert_path = tls.default_identity(tls_dir).cert_path
+    try:
+        context.load_verify_locations(cafile=cert_path)
+    except PermissionError as error:
+        raise PermissionError(error.errno, error.strerror, str(cert_path)) from error
     try:
         with urllib.request.urlopen(f"https://127.0.0.1:{port}/api/v1/status", context=context, timeout=5) as reply:
             return json.load(reply)
@@ -449,7 +453,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"virgilctl: {error}", file=sys.stderr)
         return 1
     except PermissionError as error:
-        print(f"virgilctl: can't read {error.filename}. Try again with sudo.", file=sys.stderr)
+        what = error.filename or "a file it needs"
+        print(f"virgilctl: permission denied reading {what}. Try again with sudo.", file=sys.stderr)
         return 1
     except (CliError, ConfigError, GroupError, RequestError, ServiceError, UnsafeFileError, tls.TlsError) as error:
         print(f"virgilctl: {error}", file=sys.stderr)
