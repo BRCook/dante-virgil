@@ -342,6 +342,10 @@ class Daemon:
         interface = self.config.mgmt_interface
         addresses = tuple(ipv4_addresses(interface)) if interface else ()
         networks = tuple(ipv4_networks(interface)) if interface else ()
+        # The networks go first: the election starts as soon as there's an
+        # address, and the first role it sets up should already allow them.
+        networks_changed = networks != self.networks
+        self.networks = networks
         if addresses != self.addresses:
             if self.discovery is not None:
                 await self.discovery.stop()
@@ -356,10 +360,8 @@ class Daemon:
                 log.warning("%s has no IPv4 address yet, so other Virgils can't be found", interface)
             else:
                 log.warning("No management interface is set, so other Virgils can't be found")
-        if networks != self.networks:
-            self.networks = networks
-            if self.timing is not None:
-                self.timing.poke()
+        if networks_changed and self.timing is not None:
+            self.timing.poke()
 
     async def watch_network(self) -> None:
         while True:
