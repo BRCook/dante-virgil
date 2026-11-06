@@ -27,7 +27,7 @@ from aiohttp import web
 
 from virgil import __version__
 from virgil import config as config_file
-from virgil import discovery, tls
+from virgil import discovery, ptpwatch, tls
 from virgil.config import Config
 from virgil.election import Change, Election, State
 from virgil.generate import Role
@@ -84,6 +84,9 @@ class Daemon:
     # Whether the election is running yet. It waits for the network first.
     electing: bool = field(default=False, init=False)
     started: float = field(default=0.0, init=False)
+    ptp: ptpwatch.PtpState = field(default_factory=ptpwatch.PtpState, init=False)
+    ptp_watcher: ptpwatch.PtpWatcher | None = field(default=None, init=False)
+    ptp_addresses: tuple[str, ...] = field(default=(), init=False)
 
     def __post_init__(self) -> None:
         self.config = config_file.load(self.config_path)
@@ -191,7 +194,43 @@ class Daemon:
     def heartbeat(self) -> Heartbeat:
         e = self.election
         return Heartbeat(self.config.id, self.config.name, __version__, e.state, e.coin, e.leader,
-                         e.lost_leader, e.handover_to, self.observing, e.established)
+                         e.lost_leader, e.handover_to, self.observing, e.established,
+                         self.ptp.own_identity, tuple(self.ptp_warnings()[:8]))
+
+    # PTP watching
+
+    def ptp_warnings(self) -> list[str]:
+        members = {}
+        for peer in self.peers.values():
+            if peer.heartbeat.ptp_identity:
+                members[peer.heartbeat.ptp_identity] = peer.heartbeat.name
+        return [w[:200] for w in self.ptp.leaks(members)]
+
+    def own_addresses(self) -> set[str]:
+        return set(self.addresses) | set(self.ptp_addresses)
+
+    def start_ptp_watch(self) -> None:
+        interface = self.config.ptp_interface
+        if interface is None:
+            return
+        self.ptp_addresses = tuple(ipv4_addresses(interface))
+        watcher = ptpwatch.PtpWatcher(interface, self.ptp, time.monotonic, self.own_addresses)
+        try:
+            watcher.start(asyncio.get_running_loop())
+        except PermissionError:
+            log.warning("Can't watch PTP on %s without CAP_NET_RAW", interface)
+            return
+        except OSError as error:
+            log.warning("Can't watch PTP on %s: %s", interface, error)
+            return
+        self.ptp_watcher = watcher
+
+    async def tidy_ptp(self) -> None:
+        while True:
+            await asyncio.sleep(5.0)
+            self.ptp.forget_old(time.monotonic())
+            if self.config.ptp_interface:
+                self.ptp_addresses = tuple(ipv4_addresses(self.config.ptp_interface))
 
     def _member_for_certificate(self, request: web.Request) -> str | None:
         ssl_object = request.transport.get_extra_info("ssl_object") if request.transport else None
@@ -389,6 +428,8 @@ class Daemon:
                     "version": beat.version if beat else None,
                     "heard_ago": round(now - peer.heard_at, 1) if peer else None,
                     "addresses": self.addresses_for(virgil_id),
+                    "ptp_identity": beat.ptp_identity if beat else None,
+                    "ptp_warnings": list(beat.ptp_warnings) if beat else [],
                 }
             )
         others = [
@@ -407,6 +448,20 @@ class Daemon:
                 "state": self.election.state.value,
                 "leader": self.name_of(self.election.leader),
                 "group": None if group is None else {"id": group.id, "members": members},
+                "ptp": {
+                    "watching": self.ptp_watcher is not None,
+                    "identity": self.ptp.own_identity,
+                    "local_devices": [
+                        {
+                            "address": d.address,
+                            "ptpv1": d.ptpv1,
+                            "follows_this_virgil": d.follows_this_virgil,
+                            "seen_ago": round(now - d.last_seen, 1),
+                        }
+                        for d in sorted(self.ptp.devices.values(), key=lambda d: d.address)
+                    ],
+                    "warnings": self.ptp_warnings(),
+                },
                 "other_virgils": others,
             }
         )
@@ -479,7 +534,9 @@ async def serve(daemon: Daemon, host: str) -> None:
              __version__, daemon.config.name, daemon.config.id, daemon.public_port, daemon.group_port)
     await daemon.check_network()
     daemon.start_timing()
-    jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election()]
+    daemon.start_ptp_watch()
+    jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election(),
+            daemon.tidy_ptp()]
     if daemon.timing is not None:
         jobs.append(daemon.timing.run())
     tasks = [asyncio.create_task(job) for job in jobs]
@@ -488,6 +545,8 @@ async def serve(daemon: Daemon, host: str) -> None:
     finally:
         for task in tasks:
             task.cancel()
+        if daemon.ptp_watcher is not None:
+            daemon.ptp_watcher.stop(asyncio.get_running_loop())
         if daemon.discovery is not None:
             await daemon.discovery.stop()
         await public.cleanup()
