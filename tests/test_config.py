@@ -9,7 +9,7 @@ def test_round_trip(tmp_path):
     path = tmp_path / "virgil.toml"
     original = Config(
         id="abc123",
-        name="Box A",
+        name="Virgil A",
         ptp_interface="enp1s0",
         nic_profile="igc",
         mgmt_interface="enp5s0",
@@ -22,10 +22,10 @@ def test_round_trip(tmp_path):
 
 def test_unset_settings_are_left_out(tmp_path):
     path = tmp_path / "virgil.toml"
-    config.save(Config(id="abc", name="Box B"), path)
+    config.save(Config(id="abc", name="Virgil B"), path)
     text = path.read_text()
     assert "ptp_interface" not in text and "devices" not in text
-    assert config.load(path) == Config(id="abc", name="Box B")
+    assert config.load(path) == Config(id="abc", name="Virgil B")
 
 
 def test_new_config_has_an_id():
@@ -72,8 +72,8 @@ def test_group_round_trip(tmp_path):
     cert = "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n"
     original = Config(
         id="a",
-        name="Box A",
-        group=Group(id="f" * 32, members={"a": Member("Box A", cert), "b": Member("Box B", cert)}, invites={"h": 99}),
+        name="Virgil A",
+        group=Group(id="f" * 32, members={"a": Member("Virgil A", cert), "b": Member("Virgil B", cert)}, invites={"h": 99}),
     )
     config.save(original, path)
     assert config.load(path) == original

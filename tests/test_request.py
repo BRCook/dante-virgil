@@ -53,7 +53,7 @@ def _with(**changes):
         _with(ptp_interface="enp1s0; rm -rf /"),
         _with(ptp_interface="../etc"),
         _with(ptp_interface="a-very-long-interface-name"),
-        _with(leader="box-a.local"),
+        _with(leader="virgil-a.local"),
         _with(leader="192.168.20.21\nlocal stratum 1"),
         _with(leader=None),
         _with(role="leader"),

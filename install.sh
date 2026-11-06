@@ -1,9 +1,9 @@
 #!/bin/bash
-# Install or update Virgil on this box. Run it from a copy of the repo:
+# Install or update Virgil on this machine. Run it from a copy of the repo:
 #
 #   sudo ./install.sh
 #
-# Running it again from a newer copy updates Virgil, and keeps the box's config.
+# Running it again from a newer copy updates Virgil, and keeps this Virgil's config.
 
 set -euo pipefail
 
@@ -85,7 +85,7 @@ systemctl restart dante-virgil.service
 
 say "Done"
 cat << MESSAGE
-Virgil is installed, and this box's config is at $CONFIG_DIR/virgil.toml.
+Virgil is installed, and this Virgil's config is at $CONFIG_DIR/virgil.toml.
 
 Next, choose the interface that faces the console:
 

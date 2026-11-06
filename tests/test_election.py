@@ -1,4 +1,4 @@
-"""Simulated groups of boxes, exchanging heartbeats over links that can be cut."""
+"""Simulated groups of Virgils, exchanging heartbeats over links that can be cut."""
 
 import itertools
 import random
@@ -12,34 +12,34 @@ HEARTBEAT = 1.0
 
 
 class Group:
-    """Coins listed for a box are drawn in order: at boot, then each time it becomes leader."""
+    """Coins listed for a Virgil are drawn in order: at boot, then each time it becomes leader."""
 
     def __init__(self, coins: dict[str, list[int]] | None = None, ids=("A", "B"), seed=1):
         self.t = 0.0
         self.rng = random.Random(seed)
         self.coins = coins or {}
-        self.boxes: dict[str, Election] = {}
+        self.members: dict[str, Election] = {}
         self.inbox: dict[str, dict[str, PeerView]] = {}
         self.links: set[frozenset] = set()
         self.down: set[str] = set()
         self.history: list[tuple[float, str, State, str | None]] = []
-        for box_id in ids:
-            self.boot(box_id)
+        for virgil_id in ids:
+            self.boot(virgil_id)
 
-    def _draw(self, box_id):
-        planned = iter(self.coins.get(box_id, []))
+    def _draw(self, virgil_id):
+        planned = iter(self.coins.get(virgil_id, []))
         return lambda: next(planned, None) or self.rng.getrandbits(64)
 
-    def boot(self, box_id):
-        self.boxes[box_id] = Election(box_id, self.t, draw=self._draw(box_id))
-        self.inbox[box_id] = {}
-        self.down.discard(box_id)
+    def boot(self, virgil_id):
+        self.members[virgil_id] = Election(virgil_id, self.t, draw=self._draw(virgil_id))
+        self.inbox[virgil_id] = {}
+        self.down.discard(virgil_id)
 
-    def power_off(self, box_id):
-        self.down.add(box_id)
+    def power_off(self, virgil_id):
+        self.down.add(virgil_id)
 
     def connect(self, *ids):
-        for a, b in itertools.combinations(ids or self.boxes, 2):
+        for a, b in itertools.combinations(ids or self.members, 2):
             self.links.add(frozenset((a, b)))
 
     def cut(self, a, b):
@@ -53,36 +53,36 @@ class Group:
         while self.t < end - 1e-9:
             self.t = round(self.t + STEP, 6)
             if abs(self.t / HEARTBEAT - round(self.t / HEARTBEAT)) < 1e-9:
-                for a, b in itertools.permutations(self.boxes, 2):
+                for a, b in itertools.permutations(self.members, 2):
                     if a not in self.down and b not in self.down and frozenset((a, b)) in self.links:
-                        self.inbox[b][a] = self.boxes[a].view(heard_at=self.t)
-            for box_id, box in self.boxes.items():
-                if box_id in self.down:
+                        self.inbox[b][a] = self.members[a].view(heard_at=self.t)
+            for virgil_id, member in self.members.items():
+                if virgil_id in self.down:
                     continue
                 # Syncing takes a second.
-                if box.state is State.SYNC and self.t - box.since >= 1.0:
-                    self._record(box_id, box.synced(self.t))
-                self._record(box_id, box.tick(self.inbox[box_id], self.t))
+                if member.state is State.SYNC and self.t - member.since >= 1.0:
+                    self._record(virgil_id, member.synced(self.t))
+                self._record(virgil_id, member.tick(self.inbox[virgil_id], self.t))
             if check:
                 check(self)
 
-    def _record(self, box_id, change):
+    def _record(self, virgil_id, change):
         if change is not None:
-            self.history.append((self.t, box_id, change.new_state, change.new_leader))
+            self.history.append((self.t, virgil_id, change.new_state, change.new_leader))
 
-    def state(self, box_id):
-        return self.boxes[box_id].state, self.boxes[box_id].leader
+    def state(self, virgil_id):
+        return self.members[virgil_id].state, self.members[virgil_id].leader
 
     def leaders(self):
-        return sorted(i for i, b in self.boxes.items() if i not in self.down and b.state is State.LEADER)
+        return sorted(i for i, b in self.members.items() if i not in self.down and b.state is State.LEADER)
 
-    def became_leader(self, box_id):
-        return [t for t, i, s, _ in self.history if i == box_id and s is State.LEADER]
+    def became_leader(self, virgil_id):
+        return [t for t, i, s, _ in self.history if i == virgil_id and s is State.LEADER]
 
 
 def one_settled_leader(group):
     """Within a connected group, never two leaders that aren't handing over."""
-    settled = [i for i in group.leaders() if group.boxes[i].handover_to is None]
+    settled = [i for i in group.leaders() if group.members[i].handover_to is None]
     assert len(settled) <= 1, f"two leaders at {group.t}: {settled}"
 
 
@@ -187,8 +187,8 @@ def test_islands_merge_and_the_losers_followers_switch():
     group.connect()
     group.run(5)
     assert group.leaders() == ["A"]
-    for box_id in "BCD":
-        assert group.state(box_id) == (State.FOLLOWER, "A")
+    for virgil_id in "BCD":
+        assert group.state(virgil_id) == (State.FOLLOWER, "A")
 
 
 def test_a_split_group_leads_on_both_sides_then_rejoins():
@@ -213,7 +213,7 @@ def test_hand_over():
     group = Group({"A": [50, 50], "B": [10, 5], "C": [20]}, ids=("A", "B", "C"))
     group.connect()
     group.run(15)
-    group.boxes["A"].hand_over("B")
+    group.members["A"].hand_over("B")
     group.run(5, check=one_settled_leader)
     assert group.leaders() == ["B"]
     assert group.state("A") == (State.FOLLOWER, "B")
@@ -227,10 +227,10 @@ def test_hand_over_to_a_missing_box_is_cancelled():
     group = Group({"A": [50], "B": [10]})
     group.connect()
     group.run(15)
-    group.boxes["A"].hand_over("Z")
+    group.members["A"].hand_over("Z")
     group.run(3)
     assert group.leaders() == ["A"]
-    assert group.boxes["A"].handover_to is None
+    assert group.members["A"].handover_to is None
 
 
 def test_equal_coins_are_redrawn():
@@ -245,10 +245,10 @@ def test_stop_and_start():
     group = Group({"A": [20], "B": [10]})
     group.connect()
     group.run(15)
-    group.boxes["B"].stop(group.t)
+    group.members["B"].stop(group.t)
     group.run(5)
     assert group.state("B") == (State.STOPPED, None)
-    group.boxes["B"].start(group.t)
+    group.members["B"].start(group.t)
     group.run(10)
     assert group.state("B") == (State.FOLLOWER, "A")
 
@@ -261,9 +261,9 @@ def test_random_coins_always_end_with_one_leader(seed):
     group.run(10)
     assert len(group.leaders()) == 1
     leader = group.leaders()[0]
-    for box_id in "ABC":
-        if box_id != leader:
-            assert group.state(box_id) == (State.FOLLOWER, leader)
+    for virgil_id in "ABC":
+        if virgil_id != leader:
+            assert group.state(virgil_id) == (State.FOLLOWER, leader)
 
 
 @pytest.mark.parametrize("seed", range(10))
@@ -286,13 +286,13 @@ def test_random_outages_always_settle(seed):
             else:
                 group.power_off(victim)
         group.run(rng.choice([2, 10, 40]))
-    for box_id in ids:
-        if box_id in group.down:
-            group.boot(box_id)
+    for virgil_id in ids:
+        if virgil_id in group.down:
+            group.boot(virgil_id)
     group.connect()
     group.run(60)
     assert len(group.leaders()) == 1
     leader = group.leaders()[0]
-    for box_id in ids:
-        if box_id != leader:
-            assert group.state(box_id) == (State.FOLLOWER, leader)
+    for virgil_id in ids:
+        if virgil_id != leader:
+            assert group.state(virgil_id) == (State.FOLLOWER, leader)

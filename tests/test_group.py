@@ -10,9 +10,9 @@ CERT = "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n"
 
 
 def test_create():
-    group = groups.create("box-a", "Box A", CERT)
+    group = groups.create("virgil-a", "Virgil A", CERT)
     assert len(group.id) == 32
-    assert group.members["box-a"].name == "Box A"
+    assert group.members["virgil-a"].name == "Virgil A"
 
 
 def test_an_invite_works_once():
@@ -63,7 +63,7 @@ def _token(**changes):
         "virgil1." + base64.urlsafe_b64encode(b"[1,2]").decode(),
         _token(g="nope"),
         _token(a=[]),
-        _token(a=["box-a.local"]),
+        _token(a=["virgil-a.local"]),
         _token(a="192.168.20.21"),
         _token(p=0),
         _token(p=True),

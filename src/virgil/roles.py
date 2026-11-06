@@ -1,4 +1,4 @@
-"""Moving a box between roles by starting, stopping and restarting its units.
+"""Moving a Virgil between roles by starting, stopping and restarting its units.
 
 The steps for each change are worked out by transition(), which is a pure
 function, and carried out by apply(). The daemon will use these; for now,
@@ -59,7 +59,7 @@ def _changed(old: TimingRequest, new: TimingRequest, names: tuple[str, ...]) -> 
 
 
 def transition(old: TimingRequest | None, new: TimingRequest | None) -> list[Step]:
-    """The steps that take a box from one request to another. None means stopped."""
+    """The steps that take a Virgil from one request to another. None means stopped."""
     if new is None:
         return [_stop(PHC2SYS), _stop(PTP4L), _stop(CHRONY)]
 

@@ -1,9 +1,9 @@
 """Joining a group with an invite token.
 
-The new box connects to the inviting box's public port, checks its
+The new Virgil connects to the inviting Virgil's public port, checks its
 certificate against the fingerprint in the token, and sends the invite's
-secret along with its own certificate. The inviting box checks the secret,
-adds the new box as a member, and replies with the member list.
+secret along with its own certificate. The inviting Virgil checks the secret,
+adds the new Virgil as a member, and replies with the member list.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from virgil.config import Config
 from virgil.group import Group, GroupError, InviteToken, Member, redeem_invite
 from virgil.tls import TlsError, fingerprint
 
-BOX_ID = re.compile(r"^[0-9a-f]{32}$")
+VIRGIL_ID = re.compile(r"^[0-9a-f]{32}$")
 MAX_NAME = 64
 JOIN_PATH = "/api/v1/join"
 
@@ -30,7 +30,7 @@ class JoinError(Exception):
 
 
 def _members_json(config: Config) -> dict[str, dict[str, str]]:
-    return {box_id: {"name": m.name, "cert": m.cert} for box_id, m in config.group.members.items()}
+    return {virgil_id: {"name": m.name, "cert": m.cert} for virgil_id, m in config.group.members.items()}
 
 
 def join_request(config: Config, cert: str, secret: str) -> dict[str, str]:
@@ -38,16 +38,16 @@ def join_request(config: Config, cert: str, secret: str) -> dict[str, str]:
 
 
 def handle_join(config: Config, body: Any, now: float) -> dict[str, Any]:
-    """On the inviting box: check a join request, and add the new member to config.group."""
+    """On the inviting Virgil: check a join request, and add the new member to config.group."""
     if config.group is None:
-        raise JoinError(409, "this box isn't in a group")
+        raise JoinError(409, "this Virgil isn't in a group")
     if not isinstance(body, dict):
         raise JoinError(400, "the request must be an object")
-    secret, box_id, name, cert = (body.get(k) for k in ("secret", "id", "name", "cert"))
-    if not all(isinstance(v, str) for v in (secret, box_id, name, cert)):
+    secret, virgil_id, name, cert = (body.get(k) for k in ("secret", "id", "name", "cert"))
+    if not all(isinstance(v, str) for v in (secret, virgil_id, name, cert)):
         raise JoinError(400, "the request needs a secret, id, name and cert")
-    if not BOX_ID.match(box_id):
-        raise JoinError(400, "bad box ID")
+    if not VIRGIL_ID.match(virgil_id):
+        raise JoinError(400, "bad Virgil ID")
     if not 1 <= len(name) <= MAX_NAME:
         raise JoinError(400, "bad name")
     try:
@@ -59,41 +59,41 @@ def handle_join(config: Config, body: Any, now: float) -> dict[str, Any]:
     if not redeem_invite(config.group, secret, now):
         raise JoinError(403, "that invite isn't valid, has been used, or has expired")
 
-    existing = config.group.members.get(box_id)
+    existing = config.group.members.get(virgil_id)
     if existing is not None and fingerprint(existing.cert) != fingerprint(cert):
-        raise JoinError(409, "a different box with the same box ID is already a member")
-    config.group.members[box_id] = Member(name, cert)
+        raise JoinError(409, "a different Virgil with the same Virgil ID is already a member")
+    config.group.members[virgil_id] = Member(name, cert)
     return {"group_id": config.group.id, "members": _members_json(config)}
 
 
 def apply_join_response(config: Config, token: InviteToken, response: Any) -> None:
-    """On the new box: check the inviting box's reply, and take on the group."""
+    """On the new Virgil: check the inviting Virgil's reply, and take on the group."""
     if not isinstance(response, dict) or response.get("group_id") != token.group_id:
-        raise GroupError("the inviting box replied about a different group")
+        raise GroupError("the inviting Virgil replied about a different group")
     members_data = response.get("members")
     if not isinstance(members_data, dict) or config.id not in members_data:
-        raise GroupError("the inviting box didn't add this box to the group")
+        raise GroupError("the inviting Virgil didn't add this Virgil to the group")
     members = {}
-    for box_id, member in members_data.items():
-        if not (isinstance(box_id, str) and BOX_ID.match(box_id) and isinstance(member, dict)):
-            raise GroupError("the inviting box sent a bad member list")
+    for virgil_id, member in members_data.items():
+        if not (isinstance(virgil_id, str) and VIRGIL_ID.match(virgil_id) and isinstance(member, dict)):
+            raise GroupError("the inviting Virgil sent a bad member list")
         name, cert = member.get("name"), member.get("cert")
         if not (isinstance(name, str) and isinstance(cert, str)):
-            raise GroupError("the inviting box sent a bad member list")
+            raise GroupError("the inviting Virgil sent a bad member list")
         try:
             fingerprint(cert)
         except TlsError as error:
-            raise GroupError(f"the inviting box sent a bad certificate for {name}") from error
-        members[box_id] = Member(name, cert)
+            raise GroupError(f"the inviting Virgil sent a bad certificate for {name}") from error
+        members[virgil_id] = Member(name, cert)
     if not any(fingerprint(m.cert) == token.fingerprint for m in members.values()):
-        raise GroupError("the inviting box isn't in its own member list")
+        raise GroupError("the inviting Virgil isn't in its own member list")
     config.group = Group(id=token.group_id, members=members)
 
 
 async def join(token: InviteToken, config: Config, cert: str, timeout: float = 10.0) -> None:
-    """Join the group in the token, updating config. Tries each of the inviting box's addresses."""
+    """Join the group in the token, updating config. Tries each of the inviting Virgil's addresses."""
     if config.group is not None:
-        raise GroupError("this box is already in a group")
+        raise GroupError("this Virgil is already in a group")
     if token.expires <= time.time():
         raise GroupError("the invite token has expired")
     pinned = aiohttp.Fingerprint(bytes.fromhex(token.fingerprint))
@@ -108,13 +108,13 @@ async def join(token: InviteToken, config: Config, cert: str, timeout: float = 1
                     data = await reply.json(content_type=None)
                     if reply.status != 200:
                         message = data.get("error") if isinstance(data, dict) else None
-                        raise GroupError(f"the inviting box refused: {message or reply.status}")
+                        raise GroupError(f"the inviting Virgil refused: {message or reply.status}")
                     apply_join_response(config, token, data)
                     return
             except aiohttp.ServerFingerprintMismatch as error:
                 raise GroupError(
-                    f"the box at {address} isn't the one that made the invite (its certificate doesn't match)"
+                    f"the Virgil at {address} isn't the one that made the invite (its certificate doesn't match)"
                 ) from error
             except (aiohttp.ClientError, TimeoutError, ValueError) as error:
                 errors.append(f"{address}: {error or type(error).__name__}")
-    raise GroupError("couldn't reach the inviting box (" + "; ".join(errors) + ")")
+    raise GroupError("couldn't reach the inviting Virgil (" + "; ".join(errors) + ")")

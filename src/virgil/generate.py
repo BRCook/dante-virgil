@@ -1,7 +1,7 @@
-"""Configuration for chrony, ptp4l and phc2sys, generated for a box's role.
+"""Configuration for chrony, ptp4l and phc2sys, generated for a Virgil's role.
 
 Everything here is a pure function of its arguments, so it can be tested
-without a box. The values come from the prototype's reference build and the
+without hardware. The values come from the prototype's reference build and the
 settings used at the live show.
 """
 
@@ -20,7 +20,7 @@ class Role(Enum):
 
 @dataclass(frozen=True)
 class Tuning:
-    """Settings shared by every box in a group. The defaults are the prototype's."""
+    """Settings shared by every Virgil in a group. The defaults are the prototype's."""
 
     # chrony, on followers
     maxdelayquant: float = 0.25
@@ -44,7 +44,7 @@ CHRONY_DRIFTFILE = "/var/lib/chrony/chrony.drift"
 
 @dataclass(frozen=True)
 class TimingSetup:
-    """What the generated configuration needs to know about this box."""
+    """What the generated configuration needs to know about this Virgil."""
 
     ptp_interface: str
     # None when the PTP interface only has software timestamping.
@@ -91,7 +91,7 @@ def chrony_leader_conf(setup: TimingSetup, allow: list[str]) -> str:
     lines = _chrony_common()
     lines += [
         "",
-        "# Serve this box's clock to the group, with no other source",
+        "# Serve this Virgil's clock to the group, with no other source",
         "local stratum 1",
     ]
     lines += [f"allow {address}" for address in allow]
@@ -117,7 +117,7 @@ def chrony_follower_conf(leader: str, allow: list[str], tuning: Tuning = DEFAULT
         f"maxslewrate {tuning.maxslewrate}",
         "makestep 0.001 -1",
         "",
-        "# Let other members take their boot time from this box.",
+        "# Let other members take their boot time from this Virgil.",
         "# No 'local stratum': a follower never vouches for time it doesn't have.",
     ]
     lines += [f"allow {address}" for address in allow]
@@ -169,7 +169,7 @@ def sync_commands(setup: TimingSetup, leader: str | None) -> list[Command]:
 
     Take the time from the leader if there is one (giving up after 20 s), start
     the PHC if its driver needs it, set the PHC to the system clock, then run it
-    at the box's trim rate. A failure to reach the leader isn't fatal: the box
+    at the Virgil's trim rate. A failure to reach the leader isn't fatal: the Virgil
     keeps its own clock.
     """
     commands: list[Command] = []
