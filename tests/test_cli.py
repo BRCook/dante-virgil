@@ -89,6 +89,7 @@ def test_role_needs_a_ptp_interface(config_path, tmp_path, monkeypatch):
 
 def test_role_follower(config_path, tmp_path, monkeypatch):
     _set(config_path, "ptp_interface", "enp1s0")
+    _set(config_path, "observe_only", "true")
     applied = []
     monkeypatch.setattr(cli, "current_request", lambda systemd, path: None)
     monkeypatch.setattr(cli, "apply", lambda old, new, systemd, write, log: applied.append(new))
@@ -101,6 +102,7 @@ def test_role_follower(config_path, tmp_path, monkeypatch):
 
 def test_role_rejects_a_bad_leader(config_path, tmp_path, monkeypatch):
     _set(config_path, "ptp_interface", "enp1s0")
+    _set(config_path, "observe_only", "true")
     monkeypatch.setattr(cli, "current_request", lambda systemd, path: None)
     assert cli.main(["--config", str(config_path), "--request", str(tmp_path / "r.json"),
                      "role", "follower", "--leader", "config_path-a"]) == 1
@@ -213,3 +215,31 @@ def test_status_without_virgild(tmp_path):
     tls.generate(tls.default_identity(tmp_path), hostname="x")
     with pytest.raises(cli.CliError, match="Is it running"):
         cli.fetch_status(tmp_path, port=9)
+
+
+def test_manual_roles_are_refused_while_virgild_manages_them(config_path, tmp_path, monkeypatch, capsys):
+    _set(config_path, "ptp_interface", "enp1s0")
+    monkeypatch.setattr(cli, "current_request", lambda systemd, path: None)
+    applied = []
+    monkeypatch.setattr(cli, "apply", lambda old, new, systemd, write, log: applied.append(new))
+    assert cli.main(["--config", str(config_path), "--request", str(tmp_path / "r.json"),
+                     "role", "leader", "--allow", "10.0.0.0/24"]) == 1
+    assert "observe_only true" in capsys.readouterr().err
+    assert applied == []
+
+
+def test_role_stop_also_stops_virgild_when_it_manages_roles(config_path, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "current_request", lambda systemd, path: None)
+    applied, ran = [], []
+    monkeypatch.setattr(cli, "apply", lambda old, new, systemd, write, log: applied.append(new))
+    monkeypatch.setattr(cli.subprocess, "run", lambda args, check: ran.append(args))
+    assert cli.main(["--config", str(config_path), "--request", str(tmp_path / "r.json"), "role", "stop"]) == 0
+    assert ran == [["systemctl", "stop", "dante-virgil.service"]]
+    assert applied == [None]
+
+
+def test_observe_only_setting(config_path, capsys):
+    assert _set(config_path, "observe_only", "true") == 0
+    assert config_file.load(config_path).observe_only is True
+    assert "Restart virgild" in capsys.readouterr().out
+    assert _set(config_path, "observe_only", "maybe") == 1

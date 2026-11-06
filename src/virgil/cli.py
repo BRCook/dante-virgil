@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import ssl
+import subprocess
 import sys
 import time
 import urllib.error
@@ -181,9 +182,19 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             config.trim_ppb = int(value)
         except ValueError as error:
             raise CliError("trim_ppb must be a whole number") from error
+    elif key == "observe_only":
+        if value.lower() not in ("true", "false"):
+            raise CliError("observe_only must be true or false")
+        config.observe_only = value.lower() == "true"
     config_file.save(config, args.config)
     print(f"Set {key}")
+    if key in RESTART_KEYS:
+        print("Restart virgild for this to take effect: sudo systemctl restart dante-virgil")
     return 0
+
+
+# Settings virgild only reads when it starts.
+RESTART_KEYS = ("observe_only", "ptp_interface", "mgmt_interface", "name")
 
 
 # role
@@ -221,7 +232,21 @@ def cmd_role(args: argparse.Namespace) -> int:
             print(f"  {unit}: {'active' if systemd.is_active(unit) else 'inactive'}")
         return 0
 
-    new = None if args.role == "stop" else _request_for(Role(args.role), args)
+    managed = not config_file.load(args.config).observe_only
+    if args.role == "stop":
+        if managed:
+            # Otherwise virgild would start them again.
+            print("Stopping virgild, which manages this Virgil's role")
+            subprocess.run(["systemctl", "stop", "dante-virgil.service"], check=False)
+        apply(old, None, systemd, write=lambda r: write_request(r, args.request), log=print)
+        print("Done." + (" Start Virgil again with: sudo systemctl start dante-virgil" if managed else ""))
+        return 0
+    if managed:
+        raise CliError(
+            "virgild manages this Virgil's role. To set roles by hand, first run: "
+            "sudo virgilctl config set observe_only true"
+        )
+    new = _request_for(Role(args.role), args)
     apply(old, new, systemd, write=lambda r: write_request(r, args.request), log=print)
     print("Done")
     return 0
@@ -377,12 +402,12 @@ def build_parser() -> argparse.ArgumentParser:
     config_commands.add_parser("init", help="create the config file").set_defaults(func=cmd_config_init)
     config_commands.add_parser("show", help="print the config file").set_defaults(func=cmd_config_show)
     config_set = config_commands.add_parser("set", help="change a setting")
-    config_set.add_argument("key", choices=["name", "ptp_interface", "mgmt_interface", "trim_ppb"])
+    config_set.add_argument("key", choices=["name", "ptp_interface", "mgmt_interface", "trim_ppb", "observe_only"])
     config_set.add_argument("value")
     config_set.add_argument("--yes", action="store_true", help="accept warnings and NIC profiles without asking")
     config_set.set_defaults(func=cmd_config_set)
 
-    role = commands.add_parser("role", help="set this Virgil's role by hand (until the daemon does it)")
+    role = commands.add_parser("role", help="show or stop this Virgil's role, or set it by hand with observe_only")
     role_commands = role.add_subparsers(dest="role", required=True)
     leader = role_commands.add_parser("leader", help="lead: run free and serve the time")
     leader.add_argument("--allow", action="append", required=True, metavar="ADDRESS",

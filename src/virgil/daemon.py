@@ -4,9 +4,9 @@ It serves the public port (status, and joining a group) and the group port
 (members only, by certificate), finds other Virgils over mDNS, exchanges
 heartbeats with the members of its group, and runs the leader election.
 
-For now the election runs in observe mode: virgild logs every decision it
-would make, but doesn't change any timing service. `virgilctl role` still
-sets roles by hand.
+Once a PTP interface is set, virgild carries out the election's decisions on
+the timing services. With observe_only set (or no PTP interface), it only logs
+the decisions it would make, and roles are left to `virgilctl role`.
 """
 
 from __future__ import annotations
@@ -30,9 +30,12 @@ from virgil import config as config_file
 from virgil import discovery, tls
 from virgil.config import Config
 from virgil.election import Change, Election, State
+from virgil.generate import Role
 from virgil.group import GROUP_PORT, PUBLIC_PORT
 from virgil.heartbeat import HEARTBEAT_PATH, Heartbeat, HeartbeatError, decode
-from virgil.interfaces import ipv4_addresses
+from virgil.interfaces import ipv4_addresses, ipv4_networks
+from virgil.request import TimingRequest
+from virgil.timing import Target, TimingManager
 from virgil.joining import JOIN_PATH, JoinError, handle_join
 from virgil.tls import Identity, fingerprint, fingerprint_of_der
 
@@ -57,7 +60,8 @@ class Daemon:
     identity: Identity
     group_port: int = GROUP_PORT
     public_port: int = PUBLIC_PORT
-    observing: bool = True
+    # Whether to carry out the election's decisions. Off for tests and for observe_only.
+    manage_timing: bool = True
     config: Config = field(init=False)
     group_context: ssl.SSLContext = field(init=False)
     trusted: set[str] = field(default_factory=set, init=False)
@@ -69,6 +73,7 @@ class Daemon:
     # Addresses to try for each member, by Virgil ID, for members without an mDNS advert.
     learned: dict[str, str] = field(default_factory=dict, init=False)
     discovery: discovery.Discovery | None = field(default=None, init=False)
+    timing: TimingManager | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.config = config_file.load(self.config_path)
@@ -76,6 +81,50 @@ class Daemon:
         self.group_context = tls.group_server_context(self.identity, [])
         self._trust_members()
         self.election = Election(self.config.id, time.monotonic())
+
+    @property
+    def observing(self) -> bool:
+        return self.timing is None
+
+    def start_timing(self, manager: TimingManager | None = None) -> None:
+        """Take charge of the timing services, picking up any role they're already running in."""
+        if not self.manage_timing or self.config.observe_only:
+            log.info("observe_only is set: roles are left to virgilctl")
+            return
+        if self.config.ptp_interface is None:
+            log.warning("No PTP interface is set, so the election is only being observed")
+            return
+        self.timing = manager or TimingManager(self.build_request, self.on_applied)
+        applied = self.timing.applied
+        if applied is not None:
+            state = State.LEADER if applied.role is Role.LEADER else State.FOLLOWER
+            self.election.resume(state, applied.leader_id, time.monotonic())
+            log.info("Carrying on as %s", self._describe(state, applied.leader_id))
+        elif self.timing.request is not None:
+            log.info("The timing services are running; keeping them as they are until the election decides")
+
+    def build_request(self, target: Target) -> TimingRequest | None:
+        config = self.config
+        if config.ptp_interface is None:
+            return None
+        networks = ipv4_networks(config.mgmt_interface) if config.mgmt_interface else []
+        if target.role is Role.LEADER:
+            if not networks:
+                log.warning("The management interface has no network, so no follower can sync to this Virgil")
+            return TimingRequest(Role.LEADER, config.ptp_interface, None, tuple(networks),
+                                 config.trim_ppb, config.nic_profile is not None)
+        addresses = self.addresses_for(target.leader_id) if target.leader_id else []
+        if not addresses:
+            return None
+        leader = addresses[0]
+        return TimingRequest(Role.FOLLOWER, config.ptp_interface, leader, tuple(networks or [leader]),
+                             config.trim_ppb, config.nic_profile is not None)
+
+    def on_applied(self, target: Target | None) -> None:
+        """The timing services now match the election's decision."""
+        if (target is not None and target.role is Role.FOLLOWER
+                and self.election.state is State.SYNC and self.election.leader == target.leader_id):
+            self._log_change(self.election.synced(time.monotonic()))
 
     # Config and membership
 
@@ -207,15 +256,33 @@ class Daemon:
         views = {i: p.heartbeat.view(p.heard_at) for i, p in self.peers.items() if i in self.member_ids()}
         if self.observing and self.election.state is State.SYNC:
             self._log_change(self.election.synced(now))
-        self._log_change(self.election.tick(views, now))
+        change = self.election.tick(views, now)
+        self._log_change(change)
+        if change is not None and self.timing is not None:
+            target = self._target(change.new_state, change.new_leader)
+            if target is not False:
+                self.timing.want(target)
+
+    @staticmethod
+    def _target(state: State, leader: str | None) -> Target | None | bool:
+        """What the timing services should run for an election state. False means leave them alone."""
+        if state is State.LEADER:
+            return Target(Role.LEADER)
+        if state in (State.SYNC, State.FOLLOWER):
+            return Target(Role.FOLLOWER, leader)
+        if state is State.STOPPED:
+            return None
+        return False  # Listening never stops anything.
+
+    def _describe(self, state: State, leader: str | None) -> str:
+        return state.value + (f" of {self.name_of(leader)}" if leader else "")
 
     def _log_change(self, change: Change | None) -> None:
         if change is None:
             return
-        old = change.old_state.value + (f" of {self.name_of(change.old_leader)}" if change.old_leader else "")
-        new = change.new_state.value + (f" of {self.name_of(change.new_leader)}" if change.new_leader else "")
         prefix = "Would change" if self.observing else "Changing"
-        log.info("%s from %s to %s", prefix, old, new)
+        log.info("%s from %s to %s", prefix, self._describe(change.old_state, change.old_leader),
+                 self._describe(change.new_state, change.new_leader))
 
     async def run_election(self) -> None:
         while True:
@@ -341,6 +408,8 @@ class Daemon:
             try:
                 if self.reload_if_changed():
                     await self._update_advert()
+                    if self.timing is not None:
+                        self.timing.poke()
             except Exception:
                 log.exception("Couldn't reload the config")
 
@@ -352,11 +421,14 @@ async def serve(daemon: Daemon, host: str) -> None:
     await group.setup()
     await web.TCPSite(public, host, daemon.public_port, ssl_context=tls.public_server_context(daemon.identity)).start()
     await web.TCPSite(group, host, daemon.group_port, ssl_context=daemon.group_context).start()
-    log.info("Virgil %s: %s (%s), public port %d, group port %d%s",
-             __version__, daemon.config.name, daemon.config.id, daemon.public_port, daemon.group_port,
-             ", observing the election only" if daemon.observing else "")
+    log.info("Virgil %s: %s (%s), public port %d, group port %d",
+             __version__, daemon.config.name, daemon.config.id, daemon.public_port, daemon.group_port)
     await daemon.start_discovery()
-    tasks = [asyncio.create_task(t) for t in (daemon.watch_config(), daemon.send_heartbeats(), daemon.run_election())]
+    daemon.start_timing()
+    jobs = [daemon.watch_config(), daemon.send_heartbeats(), daemon.run_election()]
+    if daemon.timing is not None:
+        jobs.append(daemon.timing.run())
+    tasks = [asyncio.create_task(job) for job in jobs]
     try:
         await asyncio.gather(*tasks)
     finally:

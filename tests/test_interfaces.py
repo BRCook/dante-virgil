@@ -86,3 +86,22 @@ def test_get_interface(tmp_path):
     assert found is not None and found.driver == "igc" and found.timestamping is I226
     assert get_interface("enp9s0", root, lambda name: None) is None
     assert get_interface("../net", root, lambda name: None) is None
+
+
+def test_ipv4_networks_and_addresses():
+    import json
+    import subprocess
+
+    from virgil.interfaces import ipv4_addresses, ipv4_networks
+
+    output = json.dumps([{"addr_info": [
+        {"family": "inet", "local": "10.10.100.253", "prefixlen": 24},
+        {"family": "inet", "local": "10.10.100.254", "prefixlen": 24},
+        {"family": "inet6", "local": "fe80::1", "prefixlen": 64},
+    ]}])
+
+    def run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, output, "")
+
+    assert ipv4_addresses("enp1s0", run) == ["10.10.100.253", "10.10.100.254"]
+    assert ipv4_networks("enp1s0", run) == ["10.10.100.0/24"]
