@@ -146,27 +146,40 @@ def _read(path: Path) -> str | None:
         return None
 
 
+def _interface(
+    entry: Path,
+    timestamping: Callable[[str], TimestampingInfo | None],
+) -> Interface:
+    device = entry / "device"
+    driver_link = device / "driver"
+    driver = os.path.basename(os.readlink(driver_link)) if driver_link.is_symlink() else None
+    return Interface(
+        name=entry.name,
+        mac=_read(entry / "address"),
+        driver=driver,
+        physical=device.exists(),
+        link_up=_read(entry / "operstate") == "up",
+        timestamping=timestamping(entry.name),
+    )
+
+
 def list_interfaces(
     sysfs: Path = SYSFS_NET,
     timestamping: Callable[[str], TimestampingInfo | None] = read_timestamping,
 ) -> list[Interface]:
     """List every network interface except loopback, sorted by name."""
-    interfaces = []
-    for entry in sorted(sysfs.iterdir()):
-        name = entry.name
-        if name == "lo":
-            continue
-        device = entry / "device"
-        driver_link = device / "driver"
-        driver = os.path.basename(os.readlink(driver_link)) if driver_link.is_symlink() else None
-        interfaces.append(
-            Interface(
-                name=name,
-                mac=_read(entry / "address"),
-                driver=driver,
-                physical=device.exists(),
-                link_up=_read(entry / "operstate") == "up",
-                timestamping=timestamping(name),
-            )
-        )
-    return interfaces
+    return [_interface(entry, timestamping) for entry in sorted(sysfs.iterdir()) if entry.name != "lo"]
+
+
+def get_interface(
+    name: str,
+    sysfs: Path = SYSFS_NET,
+    timestamping: Callable[[str], TimestampingInfo | None] = read_timestamping,
+) -> Interface | None:
+    """Look up one interface by name, or None if it doesn't exist."""
+    if "/" in name or name in ("", ".", ".."):
+        return None
+    entry = sysfs / name
+    if not entry.exists():
+        return None
+    return _interface(entry, timestamping)

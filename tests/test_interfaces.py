@@ -74,3 +74,15 @@ def test_list_interfaces(tmp_path):
 
     bridge = found["br0"]
     assert not bridge.physical and bridge.driver is None and not bridge.ptp_capable
+
+
+def test_get_interface(tmp_path):
+    from virgil.interfaces import get_interface
+
+    root = tmp_path / "net"
+    root.mkdir()
+    _fake_interface(root, "enp1s0", "igc")
+    found = get_interface("enp1s0", root, lambda name: I226)
+    assert found is not None and found.driver == "igc" and found.timestamping is I226
+    assert get_interface("enp9s0", root, lambda name: None) is None
+    assert get_interface("../net", root, lambda name: None) is None

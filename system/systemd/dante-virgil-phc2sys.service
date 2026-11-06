@@ -1,0 +1,17 @@
+[Unit]
+Description=Virgil: copy the system clock to the PHC (followers only)
+Documentation=https://github.com/BRCook/dante-virgil
+After=dante-virgil-chrony.service
+# Only generated for followers with a PHC.
+ConditionPathExists=/run/dante-virgil-generated/phc2sys.env
+
+[Service]
+Type=simple
+EnvironmentFile=/run/dante-virgil-generated/phc2sys.env
+ExecStartPre=-/opt/dante-virgil/venv/bin/virgil-root hwstamp
+# Wait as long as it takes for chrony to sync to the leader.
+ExecStartPre=/usr/bin/chronyc waitsync 0 0.001
+TimeoutStartSec=infinity
+ExecStart=/usr/sbin/phc2sys $PHC2SYS_ARGS
+Restart=always
+RestartSec=2

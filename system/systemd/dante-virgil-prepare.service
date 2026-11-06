@@ -1,0 +1,7 @@
+[Unit]
+Description=Virgil: generate the timing configuration
+Documentation=https://github.com/BRCook/dante-virgil
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dante-virgil/venv/bin/virgil-root prepare

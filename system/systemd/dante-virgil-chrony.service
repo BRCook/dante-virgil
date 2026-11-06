@@ -1,0 +1,14 @@
+[Unit]
+Description=Virgil: chrony
+Documentation=https://github.com/BRCook/dante-virgil
+Conflicts=chrony.service
+After=dante-virgil-sync.service
+
+[Service]
+Type=simple
+# Some NICs' clocks only run once hardware timestamping is on. A failure
+# here mustn't stop chrony.
+ExecStartPre=-/opt/dante-virgil/venv/bin/virgil-root hwstamp
+ExecStart=/usr/sbin/chronyd -n -F 1 -f /run/dante-virgil-generated/chrony.conf
+Restart=on-failure
+RestartSec=2
