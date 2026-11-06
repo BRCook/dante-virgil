@@ -1,6 +1,6 @@
-"""Each box's TLS certificate, and the TLS contexts built from it.
+"""Each Virgil's TLS certificate, and the TLS contexts built from it.
 
-Every box has its own self-signed certificate, made when it's installed.
+Every Virgil has its own self-signed certificate, made when it's installed.
 Members of a group pin each other's certificates: the group port only accepts
 connections presenting a member's certificate, and only connects to one.
 """
@@ -113,9 +113,9 @@ def group_server_context(identity: Identity, member_certs: list[str]) -> ssl.SSL
 
 
 def group_client_context(identity: Identity, member_certs: list[str]) -> ssl.SSLContext:
-    """Connecting to a member: present this box's certificate, and only accept a member's.
+    """Connecting to a member: present this Virgil's certificate, and only accept a member's.
 
-    Hostnames aren't checked, since boxes are found by address and addresses
+    Hostnames aren't checked, since Virgils are found by address and addresses
     change. The pinned certificate is what identifies the member.
     """
     context = _base_context(ssl.PROTOCOL_TLS_CLIENT)

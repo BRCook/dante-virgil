@@ -18,7 +18,7 @@ from virgil.joining import JoinError, handle_join, join
 pytestmark = pytest.mark.skipif(shutil.which("openssl") is None, reason="needs openssl")
 
 
-def make_box(root, name):
+def make_virgil(root, name):
     directory = root / name
     identity = tls.default_identity(directory / "tls")
     tls.generate(identity, hostname=name)
@@ -30,8 +30,8 @@ def make_box(root, name):
 
 
 @pytest.fixture
-def boxes(tmp_path):
-    return {name: make_box(tmp_path, name) for name in ("a", "b", "c")}
+def virgils(tmp_path):
+    return {name: make_virgil(tmp_path, name) for name in ("a", "b", "c")}
 
 
 def create_group(path, identity):
@@ -67,9 +67,9 @@ async def start(daemon):
     return ports[0], ports[1], stop
 
 
-def test_join_through_a_running_daemon(boxes):
-    path_a, id_a = boxes["a"]
-    path_b, id_b = boxes["b"]
+def test_join_through_a_running_daemon(virgils):
+    path_a, id_a = virgils["a"]
+    path_b, id_b = virgils["b"]
     create_group(path_a, id_a)
 
     async def scenario():
@@ -82,16 +82,16 @@ def test_join_through_a_running_daemon(boxes):
             config_file.save(config_b, path_b)
 
             # A used invite can't be used again.
-            config_c = config_file.load(boxes["c"][0])
+            config_c = config_file.load(virgils["c"][0])
             with pytest.raises(GroupError, match="refused"):
-                await join(token, config_c, boxes["c"][1].cert_pem)
+                await join(token, config_c, virgils["c"][1].cert_pem)
 
             # B is now trusted on A's group port, and C isn't.
             group_b = tls.group_client_context(id_b, [id_a.cert_pem])
             async with aiohttp.ClientSession() as session:
                 async with session.get(f"https://127.0.0.1:{group_port}/group/v1/ping", ssl=group_b) as reply:
                     assert (await reply.json())["name"] == "a"
-            group_c = tls.group_client_context(boxes["c"][1], [id_a.cert_pem])
+            group_c = tls.group_client_context(virgils["c"][1], [id_a.cert_pem])
             async with aiohttp.ClientSession() as session:
                 with pytest.raises((aiohttp.ClientError, ssl.SSLError)):
                     async with session.get(f"https://127.0.0.1:{group_port}/group/v1/ping", ssl=group_c) as reply:
@@ -108,10 +108,10 @@ def test_join_through_a_running_daemon(boxes):
     assert daemon.config.group.members.keys() == config_a.group.members.keys()
 
 
-def test_join_refuses_the_wrong_box(boxes):
-    """If something else answers at the inviting box's address, the join stops before sending anything."""
-    path_a, id_a = boxes["a"]
-    path_c, id_c = boxes["c"]
+def test_join_refuses_the_wrong_box(virgils):
+    """If something else answers at the inviting Virgil's address, the join stops before sending anything."""
+    path_a, id_a = virgils["a"]
+    path_c, id_c = virgils["c"]
     create_group(path_a, id_a)
     create_group(path_c, id_c)
 
@@ -120,9 +120,9 @@ def test_join_refuses_the_wrong_box(boxes):
         public, _, stop = await start(impostor)
         try:
             token = invite(path_a, id_a, public)  # A's fingerprint, but C answers
-            config_b = config_file.load(boxes["b"][0])
+            config_b = config_file.load(virgils["b"][0])
             with pytest.raises(GroupError, match="isn't the one that made the invite"):
-                await join(token, config_b, boxes["b"][1].cert_pem)
+                await join(token, config_b, virgils["b"][1].cert_pem)
         finally:
             await stop()
 
@@ -130,32 +130,32 @@ def test_join_refuses_the_wrong_box(boxes):
     assert config_file.load(path_c).group.members.keys() == {config_file.load(path_c).id}
 
 
-def test_join_with_an_expired_token(boxes):
-    path_a, id_a = boxes["a"]
+def test_join_with_an_expired_token(virgils):
+    path_a, id_a = virgils["a"]
     create_group(path_a, id_a)
     token = invite(path_a, id_a, 1, lifetime=-1)
     with pytest.raises(GroupError, match="expired"):
-        asyncio.run(join(token, config_file.load(boxes["b"][0]), boxes["b"][1].cert_pem))
+        asyncio.run(join(token, config_file.load(virgils["b"][0]), virgils["b"][1].cert_pem))
 
 
-def test_unreachable_inviter(boxes):
-    path_a, id_a = boxes["a"]
+def test_unreachable_inviter(virgils):
+    path_a, id_a = virgils["a"]
     create_group(path_a, id_a)
     token = invite(path_a, id_a, 9)  # nothing listens on port 9
     with pytest.raises(GroupError, match="couldn't reach"):
-        asyncio.run(join(token, config_file.load(boxes["b"][0]), boxes["b"][1].cert_pem, timeout=2))
+        asyncio.run(join(token, config_file.load(virgils["b"][0]), virgils["b"][1].cert_pem, timeout=2))
 
 
 def _request(config_b, id_b, secret):
     return {"secret": secret, "id": config_b.id, "name": config_b.name, "cert": id_b.cert_pem}
 
 
-def test_handle_join_checks(boxes):
-    path_a, id_a = boxes["a"]
+def test_handle_join_checks(virgils):
+    path_a, id_a = virgils["a"]
     create_group(path_a, id_a)
     config_a = config_file.load(path_a)
-    config_b = config_file.load(boxes["b"][0])
-    id_b = boxes["b"][1]
+    config_b = config_file.load(virgils["b"][0])
+    id_b = virgils["b"][1]
     secret, _ = groups.create_invite(config_a.group, time.time())
 
     for body, status in [
@@ -169,15 +169,15 @@ def test_handle_join_checks(boxes):
             handle_join(config_a, body, time.time())
         assert error.value.status == status
 
-    # A different box can't take over an existing member's ID.
-    impostor = {**_request(config_b, boxes["c"][1], secret), "id": config_a.id}
+    # A different Virgil can't take over an existing member's ID.
+    impostor = {**_request(config_b, virgils["c"][1], secret), "id": config_a.id}
     with pytest.raises(JoinError) as error:
         handle_join(config_a, impostor, time.time())
     assert error.value.status == 409
 
 
-def test_join_when_already_in_a_group(boxes):
-    path_a, id_a = boxes["a"]
+def test_join_when_already_in_a_group(virgils):
+    path_a, id_a = virgils["a"]
     create_group(path_a, id_a)
     token = invite(path_a, id_a, 1)
     config = config_file.load(path_a)
@@ -185,8 +185,8 @@ def test_join_when_already_in_a_group(boxes):
         asyncio.run(join(token, config, id_a.cert_pem))
 
 
-def test_daemon_picks_up_config_changes(boxes):
-    path_a, id_a = boxes["a"]
+def test_daemon_picks_up_config_changes(virgils):
+    path_a, id_a = virgils["a"]
     daemon = Daemon(path_a, id_a)
     assert daemon.config.group is None
     time.sleep(0.01)

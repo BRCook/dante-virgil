@@ -123,7 +123,7 @@ def cmd_config_init(args: argparse.Namespace) -> int:
         raise CliError(f"{args.config} already exists")
     config = config_file.new_config()
     config_file.save(config, args.config)
-    print(f"Created {args.config} for box {config.name} ({config.id})")
+    print(f"Created {args.config} for {config.name} ({config.id})")
     return 0
 
 
@@ -244,7 +244,7 @@ def cmd_tls_init(args: argparse.Namespace) -> int:
 def cmd_group_create(args: argparse.Namespace) -> int:
     config = config_file.load(args.config)
     if config.group is not None:
-        raise CliError("this box is already in a group")
+        raise CliError("this Virgil is already in a group")
     cert = tls.default_identity(args.tls_dir).cert_pem
     config.group = groups.create(config.id, config.name, cert)
     config_file.save(config, args.config)
@@ -255,7 +255,7 @@ def cmd_group_create(args: argparse.Namespace) -> int:
 def cmd_group_invite(args: argparse.Namespace) -> int:
     config = config_file.load(args.config)
     if config.group is None:
-        raise CliError("this box isn't in a group. Create one with 'virgilctl group create'")
+        raise CliError("this Virgil isn't in a group. Create one with 'virgilctl group create'")
     if config.mgmt_interface is None:
         raise CliError("choose a management interface first: virgilctl config set mgmt_interface <name>")
     addresses = ipv4_addresses(config.mgmt_interface)
@@ -267,7 +267,7 @@ def cmd_group_invite(args: argparse.Namespace) -> int:
     token = InviteToken(config.group.id, tuple(addresses), groups.PUBLIC_PORT, tls.fingerprint(cert), secret, expires)
     print(token.encode())
     until = datetime.fromtimestamp(expires).strftime("%H:%M")
-    print(f"\nThis token can be used once, until {until}. On the new box, run:\n", file=sys.stderr)
+    print(f"\nThis token can be used once, until {until}. On the new Virgil, run:\n", file=sys.stderr)
     print("  sudo virgilctl group join <token>", file=sys.stderr)
     return 0
 
@@ -278,7 +278,7 @@ def cmd_group_join(args: argparse.Namespace) -> int:
     cert = tls.default_identity(args.tls_dir).cert_pem
     asyncio.run(joining.join(token, config, cert))
     config_file.save(config, args.config)
-    names = sorted(m.name for box_id, m in config.group.members.items() if box_id != config.id)
+    names = sorted(m.name for virgil_id, m in config.group.members.items() if virgil_id != config.id)
     print(f"Joined group {config.group.id}, with {', '.join(names)}")
     return 0
 
@@ -289,13 +289,13 @@ def cmd_group_show(args: argparse.Namespace) -> int:
         print("Not in a group")
         return 0
     print(f"Group {config.group.id}")
-    for box_id, member in sorted(config.group.members.items(), key=lambda item: item[1].name):
-        marker = " (this box)" if box_id == config.id else ""
+    for virgil_id, member in sorted(config.group.members.items(), key=lambda item: item[1].name):
+        marker = " (this Virgil)" if virgil_id == config.id else ""
         try:
             code = tls.short_code(tls.fingerprint(member.cert))
         except tls.TlsError:
             code = "bad certificate"
-        print(f"  {member.name}{marker}  {box_id}  {code}")
+        print(f"  {member.name}{marker}  {virgil_id}  {code}")
     pending = [e for e in config.group.invites.values() if e > time.time()]
     if pending:
         print(f"{len(pending)} unused invite(s) outstanding")
@@ -314,7 +314,7 @@ def build_parser() -> argparse.ArgumentParser:
     interfaces.add_argument("--json", action="store_true", help="print JSON instead of a table")
     interfaces.set_defaults(func=cmd_interfaces)
 
-    config = commands.add_parser("config", help="show or change this box's settings")
+    config = commands.add_parser("config", help="show or change this Virgil's settings")
     config_commands = config.add_subparsers(dest="config_command", required=True)
     config_commands.add_parser("init", help="create the config file").set_defaults(func=cmd_config_init)
     config_commands.add_parser("show", help="print the config file").set_defaults(func=cmd_config_show)
@@ -324,7 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_set.add_argument("--yes", action="store_true", help="accept warnings and NIC profiles without asking")
     config_set.set_defaults(func=cmd_config_set)
 
-    role = commands.add_parser("role", help="set this box's role by hand (until the daemon does it)")
+    role = commands.add_parser("role", help="set this Virgil's role by hand (until the daemon does it)")
     role_commands = role.add_subparsers(dest="role", required=True)
     leader = role_commands.add_parser("leader", help="lead: run free and serve the time")
     leader.add_argument("--allow", action="append", required=True, metavar="ADDRESS",
@@ -337,14 +337,14 @@ def build_parser() -> argparse.ArgumentParser:
     role_commands.add_parser("show", help="show the current role")
     role.set_defaults(func=cmd_role)
 
-    tls_parser = commands.add_parser("tls", help="this box's TLS certificate")
+    tls_parser = commands.add_parser("tls", help="this Virgil's TLS certificate")
     tls_commands = tls_parser.add_subparsers(dest="tls_command", required=True)
     tls_commands.add_parser("init", help="create the certificate, if there isn't one").set_defaults(func=cmd_tls_init)
 
     group = commands.add_parser("group", help="create, join or show the group")
     group_commands = group.add_subparsers(dest="group_command", required=True)
-    group_commands.add_parser("create", help="start a new group with this box").set_defaults(func=cmd_group_create)
-    invite = group_commands.add_parser("invite", help="make a one-time invite token for another box")
+    group_commands.add_parser("create", help="start a new group with this Virgil").set_defaults(func=cmd_group_create)
+    invite = group_commands.add_parser("invite", help="make a one-time invite token for another Virgil")
     invite.add_argument("--minutes", type=int, default=60, help="how long the token works for (default 60)")
     invite.set_defaults(func=cmd_group_invite)
     join = group_commands.add_parser("join", help="join a group with an invite token from one of its members")

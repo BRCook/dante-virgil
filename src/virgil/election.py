@@ -1,20 +1,20 @@
 """Leader election, as a pure state machine.
 
-Each box runs one Election. The daemon feeds it the latest heartbeat from
+Each Virgil runs one Election. The daemon feeds it the latest heartbeat from
 every other member, and the current time, and carries out whatever change of
 state it decides on. Nothing here touches the network, the clocks or systemd,
-so every rule can be tested by simulating several boxes at once.
+so every rule can be tested by simulating several Virgils at once.
 
 The rules, from the design:
 
-1. The incumbent stays leader. A box that finds a running leader follows it.
+1. The incumbent stays leader. A Virgil that finds a running leader follows it.
 2. If the leader is lost, the followers that lost it (and can still see each
    other) pick the one with the highest coin. It leads; the rest follow it.
 3. If leaders see each other, the one with the highest coin stays leader, and
    the others step down, along with their followers.
-4. If no box is leading at startup, the boxes listening together pick the one
+4. If no Virgil is leading at startup, the Virgils listening together pick the one
    with the highest coin.
-5. A box can be made leader by hand, by asking the current leader to hand over.
+5. A Virgil can be made leader by hand, by asking the current leader to hand over.
 """
 
 from __future__ import annotations
@@ -37,10 +37,10 @@ class State(Enum):
 class Timing:
     # A member counts as visible if it's been heard from this recently.
     visible: float = 3.0
-    # How long a box listens before it decides anything by coin, so it hears
+    # How long a Virgil listens before it decides anything by coin, so it hears
     # every member that's already up.
     listen_settle: float = 3.0
-    # How long a box listens for a leader before leading alone.
+    # How long a Virgil listens for a leader before leading alone.
     listen_timeout: float = 10.0
     # How long a follower goes without hearing its leader before it's lost.
     leader_lost: float = 30.0
@@ -48,7 +48,7 @@ class Timing:
 
 @dataclass(frozen=True)
 class PeerView:
-    """What this box knows about another member, from its latest heartbeat."""
+    """What this Virgil knows about another member, from its latest heartbeat."""
 
     id: str
     state: State
@@ -58,7 +58,7 @@ class PeerView:
     lost_leader: bool
     # A leader handing over names the member it's handing over to.
     handover_to: str | None
-    # When the heartbeat arrived, by this box's monotonic clock.
+    # When the heartbeat arrived, by this Virgil's monotonic clock.
     heard_at: float
 
 
@@ -86,7 +86,7 @@ class Election:
         self.handover_to: str | None = None
         self.since = self.now
 
-    # What goes into this box's heartbeat.
+    # What goes into this Virgil's heartbeat.
 
     def view(self, heard_at: float) -> PeerView:
         return PeerView(self.id, self.state, self.coin, self.leader, self.lost_leader, self.handover_to, heard_at)
@@ -111,7 +111,7 @@ class Election:
         return self._go(State.LISTEN, None, now)
 
     def hand_over(self, to: str) -> None:
-        """Ask this box, if it's leading, to hand over to another member."""
+        """Ask this Virgil, if it's leading, to hand over to another member."""
         if self.state is State.LEADER and to != self.id:
             self.handover_to = to
 
@@ -135,7 +135,7 @@ class Election:
         return sorted(settled or leaders, key=lambda p: (p.coin, p.id), reverse=True)
 
     def _wins(self, rivals: list[PeerView]) -> bool | None:
-        """Whether this box's coin beats every rival's. None means a tie, and a redraw."""
+        """Whether this Virgil's coin beats every rival's. None means a tie, and a redraw."""
         if any(r.coin == self.coin for r in rivals):
             self.coin = self.draw()
             return None
@@ -160,7 +160,7 @@ class Election:
         leaders = self._leaders(visible)
         current = visible.get(self.leader)
 
-        # A handover to this box.
+        # A handover to this Virgil.
         if current is not None and current.state is State.LEADER and current.handover_to == self.id:
             return self._lead_now(now)
 

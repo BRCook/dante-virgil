@@ -1,4 +1,4 @@
-"""The box's config file.
+"""This Virgil's config file.
 
 This holds only the settings the daemon core needs so far. Group settings,
 the web password and tuning will be added as those parts are built.
@@ -46,7 +46,7 @@ class Config:
 
 
 def new_config() -> Config:
-    """A fresh config for a newly installed box."""
+    """A fresh config for a newly installed Virgil."""
     return Config(id=uuid.uuid4().hex, name=socket.gethostname())
 
 
@@ -77,10 +77,10 @@ def from_dict(data: dict[str, Any]) -> Config:
     group_data = _expect(data, "group", dict, optional=True)
     if group_data is not None:
         members = {}
-        for box_id, member in (_expect(group_data, "members", dict, optional=True) or {}).items():
+        for virgil_id, member in (_expect(group_data, "members", dict, optional=True) or {}).items():
             if not isinstance(member, dict):
-                raise ConfigError(f"group.members.{box_id} must be a table")
-            members[box_id] = Member(name=_expect(member, "name", str), cert=_expect(member, "cert", str))
+                raise ConfigError(f"group.members.{virgil_id} must be a table")
+            members[virgil_id] = Member(name=_expect(member, "name", str), cert=_expect(member, "cert", str))
         invites = {}
         for key, expires in (_expect(group_data, "invites", dict, optional=True) or {}).items():
             if isinstance(expires, bool) or not isinstance(expires, int):
@@ -117,8 +117,8 @@ def to_dict(config: Config) -> dict[str, Any]:
         data["group"] = {
             "id": config.group.id,
             "members": {
-                box_id: {"name": member.name, "cert": member.cert}
-                for box_id, member in sorted(config.group.members.items())
+                virgil_id: {"name": member.name, "cert": member.cert}
+                for virgil_id, member in sorted(config.group.members.items())
             },
             "invites": dict(sorted(config.group.invites.items())),
         }

@@ -1,12 +1,12 @@
 """The group: its members, invites, and invite tokens.
 
-A member is a box ID, a name and a certificate. There's no shared group key:
+A member is a Virgil ID, a name and a certificate. There's no shared group key:
 members recognise each other by their pinned certificates.
 
 An invite is a random secret that works once and expires. The token handed to
-the new box holds the secret, plus what it needs to find the inviting box and
+the new Virgil holds the secret, plus what it needs to find the inviting Virgil and
 check it's talking to the right one: its addresses, and its certificate's
-fingerprint. The inviting box keeps only a hash of the secret.
+fingerprint. The inviting Virgil keeps only a hash of the secret.
 """
 
 from __future__ import annotations
@@ -48,8 +48,8 @@ class Group:
     invites: dict[str, int] = field(default_factory=dict)
 
 
-def create(box_id: str, name: str, cert: str) -> Group:
-    return Group(id=secrets.token_hex(16), members={box_id: Member(name, cert)})
+def create(virgil_id: str, name: str, cert: str) -> Group:
+    return Group(id=secrets.token_hex(16), members={virgil_id: Member(name, cert)})
 
 
 def _hash(secret: str) -> str:

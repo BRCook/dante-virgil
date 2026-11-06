@@ -1,5 +1,5 @@
 #!/bin/bash
-# Remove Virgil from this box, and give timekeeping back to Debian's chrony.
+# Remove Virgil from this machine, and give timekeeping back to Debian's chrony.
 #
 #   sudo ./uninstall.sh           keeps the config in /etc/dante-virgil
 #   sudo ./uninstall.sh --purge   removes the config and the dante-virgil user too
