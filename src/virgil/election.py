@@ -110,6 +110,23 @@ class Election:
         self.coin = self.draw()
         return self._go(State.LISTEN, None, now)
 
+    def resume(self, state: State, leader: str | None, now: float) -> None:
+        """Pick up a role the timing services are already running in, after virgild restarts.
+
+        A leader carries on leading (and the coin settles it if it meets
+        another). A follower carries on following, and loses its leader in the
+        usual way if it's gone.
+        """
+        if state is State.LEADER:
+            self.state, self.leader = State.LEADER, None
+        elif state is State.FOLLOWER and leader is not None:
+            self.state, self.leader = State.FOLLOWER, leader
+        else:
+            return
+        self.since = now
+        self.lost_leader = False
+        self.handover_to = None
+
     def hand_over(self, to: str) -> None:
         """Ask this Virgil, if it's leading, to hand over to another member."""
         if self.state is State.LEADER and to != self.id:

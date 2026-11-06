@@ -41,6 +41,8 @@ class Config:
     nic_profile: str | None = None
     mgmt_interface: str | None = None
     trim_ppb: int = 0
+    # True to have virgild only watch the election, leaving roles to virgilctl.
+    observe_only: bool = False
     devices: dict[str, DeviceSettings] = field(default_factory=dict)
     group: Group | None = None
 
@@ -95,6 +97,7 @@ def from_dict(data: dict[str, Any]) -> Config:
         nic_profile=_expect(data, "nic_profile", str, optional=True),
         mgmt_interface=_expect(data, "mgmt_interface", str, optional=True),
         trim_ppb=_expect(data, "trim_ppb", int, optional=True) or 0,
+        observe_only=_expect(data, "observe_only", bool, optional=True) or False,
         devices=devices,
         group=group,
     )
@@ -108,6 +111,7 @@ def to_dict(config: Config) -> dict[str, Any]:
         if value is not None:
             data[key] = value
     data["trim_ppb"] = config.trim_ppb
+    data["observe_only"] = config.observe_only
     if config.devices:
         data["devices"] = {
             mac: {"native_ptpv2": settings.native_ptpv2, "aes67": settings.aes67}

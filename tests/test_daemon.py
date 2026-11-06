@@ -15,8 +15,10 @@ from virgil import config as config_file
 from virgil import discovery, tls
 from virgil.daemon import Daemon
 from virgil.election import Election, State, Timing
+from virgil.generate import Role
 from virgil.group import Member, create
 from virgil.heartbeat import HEARTBEAT_PATH, Heartbeat
+from virgil.timing import Target
 
 pytestmark = pytest.mark.skipif(shutil.which("openssl") is None, reason="needs openssl")
 
@@ -123,3 +125,86 @@ def test_a_member_cant_pretend_to_be_another(tmp_path):
 
     status, peers = asyncio.run(scenario())
     assert status == 403 and peers == {}
+
+
+class FakeTiming:
+    """Carries out every decision at once, and remembers them."""
+
+    def __init__(self, daemon, applied=None):
+        self.daemon = daemon
+        self.applied = applied
+        self.request = object() if applied else None
+        self.wanted = []
+
+    def want(self, target):
+        self.wanted.append(target)
+        self.applied = target
+        self.daemon.on_applied(target)
+
+    def poke(self):
+        pass
+
+
+def test_decisions_reach_the_timing_services(tmp_path):
+
+    paths, identities, configs = make_pair(tmp_path)
+    for name in ("A", "B"):
+        config = config_file.load(paths[name])
+        config.ptp_interface = "enp1s0"
+        config_file.save(config, paths[name])
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        b = Daemon(paths["B"], identities["B"])
+        for daemon in (a, b):
+            daemon.election = Election(daemon.config.id, time.monotonic(), timing=FAST)
+            daemon.start_timing(FakeTiming(daemon))
+        runners = await start(a) + await start(b)
+        introduce(a, b)
+        introduce(b, a)
+        tasks = [asyncio.create_task(t) for d in (a, b) for t in (d.send_heartbeats(), d.run_election())]
+        try:
+            await asyncio.sleep(4)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for runner in runners:
+                await runner.cleanup()
+        return a, b
+
+    a, b = asyncio.run(scenario())
+    leader, follower = (a, b) if a.election.state is State.LEADER else (b, a)
+    assert leader.timing.wanted == [Target(Role.LEADER)]
+    assert follower.timing.wanted == [Target(Role.FOLLOWER, leader.config.id)]
+    # The follower only became a follower once its timing services were set up.
+    assert follower.election.state is State.FOLLOWER
+    assert not follower.observing
+
+
+def test_restarting_virgild_carries_on_in_the_running_role(tmp_path):
+
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["B"])
+    config.ptp_interface = "enp1s0"
+    config_file.save(config, paths["B"])
+    b = Daemon(paths["B"], identities["B"])
+    b.start_timing(FakeTiming(b, applied=Target(Role.FOLLOWER, configs["A"].id)))
+    assert b.election.state is State.FOLLOWER
+    assert b.election.leader == configs["A"].id
+
+
+def test_observe_only_leaves_roles_alone(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.ptp_interface = "enp1s0"
+    config.observe_only = True
+    config_file.save(config, paths["A"])
+    a = Daemon(paths["A"], identities["A"])
+    a.start_timing(FakeTiming(a))
+    assert a.timing is None and a.observing
+
+
+def test_listening_leaves_the_timing_services_alone():
+    assert Daemon._target(State.LISTEN, None) is False
+    assert Daemon._target(State.STOPPED, None) is None

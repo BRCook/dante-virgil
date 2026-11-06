@@ -1,7 +1,7 @@
 [Unit]
 Description=Virgil
 Documentation=https://github.com/BRCook/dante-virgil
-After=network-online.target
+After=network-online.target polkit.service
 Wants=network-online.target
 
 [Service]

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import fcntl
+import ipaddress
 import json
 import os
 import socket
@@ -205,3 +206,25 @@ def ipv4_addresses(name: str, run: Callable[..., subprocess.CompletedProcess] = 
         for info in entry.get("addr_info", [])
         if info.get("family") == "inet" and "local" in info
     ]
+
+
+def ipv4_networks(name: str, run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> list[str]:
+    """The IPv4 networks an interface is on, such as '10.10.100.0/24'."""
+    try:
+        result = run(["ip", "-j", "-4", "addr", "show", "dev", name], capture_output=True, text=True)
+    except FileNotFoundError:
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        entries = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+    networks = []
+    for entry in entries:
+        for info in entry.get("addr_info", []):
+            if info.get("family") == "inet" and "local" in info and "prefixlen" in info:
+                network = str(ipaddress.ip_network(f"{info['local']}/{info['prefixlen']}", strict=False))
+                if network not in networks:
+                    networks.append(network)
+    return networks
