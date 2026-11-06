@@ -127,6 +127,11 @@ class Election:
         self.lost_leader = False
         self.handover_to = None
 
+    def listen_from(self, now: float) -> None:
+        """Start the listening countdown again, such as once the network is ready."""
+        if self.state is State.LISTEN:
+            self.since = now
+
     def hand_over(self, to: str) -> None:
         """Ask this Virgil, if it's leading, to hand over to another member."""
         if self.state is State.LEADER and to != self.id:

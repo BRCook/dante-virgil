@@ -45,6 +45,10 @@ CONFIG_CHECK_INTERVAL = 2.0
 HEARTBEAT_INTERVAL = 1.0
 HEARTBEAT_TIMEOUT = 0.8
 ELECTION_INTERVAL = 0.5
+NETWORK_CHECK_INTERVAL = 2.0
+# How long the election waits for the management interface to get an address
+# before going ahead anyway, so a console still gets a clock without a network.
+NETWORK_WAIT = 60.0
 
 
 @dataclass
@@ -74,13 +78,20 @@ class Daemon:
     learned: dict[str, str] = field(default_factory=dict, init=False)
     discovery: discovery.Discovery | None = field(default=None, init=False)
     timing: TimingManager | None = field(default=None, init=False)
+    # The management interface's addresses and networks, as last seen.
+    addresses: tuple[str, ...] = field(default=(), init=False)
+    networks: tuple[str, ...] = field(default=(), init=False)
+    # Whether the election is running yet. It waits for the network first.
+    electing: bool = field(default=False, init=False)
+    started: float = field(default=0.0, init=False)
 
     def __post_init__(self) -> None:
         self.config = config_file.load(self.config_path)
         self.config_mtime = self.config_path.stat().st_mtime
         self.group_context = tls.group_server_context(self.identity, [])
         self._trust_members()
-        self.election = Election(self.config.id, time.monotonic())
+        self.started = time.monotonic()
+        self.election = Election(self.config.id, self.started)
 
     @property
     def observing(self) -> bool:
@@ -107,7 +118,7 @@ class Daemon:
         config = self.config
         if config.ptp_interface is None:
             return None
-        networks = ipv4_networks(config.mgmt_interface) if config.mgmt_interface else []
+        networks = list(self.networks)
         if target.role is Role.LEADER:
             if not networks:
                 log.warning("The management interface has no network, so no follower can sync to this Virgil")
@@ -284,9 +295,30 @@ class Daemon:
         log.info("%s from %s to %s", prefix, self._describe(change.old_state, change.old_leader),
                  self._describe(change.new_state, change.new_leader))
 
+    def ready_to_elect(self, now: float) -> bool:
+        """Whether the election should run yet.
+
+        A Virgil that can't reach the network can't hear any other member, so
+        it would wrongly decide it's alone. The election waits until the
+        management interface has an address, or NETWORK_WAIT has passed.
+        """
+        if self.electing:
+            return True
+        if self.addresses:
+            log.info("%s is ready; starting the election", self.config.mgmt_interface)
+        elif now - self.started >= NETWORK_WAIT:
+            log.warning("Still no management network after %.0f s; going ahead without it", NETWORK_WAIT)
+        else:
+            return False
+        self.electing = True
+        self.election.listen_from(now)
+        return True
+
     async def run_election(self) -> None:
         while True:
-            self.run_election_once(time.monotonic())
+            now = time.monotonic()
+            if self.ready_to_elect(now):
+                self.run_election_once(now)
             await asyncio.sleep(ELECTION_INTERVAL)
 
     # Discovery
@@ -305,18 +337,37 @@ class Daemon:
         return discovery.properties(self.config.id, self.config.name, __version__, group_id,
                                     self.public_port, self.group_port)
 
-    async def start_discovery(self) -> None:
+    async def check_network(self) -> None:
+        """Follow the management interface's addresses, (re)starting discovery when they change."""
         interface = self.config.mgmt_interface
-        if interface is None:
-            log.warning("No management interface is set, so other Virgils can't be found")
-            return
-        addresses = ipv4_addresses(interface)
-        if not addresses:
-            log.warning("%s has no IPv4 address, so other Virgils can't be found", interface)
-            return
-        self.discovery = discovery.Discovery(self.on_advert)
-        await self.discovery.start(addresses, f"Virgil on {self.config.name}", socket.gethostname(),
-                                   self.public_port, self.advert_properties())
+        addresses = tuple(ipv4_addresses(interface)) if interface else ()
+        networks = tuple(ipv4_networks(interface)) if interface else ()
+        if addresses != self.addresses:
+            if self.discovery is not None:
+                await self.discovery.stop()
+                self.discovery = None
+            self.addresses = addresses
+            if addresses:
+                log.info("%s is at %s", interface, ", ".join(addresses))
+                self.discovery = discovery.Discovery(self.on_advert)
+                await self.discovery.start(list(addresses), f"Virgil on {self.config.name}",
+                                           socket.gethostname(), self.public_port, self.advert_properties())
+            elif interface:
+                log.warning("%s has no IPv4 address yet, so other Virgils can't be found", interface)
+            else:
+                log.warning("No management interface is set, so other Virgils can't be found")
+        if networks != self.networks:
+            self.networks = networks
+            if self.timing is not None:
+                self.timing.poke()
+
+    async def watch_network(self) -> None:
+        while True:
+            try:
+                await self.check_network()
+            except Exception:
+                log.exception("Couldn't check the management interface")
+            await asyncio.sleep(NETWORK_CHECK_INTERVAL)
 
     # Public port
 
@@ -350,6 +401,7 @@ class Daemon:
                 "id": self.config.id,
                 "name": self.config.name,
                 "observing": self.observing,
+                "waiting_for_network": not self.electing,
                 "state": self.election.state.value,
                 "leader": self.name_of(self.election.leader),
                 "group": None if group is None else {"id": group.id, "members": members},
@@ -423,9 +475,9 @@ async def serve(daemon: Daemon, host: str) -> None:
     await web.TCPSite(group, host, daemon.group_port, ssl_context=daemon.group_context).start()
     log.info("Virgil %s: %s (%s), public port %d, group port %d",
              __version__, daemon.config.name, daemon.config.id, daemon.public_port, daemon.group_port)
-    await daemon.start_discovery()
+    await daemon.check_network()
     daemon.start_timing()
-    jobs = [daemon.watch_config(), daemon.send_heartbeats(), daemon.run_election()]
+    jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election()]
     if daemon.timing is not None:
         jobs.append(daemon.timing.run())
     tasks = [asyncio.create_task(job) for job in jobs]

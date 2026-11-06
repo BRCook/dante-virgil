@@ -57,7 +57,8 @@ async def start(daemon):
 
 
 def introduce(daemon, other):
-    """Tell one daemon where the other is, as mDNS would."""
+    """Tell one daemon where the other is, as mDNS would, and that its network is up."""
+    daemon.addresses = ("127.0.0.1",)
     daemon.adverts[other.config.id] = discovery.Advert(
         other.config.id, other.config.name, "0.1.0", other.config.group.id,
         other.public_port, other.group_port, ("127.0.0.1",))
@@ -208,3 +209,83 @@ def test_observe_only_leaves_roles_alone(tmp_path):
 def test_listening_leaves_the_timing_services_alone():
     assert Daemon._target(State.LISTEN, None) is False
     assert Daemon._target(State.STOPPED, None) is None
+
+
+def test_the_election_waits_for_the_network(tmp_path, monkeypatch):
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    start = a.started
+    assert not a.ready_to_elect(start + 5)
+    # The listening countdown starts when the network does, not when virgild did.
+    a.addresses = ("10.0.0.1",)
+    assert a.ready_to_elect(start + 20)
+    assert a.election.since == start + 20
+
+
+def test_the_election_gives_up_waiting_eventually(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    from virgil.daemon import NETWORK_WAIT
+
+    assert not a.ready_to_elect(a.started + NETWORK_WAIT - 1)
+    assert a.ready_to_elect(a.started + NETWORK_WAIT + 0.1)
+
+
+def test_network_changes_restart_discovery_and_update_timing(tmp_path, monkeypatch):
+    import virgil.daemon as daemon_module
+
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.mgmt_interface = "enp5s0"
+    config_file.save(config, paths["A"])
+    a = Daemon(paths["A"], identities["A"])
+
+    state = {"addresses": [], "networks": []}
+    monkeypatch.setattr(daemon_module, "ipv4_addresses", lambda name: state["addresses"])
+    monkeypatch.setattr(daemon_module, "ipv4_networks", lambda name: state["networks"])
+    started, stopped = [], []
+
+    class FakeDiscovery:
+        def __init__(self, on_advert):
+            pass
+
+        async def start(self, addresses, *args):
+            started.append(addresses)
+
+        async def stop(self):
+            stopped.append(True)
+
+    monkeypatch.setattr(daemon_module.discovery, "Discovery", FakeDiscovery)
+
+    class Poked:
+        count = 0
+
+        def poke(self):
+            Poked.count += 1
+
+    a.timing = Poked()
+
+    async def scenario():
+        await a.check_network()  # no address yet
+        state.update(addresses=["10.0.0.5"], networks=["10.0.0.0/24"])
+        await a.check_network()
+        await a.check_network()  # unchanged
+        state.update(addresses=["10.0.1.5"], networks=["10.0.1.0/24"])
+        await a.check_network()
+
+    asyncio.run(scenario())
+    assert started == [["10.0.0.5"], ["10.0.1.5"]]
+    assert stopped == [True]
+    assert Poked.count == 2
+    assert a.networks == ("10.0.1.0/24",)
+
+
+def test_leader_request_uses_the_current_networks(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.ptp_interface = "enp1s0"
+    config_file.save(config, paths["A"])
+    a = Daemon(paths["A"], identities["A"])
+    a.networks = ("10.10.100.0/24",)
+    request = a.build_request(Target(Role.LEADER))
+    assert request.allow == ("10.10.100.0/24",)
