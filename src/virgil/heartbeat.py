@@ -29,6 +29,8 @@ class Heartbeat:
     handover_to: str | None
     # True while virgild only watches the election, without changing roles.
     observing: bool = False
+    # A leader that had heard from the group before it started leading.
+    established: bool = False
 
     def encode(self) -> dict[str, Any]:
         return {
@@ -41,10 +43,12 @@ class Heartbeat:
             "lost_leader": self.lost_leader,
             "handover_to": self.handover_to,
             "observing": self.observing,
+            "established": self.established,
         }
 
     def view(self, heard_at: float) -> PeerView:
-        return PeerView(self.id, self.state, self.coin, self.leader, self.lost_leader, self.handover_to, heard_at)
+        return PeerView(self.id, self.state, self.coin, self.leader, self.lost_leader, self.handover_to, heard_at,
+                        self.established)
 
 
 def _optional_id(data: dict[str, Any], key: str) -> str | None:
@@ -74,7 +78,8 @@ def decode(data: Any) -> Heartbeat:
     if isinstance(coin, bool) or not isinstance(coin, int) or not 0 <= coin <= MAX_COIN:
         raise HeartbeatError("bad coin")
     lost, observing = data.get("lost_leader"), data.get("observing", False)
-    if not isinstance(lost, bool) or not isinstance(observing, bool):
+    established = data.get("established", False)
+    if not all(isinstance(flag, bool) for flag in (lost, observing, established)):
         raise HeartbeatError("bad flags")
     return Heartbeat(
         id=virgil_id,
@@ -86,4 +91,5 @@ def decode(data: Any) -> Heartbeat:
         lost_leader=lost,
         handover_to=_optional_id(data, "handover_to"),
         observing=observing,
+        established=established,
     )

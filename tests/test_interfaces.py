@@ -97,6 +97,7 @@ def test_ipv4_networks_and_addresses():
     output = json.dumps([{"addr_info": [
         {"family": "inet", "local": "10.10.100.253", "prefixlen": 24},
         {"family": "inet", "local": "10.10.100.254", "prefixlen": 24},
+        {"family": "inet", "local": "169.254.13.123", "prefixlen": 16},
         {"family": "inet6", "local": "fe80::1", "prefixlen": 64},
     ]}])
 

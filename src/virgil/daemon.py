@@ -191,7 +191,7 @@ class Daemon:
     def heartbeat(self) -> Heartbeat:
         e = self.election
         return Heartbeat(self.config.id, self.config.name, __version__, e.state, e.coin, e.leader,
-                         e.lost_leader, e.handover_to, self.observing)
+                         e.lost_leader, e.handover_to, self.observing, e.established)
 
     def _member_for_certificate(self, request: web.Request) -> str | None:
         ssl_object = request.transport.get_extra_info("ssl_object") if request.transport else None

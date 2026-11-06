@@ -10,8 +10,10 @@ The rules, from the design:
 1. The incumbent stays leader. A Virgil that finds a running leader follows it.
 2. If the leader is lost, the followers that lost it (and can still see each
    other) pick the one with the highest coin. It leads; the rest follow it.
-3. If leaders see each other, the one with the highest coin stays leader, and
-   the others step down, along with their followers.
+3. If leaders see each other, a leader that had heard from the group before it
+   started leading beats one that never had (such as a Virgil that booted and
+   led alone because it couldn't hear anyone yet). Between equals, the one with
+   the highest coin stays leader. The others step down, along with their followers.
 4. If no Virgil is leading at startup, the Virgils listening together pick the one
    with the highest coin.
 5. A Virgil can be made leader by hand, by asking the current leader to hand over.
@@ -60,6 +62,8 @@ class PeerView:
     handover_to: str | None
     # When the heartbeat arrived, by this Virgil's monotonic clock.
     heard_at: float
+    # A leader that had heard from the group before it started leading.
+    established: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,11 +89,16 @@ class Election:
         self.lost_since = self.now
         self.handover_to: str | None = None
         self.since = self.now
+        # Whether this Virgil has heard from any member since it started.
+        self.heard_group = False
+        # Whether it had, when it started leading.
+        self.established = False
 
     # What goes into this Virgil's heartbeat.
 
     def view(self, heard_at: float) -> PeerView:
-        return PeerView(self.id, self.state, self.coin, self.leader, self.lost_leader, self.handover_to, heard_at)
+        return PeerView(self.id, self.state, self.coin, self.leader, self.lost_leader, self.handover_to, heard_at,
+                        self.established)
 
     # Events from the daemon.
 
@@ -118,12 +127,15 @@ class Election:
         usual way if it's gone.
         """
         if state is State.LEADER:
+            # It was leading before virgild restarted, so it's no newcomer.
             self.state, self.leader = State.LEADER, None
+            self.established = True
         elif state is State.FOLLOWER and leader is not None:
             self.state, self.leader = State.FOLLOWER, leader
         else:
             return
         self.since = now
+        self.heard_group = True
         self.lost_leader = False
         self.handover_to = None
 
@@ -142,6 +154,8 @@ class Election:
     def tick(self, peers: Mapping[str, PeerView], now: float) -> Change | None:
         """Apply the rules to the latest heartbeats, and return any change of state."""
         visible = {p.id: p for p in peers.values() if p.id != self.id and now - p.heard_at <= self.timing.visible}
+        if visible:
+            self.heard_group = True
         if self.state is State.STOPPED:
             return None
         if self.state is State.LISTEN:
@@ -154,7 +168,7 @@ class Election:
         """Visible leaders worth following, best first. A leader handing over isn't one."""
         leaders = [p for p in visible.values() if p.state is State.LEADER]
         settled = [p for p in leaders if p.handover_to is None]
-        return sorted(settled or leaders, key=lambda p: (p.coin, p.id), reverse=True)
+        return sorted(settled or leaders, key=lambda p: (p.established, p.coin, p.id), reverse=True)
 
     def _wins(self, rivals: list[PeerView]) -> bool | None:
         """Whether this Virgil's coin beats every rival's. None means a tie, and a redraw."""
@@ -241,14 +255,23 @@ class Election:
         rivals = [p for p in visible.values() if p.state is State.LEADER and p.handover_to is None]
         if not rivals:
             return None
-        wins = self._wins(rivals)
+        # An established leader beats a newcomer outright; the coin only decides between equals.
+        stronger = [p for p in rivals if p.established and not self.established]
+        if stronger:
+            best = max(stronger, key=lambda p: (p.coin, p.id))
+            return self._go(State.FOLLOWER, best.id, now)
+        equals = [p for p in rivals if p.established == self.established]
+        if not equals:
+            return None  # Every rival is a newcomer; they'll step down to this Virgil.
+        wins = self._wins(equals)
         if wins is False:
-            best = max(rivals, key=lambda p: p.coin)
+            best = max(equals, key=lambda p: p.coin)
             return self._go(State.FOLLOWER, best.id, now)
         return None
 
     def _lead_now(self, now: float) -> Change:
         self.coin = self.draw()
+        self.established = self.heard_group
         return self._go(State.LEADER, None, now)
 
     def _go(self, state: State, leader: str | None, now: float) -> Change:
