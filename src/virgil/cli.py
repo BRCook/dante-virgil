@@ -361,6 +361,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(json.dumps(status, indent=2))
         return 0
     observing = "  (observing only: roles are still set by hand)" if status.get("observing") else ""
+    if status.get("waiting_for_network"):
+        observing += "  (waiting for the management network before electing)"
     print(f"{status['name']} (this Virgil): {_describe(status['state'], status['leader'])}{observing}")
     group = status.get("group")
     if group is None:
