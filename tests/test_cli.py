@@ -178,3 +178,38 @@ def test_invite_token(tls_virgil, capsys):
     assert token.addresses == ("192.168.20.21",)
     assert token.fingerprint == tls.fingerprint((tls_dir / "cert.pem").read_text())
     assert len(config.group.invites) == 1
+
+
+STATUS = {
+    "name": "Virgil A",
+    "state": "leader",
+    "leader": None,
+    "observing": True,
+    "group": {
+        "id": "f" * 32,
+        "members": [
+            {"id": "b" * 32, "name": "Virgil B", "state": "follower", "leader": "Virgil A",
+             "version": "0.1.0", "heard_ago": 0.4, "addresses": ["10.10.100.252"]},
+            {"id": "c" * 32, "name": "Virgil C", "state": None, "leader": None,
+             "version": None, "heard_ago": None, "addresses": []},
+        ],
+    },
+    "other_virgils": [{"id": "d" * 32, "name": "Spare", "group_id": None, "addresses": ["10.10.100.9"]}],
+}
+
+
+def test_status(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: STATUS)
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "Virgil A (this Virgil): leader  (observing only" in out
+    assert "Virgil B: follower of Virgil A, heard 0.4 s ago, at 10.10.100.252" in out
+    assert "Virgil C: not heard from, address unknown" in out
+    assert "Spare (no group), at 10.10.100.9" in out
+
+
+@needs_openssl
+def test_status_without_virgild(tmp_path):
+    tls.generate(tls.default_identity(tmp_path), hostname="x")
+    with pytest.raises(cli.CliError, match="Is it running"):
+        cli.fetch_status(tmp_path, port=9)

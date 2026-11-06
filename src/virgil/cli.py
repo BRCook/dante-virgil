@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import ssl
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -302,6 +305,57 @@ def cmd_group_show(args: argparse.Namespace) -> int:
     return 0
 
 
+# status
+
+
+def fetch_status(tls_dir: Path, port: int = groups.PUBLIC_PORT) -> dict:
+    """Ask the local virgild for its status, trusting only this Virgil's own certificate."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.load_verify_locations(cafile=tls.default_identity(tls_dir).cert_path)
+    try:
+        with urllib.request.urlopen(f"https://127.0.0.1:{port}/api/v1/status", context=context, timeout=5) as reply:
+            return json.load(reply)
+    except (urllib.error.URLError, OSError) as error:
+        raise CliError("couldn't reach virgild. Is it running? (systemctl status dante-virgil)") from error
+
+
+def _describe(state: str | None, leader: str | None) -> str:
+    if state is None:
+        return "not heard from"
+    return f"{state} of {leader}" if leader else state
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    status = fetch_status(args.tls_dir)
+    if args.json:
+        print(json.dumps(status, indent=2))
+        return 0
+    observing = "  (observing only: roles are still set by hand)" if status.get("observing") else ""
+    print(f"{status['name']} (this Virgil): {_describe(status['state'], status['leader'])}{observing}")
+    group = status.get("group")
+    if group is None:
+        print("Not in a group")
+    else:
+        print(f"Group {group['id']}")
+        for member in group["members"]:
+            line = f"  {member['name']}: {_describe(member['state'], member['leader'])}"
+            if member["heard_ago"] is not None:
+                line += f", heard {member['heard_ago']} s ago"
+            if member["addresses"]:
+                line += f", at {', '.join(member['addresses'])}"
+            else:
+                line += ", address unknown"
+            print(line)
+    others = status.get("other_virgils") or []
+    if others:
+        print("Other Virgils on the network:")
+        for other in others:
+            where = "no group" if other["group_id"] is None else f"group {other['group_id'][:8]}"
+            print(f"  {other['name']} ({where}), at {', '.join(other['addresses'])}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="virgilctl", description="Control Virgil.")
     parser.add_argument("--version", action="version", version=f"Virgil {__version__}")
@@ -309,6 +363,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--request", type=Path, default=REQUEST_PATH, help=argparse.SUPPRESS)
     parser.add_argument("--tls-dir", type=Path, default=tls.TLS_DIR, help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", required=True)
+
+    status = commands.add_parser("status", help="show this Virgil, its group, and other Virgils it can see")
+    status.add_argument("--json", action="store_true", help="print JSON instead of text")
+    status.set_defaults(func=cmd_status)
 
     interfaces = commands.add_parser("interfaces", help="list network interfaces and their PTP support")
     interfaces.add_argument("--json", action="store_true", help="print JSON instead of a table")
