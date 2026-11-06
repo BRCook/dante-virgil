@@ -2,6 +2,7 @@ import pytest
 
 from virgil import config
 from virgil.config import Config, ConfigError, DeviceSettings
+from virgil.group import Group, Member
 
 
 def test_round_trip(tmp_path):
@@ -64,3 +65,20 @@ def test_save_leaves_no_temporary_files(tmp_path):
     config.save(Config(id="a", name="b"), path)
     config.save(Config(id="a", name="c"), path)
     assert [p.name for p in tmp_path.iterdir()] == ["virgil.toml"]
+
+
+def test_group_round_trip(tmp_path):
+    path = tmp_path / "virgil.toml"
+    cert = "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n"
+    original = Config(
+        id="a",
+        name="Box A",
+        group=Group(id="f" * 32, members={"a": Member("Box A", cert), "b": Member("Box B", cert)}, invites={"h": 99}),
+    )
+    config.save(original, path)
+    assert config.load(path) == original
+
+
+def test_bad_group_is_rejected():
+    with pytest.raises(ConfigError):
+        config.from_dict({"id": "x", "name": "y", "group": {"id": "g", "members": {"a": {"name": "A"}}}})

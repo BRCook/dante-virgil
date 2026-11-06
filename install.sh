@@ -31,7 +31,7 @@ fi
 
 say "Installing Debian packages"
 apt-get update
-apt-get install -y --no-install-recommends chrony linuxptp ethtool python3-venv polkitd
+apt-get install -y --no-install-recommends chrony linuxptp ethtool iproute2 openssl python3-venv polkitd
 
 say "Creating the $SERVICE_USER user"
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
@@ -76,6 +76,8 @@ if [[ -e "$CONFIG_DIR/virgil.toml" ]]; then
 else
     "$VENV/bin/virgilctl" config init
 fi
+"$VENV/bin/virgilctl" tls init
+chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR/tls"
 
 say "Done"
 cat << MESSAGE
