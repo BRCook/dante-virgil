@@ -1,0 +1,31 @@
+[Unit]
+Description=Virgil
+Documentation=https://github.com/BRCook/dante-virgil
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dante-virgil
+Group=dante-virgil
+ExecStart=/opt/dante-virgil/venv/bin/virgild
+Restart=on-failure
+RestartSec=2
+
+# virgild only needs to write its config and its requests to virgil-root.
+# It starts and stops the timing units through polkit, not by itself.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/dante-virgil /run/dante-virgil
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

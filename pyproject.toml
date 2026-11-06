@@ -6,12 +6,14 @@ readme = "README.md"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.13"
 dependencies = [
+    "aiohttp>=3.9",
     "tomli-w>=1.0",
 ]
 
 [project.scripts]
 virgilctl = "virgil.cli:main"
 virgil-root = "virgil.rootctl:main"
+virgild = "virgil.daemon:main"
 
 [dependency-groups]
 dev = [

@@ -47,7 +47,7 @@ def test_follower_with_a_phc(tmp_path):
     assert "[enp1s0]" in (generated / "ptp4l.conf").read_text()
     assert "server 192.168.20.21 iburst" in (generated / "chrony.conf").read_text()
     assert (generated / "phc2sys.env").read_text() == (
-        'PHC2SYS_ARGS="-s CLOCK_REALTIME -c /dev/ptp0 -O 0 -P 0.03 -I 0.0005 -S 0.001 -m"\n'
+        'PHC2SYS_ARGS="-s CLOCK_REALTIME -c /dev/ptp0 -O 0 -P 0.03 -I 0.0005 -S 0.001 -m -q"\n'
     )
     plan = json.loads((generated / "plan.json").read_text())
     assert plan["role"] == "follower"

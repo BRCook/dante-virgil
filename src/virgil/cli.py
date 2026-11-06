@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 import time
@@ -14,7 +15,7 @@ from virgil import config as config_file
 from virgil.config import ConfigError
 from virgil.files import UnsafeFileError
 from virgil import group as groups
-from virgil import tls
+from virgil import joining, tls
 from virgil.generate import Role
 from virgil.group import GroupError, InviteToken
 from virgil.interfaces import Interface, Timestamping, get_interface, ipv4_addresses, list_interfaces
@@ -271,6 +272,17 @@ def cmd_group_invite(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_group_join(args: argparse.Namespace) -> int:
+    token = InviteToken.decode(args.token)
+    config = config_file.load(args.config)
+    cert = tls.default_identity(args.tls_dir).cert_pem
+    asyncio.run(joining.join(token, config, cert))
+    config_file.save(config, args.config)
+    names = sorted(m.name for box_id, m in config.group.members.items() if box_id != config.id)
+    print(f"Joined group {config.group.id}, with {', '.join(names)}")
+    return 0
+
+
 def cmd_group_show(args: argparse.Namespace) -> int:
     config = config_file.load(args.config)
     if config.group is None:
@@ -335,6 +347,9 @@ def build_parser() -> argparse.ArgumentParser:
     invite = group_commands.add_parser("invite", help="make a one-time invite token for another box")
     invite.add_argument("--minutes", type=int, default=60, help="how long the token works for (default 60)")
     invite.set_defaults(func=cmd_group_invite)
+    join = group_commands.add_parser("join", help="join a group with an invite token from one of its members")
+    join.add_argument("token")
+    join.set_defaults(func=cmd_group_join)
     group_commands.add_parser("show", help="show the group's members").set_defaults(func=cmd_group_show)
 
     return parser
