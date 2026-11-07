@@ -40,6 +40,7 @@ from virgil.request import TimingRequest
 from virgil.timing import Target, TimingManager
 from virgil.joining import JOIN_PATH, JoinError, handle_join
 from virgil.tls import Identity, fingerprint, fingerprint_of_der
+from virgil.webapi import WebApi
 
 log = logging.getLogger("virgild")
 
@@ -85,6 +86,7 @@ class Daemon:
     learned: dict[str, str] = field(default_factory=dict, init=False)
     discovery: discovery.Discovery | None = field(default=None, init=False)
     timing: TimingManager | None = field(default=None, init=False)
+    web: WebApi | None = field(default=None, init=False)
     # The management interface's addresses and networks, as last seen.
     addresses: tuple[str, ...] = field(default=(), init=False)
     networks: tuple[str, ...] = field(default=(), init=False)
@@ -199,7 +201,10 @@ class Daemon:
         mtime = self.config_path.stat().st_mtime
         if mtime == self.config_mtime:
             return False
+        old_password = self.config.web_password
         self.config = config_file.load(self.config_path)
+        if self.web is not None and self.config.web_password != old_password:
+            self.web.sessions.end_all()
         self.config_mtime = mtime
         self._trust_members()
         log.info("Reloaded the config")
@@ -718,7 +723,34 @@ class Daemon:
         app = web.Application(client_max_size=64 * 1024)
         app.router.add_get("/api/v1/status", self.status)
         app.router.add_post(JOIN_PATH, self.join)
+        self.web = WebApi(self)
+        self.web.routes(app)
         return app
+
+    # For the web UI
+
+    def identity_fingerprint(self) -> str:
+        return fingerprint(self.identity.cert_pem)
+
+    def group_changed(self) -> None:
+        """After creating or joining a group: trust the new members, and advertise the group."""
+        self._trust_members()
+        if self.discovery is not None:
+            asyncio.ensure_future(self._update_advert())
+
+    def stop_timing(self) -> bool:
+        """Stop this Virgil's timing services, until started again. False if roles aren't managed."""
+        if self.timing is None:
+            return False
+        self._log_change(self.election.stop(time.monotonic()))
+        self.timing.want(None)
+        return True
+
+    def start_timing_again(self) -> bool:
+        if self.timing is None:
+            return False
+        self._log_change(self.election.start(time.monotonic()))
+        return True
 
     # Group port
 
