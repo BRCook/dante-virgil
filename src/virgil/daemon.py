@@ -44,6 +44,24 @@ from virgil.webapi import WebApi
 
 log = logging.getLogger("virgild")
 
+WEB_DIR = Path(__file__).parent / "web"
+STATIC_FILES = {"style.css", "app.js"}
+# The page may only load its own files, and nothing may frame it.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; "
+    "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+)
+
+
+@web.middleware
+async def security_headers(request: web.Request, handler):
+    response = await handler(request)
+    response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
 CONFIG_CHECK_INTERVAL = 2.0
 HEARTBEAT_INTERVAL = 1.0
 HEARTBEAT_TIMEOUT = 0.8
@@ -690,6 +708,9 @@ class Daemon:
                     "reachable": self.consoles.reachable,
                 },
                 "dante_devices": self.consoles.summaries() if self.consoles else [],
+                "device_settings": {
+                    mac: {"native_ptpv2": d.native_ptpv2, "aes67": d.aes67} for mac, d in self.config.devices.items()
+                },
                 "diagnostics": self.consoles.diagnostics if self.consoles else {},
                 "other_virgils": others,
             }
@@ -720,7 +741,9 @@ class Daemon:
         return web.json_response(reply)
 
     def public_app(self) -> web.Application:
-        app = web.Application(client_max_size=64 * 1024)
+        app = web.Application(client_max_size=64 * 1024, middlewares=[security_headers])
+        app.router.add_get("/", self.page)
+        app.router.add_get("/static/{name}", self.static_file)
         app.router.add_get("/api/v1/status", self.status)
         app.router.add_post(JOIN_PATH, self.join)
         self.web = WebApi(self)
@@ -728,6 +751,15 @@ class Daemon:
         return app
 
     # For the web UI
+
+    async def page(self, request: web.Request) -> web.Response:
+        return web.FileResponse(WEB_DIR / "index.html")
+
+    async def static_file(self, request: web.Request) -> web.StreamResponse:
+        name = request.match_info["name"]
+        if name not in STATIC_FILES:
+            raise web.HTTPNotFound()
+        return web.FileResponse(WEB_DIR / name)
 
     def identity_fingerprint(self) -> str:
         return fingerprint(self.identity.cert_pem)

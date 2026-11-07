@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Virgil</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="identity">
+      <span class="product">Virgil</span>
+      <h1 id="name">Connecting…</h1>
+      <span id="role" class="role"></span>
+    </div>
+    <div id="account" class="account"></div>
+  </header>
+
+  <div id="warnings" class="warnings" role="status" aria-live="polite"></div>
+
+  <main>
+    <section class="chain-wrap" aria-label="Timing chain">
+      <div id="chain" class="chain"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="this-heading">
+      <h2 id="this-heading">This Virgil</h2>
+      <div id="this-virgil"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="group-heading">
+      <h2 id="group-heading">Group</h2>
+      <div id="group"></div>
+    </section>
+  </main>
+
+  <p id="notice" class="notice" role="alert" hidden></p>
+</body>
+</html>
