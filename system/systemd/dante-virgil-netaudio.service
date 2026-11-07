@@ -1,0 +1,31 @@
+[Unit]
+Description=Virgil: netaudio's daemon, for monitoring the local Dante devices
+Documentation=https://github.com/BRCook/netaudio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dante-virgil
+Group=dante-virgil
+# Written by virgild: NETAUDIO_INTERFACE, the PTP interface the Dante devices are on.
+EnvironmentFile=/run/dante-virgil/netaudio.env
+Environment=HOME=/var/lib/dante-virgil
+Environment=NETAUDIO_NO_SSL=1
+StateDirectory=dante-virgil
+# Loopback only: nothing on the network can reach netaudio's API.
+ExecStart=/opt/dante-virgil/venv/bin/netaudio daemon run --listen 127.0.0.1 --port 4780
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

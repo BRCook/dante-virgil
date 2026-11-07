@@ -27,7 +27,8 @@ from aiohttp import web
 
 from virgil import __version__
 from virgil import config as config_file
-from virgil import discovery, ptpwatch, tls
+from virgil import discovery, ptpwatch, roles, tls
+from virgil.consoles import POLL_INTERVAL, Consoles, NetaudioClient
 from virgil.config import Config
 from virgil.election import Change, Election, State
 from virgil.generate import Role
@@ -49,6 +50,8 @@ NETWORK_CHECK_INTERVAL = 2.0
 # How long the election waits for the management interface to get an address
 # before going ahead anyway, so a console still gets a clock without a network.
 NETWORK_WAIT = 60.0
+NETAUDIO_UNIT = "dante-virgil-netaudio.service"
+NETAUDIO_ENV = Path("/run/dante-virgil/netaudio.env")
 
 
 @dataclass
@@ -87,6 +90,7 @@ class Daemon:
     ptp: ptpwatch.PtpState = field(default_factory=ptpwatch.PtpState, init=False)
     ptp_watcher: ptpwatch.PtpWatcher | None = field(default=None, init=False)
     ptp_addresses: tuple[str, ...] = field(default=(), init=False)
+    consoles: Consoles | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.config = config_file.load(self.config_path)
@@ -193,9 +197,40 @@ class Daemon:
 
     def heartbeat(self) -> Heartbeat:
         e = self.election
+        devices = tuple(self.consoles.summaries()[:16]) if self.consoles else ()
         return Heartbeat(self.config.id, self.config.name, __version__, e.state, e.coin, e.leader,
                          e.lost_leader, e.handover_to, self.observing, e.established,
-                         self.ptp.own_identity, tuple(self.ptp_warnings()[:8]))
+                         self.ptp.own_identity, tuple(self.ptp_warnings()[:8]), devices)
+
+    # Local Dante devices, through netaudio
+
+    def start_consoles(self, client: NetaudioClient | None = None, systemd: roles.Systemd | None = None) -> None:
+        """Start netaudio's daemon on the PTP interface, and watch the local Dante devices through it."""
+        interface = self.config.ptp_interface
+        if interface is None or not self.manage_timing:
+            return
+        if client is None:
+            netaudio = Path(sys.prefix) / "bin" / "netaudio"
+            if not netaudio.exists():
+                log.info("netaudio isn't installed, so Dante devices aren't being monitored")
+                return
+            try:
+                NETAUDIO_ENV.write_text(f"NETAUDIO_INTERFACE={interface}\n")
+                (systemd or roles.Systemd()).restart(NETAUDIO_UNIT)
+            except (OSError, roles.ServiceError) as error:
+                log.warning("Couldn't start netaudio's daemon: %s", error)
+                return
+        local = lambda: {a: d.follows_this_virgil for a, d in self.ptp.devices.items()}  # noqa: E731
+        self.consoles = Consoles(client or NetaudioClient(), local, lambda: self.config.devices)
+
+    async def watch_consoles(self) -> None:
+        while True:
+            await asyncio.sleep(POLL_INTERVAL)
+            if self.consoles is not None:
+                try:
+                    await self.consoles.poll()
+                except Exception:
+                    log.exception("Couldn't check the local Dante devices")
 
     # PTP watching
 
@@ -430,6 +465,7 @@ class Daemon:
                     "addresses": self.addresses_for(virgil_id),
                     "ptp_identity": beat.ptp_identity if beat else None,
                     "ptp_warnings": list(beat.ptp_warnings) if beat else [],
+                    "dante_devices": list(beat.dante_devices) if beat else [],
                 }
             )
         others = [
@@ -462,6 +498,9 @@ class Daemon:
                     ],
                     "warnings": self.ptp_warnings(),
                 },
+                "netaudio": None if self.consoles is None else {"reachable": self.consoles.reachable},
+                "dante_devices": self.consoles.summaries() if self.consoles else [],
+                "diagnostics": self.consoles.diagnostics if self.consoles else {},
                 "other_virgils": others,
             }
         )
@@ -535,8 +574,9 @@ async def serve(daemon: Daemon, host: str) -> None:
     await daemon.check_network()
     daemon.start_timing()
     daemon.start_ptp_watch()
+    daemon.start_consoles()
     jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election(),
-            daemon.tidy_ptp()]
+            daemon.tidy_ptp(), daemon.watch_consoles()]
     if daemon.timing is not None:
         jobs.append(daemon.timing.run())
     tasks = [asyncio.create_task(job) for job in jobs]

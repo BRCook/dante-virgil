@@ -206,6 +206,14 @@ STATUS = {
         ],
         "warnings": ["Another PTP grandmaster is on this network (00:1d:c1:ff:fe:12:34:56, from 10.10.100.77)"],
     },
+    "netaudio": {"reachable": True},
+    "dante_devices": [
+        {"name": "Wing Compact", "address": "10.10.100.50", "mac": "00:1d:c1:aa:bb:cc", "model": "WING",
+         "ptpv2": True, "aes67": False, "clock_offset_ppb": 27115, "follows_this_virgil": True, "warnings": []},
+        {"name": "Stage box", "address": "10.10.100.70", "mac": "00:1d:c1:aa:bb:dd", "model": None,
+         "ptpv2": False, "aes67": False, "clock_offset_ppb": None, "follows_this_virgil": False,
+         "warnings": ["Stage box has PTPv2 off, so it can't follow this Virgil"]},
+    ],
 }
 
 
@@ -218,8 +226,9 @@ def test_status(monkeypatch, capsys):
     assert "Virgil C: not heard from, address unknown" in out
     assert "Spare (no group), at 10.10.100.9" in out
     assert "PTP grandmaster: aa:bb:cc:ff:fe:00:00:01" in out
-    assert "Local Dante device 10.10.100.50: following this Virgil" in out
-    assert "Local Dante device 10.10.100.60: NOT following this Virgil" in out
+    assert "Wing Compact (WING) at 10.10.100.50, following this Virgil, PTPv2 on, AES67 off, clock +27.115 ppm" in out
+    assert "Dante device at 10.10.100.60: NOT following this Virgil" in out
+    assert "WARNING: Stage box has PTPv2 off" in out
     assert "WARNING: Another PTP grandmaster" in out
 
 
@@ -256,3 +265,24 @@ def test_observe_only_setting(config_path, capsys):
     assert config_file.load(config_path).observe_only is True
     assert "Restart virgild" in capsys.readouterr().out
     assert _set(config_path, "observe_only", "maybe") == 1
+
+
+def test_device_toggles(config_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: STATUS)
+    assert cli.main(["--config", str(config_path), "device", "Wing Compact", "ptpv2", "on"]) == 0
+    assert config_file.load(config_path).devices["00:1d:c1:aa:bb:cc"].native_ptpv2 is True
+    assert cli.main(["--config", str(config_path), "device", "10.10.100.50", "aes67", "on"]) == 0
+    assert config_file.load(config_path).devices["00:1d:c1:aa:bb:cc"].aes67 is True
+    assert cli.main(["--config", str(config_path), "device", "00-1D-C1-AA-BB-CC", "ptpv2", "off"]) == 0
+    settings = config_file.load(config_path).devices["00:1d:c1:aa:bb:cc"]
+    assert settings.native_ptpv2 is False and settings.aes67 is True
+    assert "won't turn it off" in capsys.readouterr().out
+    capsys.readouterr()
+    assert cli.main(["--config", str(config_path), "device", "Wing Compact"]) == 0
+    assert "native PTPv2 toggle off, AES67 toggle on" in capsys.readouterr().out
+
+
+def test_device_unknown(config_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: STATUS)
+    assert cli.main(["--config", str(config_path), "device", "Nope", "ptpv2", "on"]) == 1
+    assert "Wing Compact" in capsys.readouterr().err
