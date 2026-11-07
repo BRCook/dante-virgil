@@ -138,15 +138,15 @@ def test_live_filter_on_loopback():
     """With CAP_NET_RAW (such as running as root), check the real kernel filter."""
     import time
 
-    from virgil.ptpwatch import ETH_P_IP, SNAPLEN, attach_filter
+    from virgil.ptpwatch import ETH_P_ALL, SNAPLEN, attach_filter
 
     try:
-        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_IP))
+        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ALL))
     except PermissionError:
         pytest.skip("needs CAP_NET_RAW")
     with sock:
         attach_filter(sock)
-        sock.bind(("lo", ETH_P_IP))
+        sock.bind(("lo", ETH_P_ALL))
         sock.setblocking(False)
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
             sender.sendto(b"audio audio", ("127.0.0.1", 5004))
@@ -159,4 +159,6 @@ def test_live_filter_on_loopback():
             except BlockingIOError:
                 break
             seen.append(parse(data))
-    assert [p.version for p in seen if p is not None] == [1]
+    # On loopback, the packet is seen leaving as well as arriving; nothing else gets through.
+    versions = [p.version for p in seen if p is not None]
+    assert versions and set(versions) == {1} and len(versions) == len(seen)

@@ -26,6 +26,10 @@ from dataclasses import dataclass, field
 log = logging.getLogger("virgild.ptp")
 
 ETH_P_IP = 0x0800
+# Linux only gives outgoing packets to raw sockets opened for every protocol,
+# and this Virgil's own Announce messages are outgoing. The kernel filter
+# still drops everything that isn't PTP over IPv4.
+ETH_P_ALL = 0x0003
 PACKET_OUTGOING = 4
 SO_ATTACH_FILTER = 26
 SNAPLEN = 256
@@ -179,9 +183,9 @@ class PtpWatcher:
         self._sock: socket.socket | None = None
 
     def start(self, loop) -> None:
-        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_IP))
+        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ALL))
         attach_filter(sock)
-        sock.bind((self.interface, ETH_P_IP))
+        sock.bind((self.interface, ETH_P_ALL))
         sock.setblocking(False)
         self._sock = sock
         loop.add_reader(sock.fileno(), self._readable)
