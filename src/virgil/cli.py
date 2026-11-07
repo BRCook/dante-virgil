@@ -434,6 +434,9 @@ def _describe_clock(clock: dict | None, names: dict[str, str], leader: str | Non
     return lines
 
 
+QUIET_AFTER = 5
+
+
 def _describe(state: str | None, leader: str | None) -> str:
     if state is None:
         return "not heard from"
@@ -489,8 +492,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"Group {group['id']}")
         for member in group["members"]:
             line = f"  {member['name']}: {_describe(member['state'], member['leader'])}"
-            if member["heard_ago"] is not None:
-                line += f", heard {member['heard_ago']} s ago"
+            # Only worth mentioning once a member has gone quiet.
+            if member["heard_ago"] is not None and member["heard_ago"] > QUIET_AFTER:
+                line += f", NOT HEARD FOR {member['heard_ago']:.0f} s"
             if member["addresses"]:
                 line += f", at {', '.join(member['addresses'])}"
             else:
