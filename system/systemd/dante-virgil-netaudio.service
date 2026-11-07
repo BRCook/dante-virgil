@@ -15,8 +15,9 @@ Environment=NETAUDIO_NO_SSL=1
 StateDirectory=dante-virgil
 # Loopback only: nothing on the network can reach netaudio's API.
 ExecStart=/opt/dante-virgil/venv/bin/netaudio daemon run --listen 127.0.0.1 --port 4780
+# virgild starts this once the PTP interface has an address; this is only a backstop.
 Restart=on-failure
-RestartSec=5
+RestartSec=30
 
 NoNewPrivileges=yes
 ProtectSystem=strict

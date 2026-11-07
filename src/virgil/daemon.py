@@ -34,7 +34,7 @@ from virgil.election import Change, Election, State
 from virgil.generate import Role
 from virgil.group import GROUP_PORT, PUBLIC_PORT
 from virgil.heartbeat import HEARTBEAT_PATH, Heartbeat, HeartbeatError, decode
-from virgil.interfaces import ipv4_addresses, ipv4_networks
+from virgil.interfaces import ipv4_addresses, ipv4_networks, is_link_local
 from virgil.request import TimingRequest
 from virgil.timing import Target, TimingManager
 from virgil.joining import JOIN_PATH, JoinError, handle_join
@@ -50,6 +50,9 @@ NETWORK_CHECK_INTERVAL = 2.0
 # How long the election waits for the management interface to get an address
 # before going ahead anyway, so a console still gets a clock without a network.
 NETWORK_WAIT = 60.0
+# How long a self-assigned 169.254.x.x address has to be the only one before
+# it counts, so DHCP has time to finish on networks that have it.
+LINK_LOCAL_GRACE = 30.0
 NETAUDIO_UNIT = "dante-virgil-netaudio.service"
 NETAUDIO_ENV = Path("/run/dante-virgil/netaudio.env")
 
@@ -91,6 +94,12 @@ class Daemon:
     ptp_watcher: ptpwatch.PtpWatcher | None = field(default=None, init=False)
     ptp_addresses: tuple[str, ...] = field(default=(), init=False)
     consoles: Consoles | None = field(default=None, init=False)
+    # When the management interface's only addresses became link-local ones.
+    link_local_since: float | None = field(default=None, init=False)
+    # The PTP interface addresses netaudio's daemon was started for, or None if it's
+    # stopped. It starts unknown, so the first check always starts or stops it.
+    netaudio_for: tuple[str, ...] | None = field(default=("unknown",), init=False)
+    systemd: roles.Systemd | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.config = config_file.load(self.config_path)
@@ -205,7 +214,11 @@ class Daemon:
     # Local Dante devices, through netaudio
 
     def start_consoles(self, client: NetaudioClient | None = None, systemd: roles.Systemd | None = None) -> None:
-        """Start netaudio's daemon on the PTP interface, and watch the local Dante devices through it."""
+        """Watch the local Dante devices through netaudio's daemon.
+
+        The daemon itself is started by check_ptp_interface, once the PTP
+        interface has an address: netaudio won't run without one.
+        """
         interface = self.config.ptp_interface
         if interface is None or not self.manage_timing:
             return
@@ -214,14 +227,34 @@ class Daemon:
             if not netaudio.exists():
                 log.info("netaudio isn't installed, so Dante devices aren't being monitored")
                 return
-            try:
-                NETAUDIO_ENV.write_text(f"NETAUDIO_INTERFACE={interface}\n")
-                (systemd or roles.Systemd()).restart(NETAUDIO_UNIT)
-            except (OSError, roles.ServiceError) as error:
-                log.warning("Couldn't start netaudio's daemon: %s", error)
-                return
+            self.systemd = systemd or roles.Systemd()
         local = lambda: {a: d.follows_this_virgil for a, d in self.ptp.devices.items()}  # noqa: E731
         self.consoles = Consoles(client or NetaudioClient(), local, lambda: self.config.devices)
+
+    def check_ptp_interface(self) -> None:
+        """Follow the PTP interface's addresses, and run netaudio's daemon only while it has one."""
+        interface = self.config.ptp_interface
+        if interface is None:
+            return
+        # Dante devices may well be link-local, so every address counts here.
+        self.ptp_addresses = tuple(ipv4_addresses(interface, link_local=True))
+        if self.systemd is None:
+            return
+        wanted = self.ptp_addresses or None
+        if wanted == self.netaudio_for:
+            return
+        try:
+            if wanted is None:
+                log.info("%s has no IPv4 address, so netaudio's daemon is stopped until it does", interface)
+                self.systemd.stop(NETAUDIO_UNIT)
+            else:
+                NETAUDIO_ENV.write_text(f"NETAUDIO_INTERFACE={interface}\n")
+                self.systemd.restart(NETAUDIO_UNIT)
+                log.info("Started netaudio's daemon on %s", interface)
+        except (OSError, roles.ServiceError) as error:
+            log.warning("Couldn't control netaudio's daemon: %s", error)
+            return
+        self.netaudio_for = wanted
 
     async def watch_consoles(self) -> None:
         while True:
@@ -248,7 +281,7 @@ class Daemon:
         interface = self.config.ptp_interface
         if interface is None:
             return
-        self.ptp_addresses = tuple(ipv4_addresses(interface))
+        self.ptp_addresses = tuple(ipv4_addresses(interface, link_local=True))
         watcher = ptpwatch.PtpWatcher(interface, self.ptp, time.monotonic, self.own_addresses)
         try:
             watcher.start(asyncio.get_running_loop())
@@ -264,8 +297,6 @@ class Daemon:
         while True:
             await asyncio.sleep(5.0)
             self.ptp.forget_old(time.monotonic())
-            if self.config.ptp_interface:
-                self.ptp_addresses = tuple(ipv4_addresses(self.config.ptp_interface))
 
     def _member_for_certificate(self, request: web.Request) -> str | None:
         ssl_object = request.transport.get_extra_info("ssl_object") if request.transport else None
@@ -414,8 +445,19 @@ class Daemon:
     async def check_network(self) -> None:
         """Follow the management interface's addresses, (re)starting discovery when they change."""
         interface = self.config.mgmt_interface
-        addresses = tuple(ipv4_addresses(interface)) if interface else ()
+        every = tuple(ipv4_addresses(interface, link_local=True)) if interface else ()
+        addresses = tuple(a for a in every if not is_link_local(a))
         networks = tuple(ipv4_networks(interface)) if interface else ()
+        if addresses or not every:
+            self.link_local_since = None
+        else:
+            # Only self-assigned addresses. They count once DHCP has had its chance.
+            now = time.monotonic()
+            if self.link_local_since is None:
+                self.link_local_since = now
+            if now - self.link_local_since >= LINK_LOCAL_GRACE:
+                addresses = every
+                networks = tuple(n for n in ipv4_networks(interface, link_local=True) if n.startswith("169.254."))
         # The networks go first: the election starts as soon as there's an
         # address, and the first role it sets up should already allow them.
         networks_changed = networks != self.networks
@@ -441,8 +483,9 @@ class Daemon:
         while True:
             try:
                 await self.check_network()
+                self.check_ptp_interface()
             except Exception:
-                log.exception("Couldn't check the management interface")
+                log.exception("Couldn't check the network interfaces")
             await asyncio.sleep(NETWORK_CHECK_INTERVAL)
 
     # Public port

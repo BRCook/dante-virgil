@@ -188,8 +188,9 @@ def get_interface(
     return _interface(entry, timestamping)
 
 
-def ipv4_addresses(name: str, run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> list[str]:
-    """The IPv4 addresses on an interface."""
+def ipv4_addresses(name: str, run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+                   link_local: bool = False) -> list[str]:
+    """The IPv4 addresses on an interface, leaving out self-assigned 169.254.x.x ones unless asked."""
     try:
         result = run(["ip", "-j", "-4", "addr", "show", "dev", name], capture_output=True, text=True)
     except FileNotFoundError:
@@ -204,11 +205,11 @@ def ipv4_addresses(name: str, run: Callable[..., subprocess.CompletedProcess] = 
         info["local"]
         for entry in entries
         for info in entry.get("addr_info", [])
-        if info.get("family") == "inet" and "local" in info and not _link_local(info["local"])
+        if info.get("family") == "inet" and "local" in info and (link_local or not is_link_local(info["local"]))
     ]
 
 
-def _link_local(address: str) -> bool:
+def is_link_local(address: str) -> bool:
     """A self-assigned 169.254.x.x address, which can't reach the rest of the network."""
     try:
         return ipaddress.ip_address(address).is_link_local
@@ -216,7 +217,8 @@ def _link_local(address: str) -> bool:
         return True
 
 
-def ipv4_networks(name: str, run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> list[str]:
+def ipv4_networks(name: str, run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+                  link_local: bool = False) -> list[str]:
     """The IPv4 networks an interface is on, such as '10.10.100.0/24'."""
     try:
         result = run(["ip", "-j", "-4", "addr", "show", "dev", name], capture_output=True, text=True)
@@ -232,7 +234,7 @@ def ipv4_networks(name: str, run: Callable[..., subprocess.CompletedProcess] = s
     for entry in entries:
         for info in entry.get("addr_info", []):
             if info.get("family") == "inet" and "local" in info and "prefixlen" in info \
-                    and not _link_local(info["local"]):
+                    and (link_local or not is_link_local(info["local"])):
                 network = str(ipaddress.ip_network(f"{info['local']}/{info['prefixlen']}", strict=False))
                 if network not in networks:
                     networks.append(network)
