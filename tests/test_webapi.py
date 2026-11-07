@@ -272,3 +272,51 @@ def test_the_page_never_builds_html_from_strings():
     script = (Path(virgil.__file__).parent / "web" / "app.js").read_text()
     for risky in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
         assert risky not in script
+
+
+def test_choosing_interfaces(virgil, monkeypatch):
+    import virgil.setup as setup_module
+    from tests.test_setup import INTERFACES
+
+    monkeypatch.setattr(setup_module, "get_interface", INTERFACES.get)
+    monkeypatch.setattr(setup_module, "list_interfaces", lambda: list(INTERFACES.values()))
+
+    async def scenario(daemon, session, base):
+        restarts = []
+        daemon.request_restart = lambda: restarts.append(True)
+        await _login(session, base)
+
+        async def choose(**body):
+            async with session.post(f"{base}/api/v1/interfaces", json=body, headers=HEADERS) as reply:
+                return reply.status, await reply.json()
+
+        async with session.get(f"{base}/api/v1/interfaces") as reply:
+            listed = await reply.json()
+        results = {
+            "listed": listed,
+            "profile_asked": await choose(ptp_interface="enp191s0", mgmt_interface="enp5s0"),
+            "software_asked": await choose(ptp_interface="enp5s0", mgmt_interface="enp5s0"),
+            "bad": await choose(ptp_interface="br0", mgmt_interface="enp5s0"),
+            "accepted": await choose(ptp_interface="enp191s0", mgmt_interface="enp5s0", accept_profile=True),
+        }
+        results["unchanged"] = await choose(ptp_interface="enp191s0", mgmt_interface="enp5s0", accept_profile=True)
+        return results, daemon.config, restarts
+
+    results, config, restarts = run(virgil, scenario)
+    assert {i["name"] for i in results["listed"]["interfaces"]} == set(INTERFACES)
+    assert results["profile_asked"][0] == 409 and results["profile_asked"][1]["needs"] == "profile"
+    assert results["software_asked"][1]["needs"] == "software"
+    assert results["bad"][0] == 400
+    assert results["accepted"][0] == 200 and results["accepted"][1]["restarting"] is True
+    assert (config.ptp_interface, config.nic_profile, config.mgmt_interface) == ("enp191s0", "r8126", "enp5s0")
+    assert results["unchanged"][1]["message"] == "Nothing changed"
+    assert restarts == [True]
+
+
+def test_choosing_interfaces_needs_a_login(virgil):
+    async def scenario(daemon, session, base):
+        async with session.post(f"{base}/api/v1/interfaces", json={"ptp_interface": "x", "mgmt_interface": "y"},
+                                headers=HEADERS) as reply:
+            return reply.status
+
+    assert run(virgil, scenario) == 401

@@ -282,10 +282,10 @@ function renderThisVirgil() {
   }
   for (const d of devices) {
     const wanted = settings[d.mac] || {};
-    const toggle = (setting, label, on) => el("label", { class: "check" },
+    const toggle = (setting, label, name, on) => el("label", { class: "check" },
       el("input", { type: "checkbox", checked: !!on, disabled: !can || !d.mac,
         onchange: (event) => act("/api/v1/device", { mac: d.mac, setting, enabled: event.target.checked },
-          `${label} ${event.target.checked ? "will be kept on" : "left alone"} for ${d.name}`) }),
+          event.target.checked ? `${d.name}'s ${name} will be kept on` : `Virgil will leave ${d.name}'s ${name} alone`) }),
       label);
     if (!d.mac) {
       parts.push(el("p", { class: "hint" },
@@ -296,10 +296,89 @@ function renderThisVirgil() {
       el("span", { class: "hint" }, [d.model, d.address,
         d.ptpv2 === null ? null : `PTPv2 ${d.ptpv2 ? "on" : "off"}`,
         d.aes67 === null ? null : `AES67 ${d.aes67 ? "on" : "off"}`].filter(Boolean).join(", ")),
-      toggle("ptpv2", "Keep native PTPv2 on", wanted.native_ptpv2),
-      toggle("aes67", "Keep AES67 mode on", wanted.aes67)));
+      toggle("ptpv2", "Keep native PTPv2 on", "native PTPv2", wanted.native_ptpv2),
+      toggle("aes67", "Keep AES67 mode on", "AES67 mode", wanted.aes67)));
   }
+  parts.push(...interfacesSection(can));
   replace("this-virgil", parts);
+}
+
+// Interfaces: fetched when the page opens and after a change, not on every refresh.
+let interfaces = null;
+async function loadInterfaces() {
+  try {
+    const reply = await fetch("/api/v1/interfaces", { credentials: "same-origin", cache: "no-store" });
+    interfaces = await reply.json();
+  } catch {
+    interfaces = null;
+  }
+}
+
+function interfaceLabel(i, forPtp) {
+  // Timestamping only matters for the PTP interface.
+  const facts = [i.driver || "virtual",
+    forPtp && i.timestamping !== "virtual" ? `${i.timestamping} timestamping` : null,
+    i.link_up ? "link up" : "no link"].filter(Boolean);
+  return `${i.name} (${facts.join(", ")})`;
+}
+
+function interfacesSection(can) {
+  const parts = [el("h3", {}, "Interfaces")];
+  if (!interfaces) return [...parts, el("p", { class: "hint" }, "Loading…")];
+  const choose = (key, options, current) => {
+    const select = el("select", { "aria-label": key === "ptp" ? "PTP interface" : "Management interface",
+      disabled: !can });
+    if (!current) select.append(el("option", { value: "" }, "Choose…"));
+    for (const i of options) select.append(el("option", { value: i.name }, interfaceLabel(i, key === "ptp")));
+    select.value = key in drafts ? drafts[key] : (current || "");
+    select.addEventListener("change", () => { drafts[key] = select.value; });
+    return select;
+  };
+  const ptp = choose("ptp", interfaces.interfaces.filter((i) => i.ptp_capable), interfaces.ptp_interface);
+  const mgmt = choose("mgmt", interfaces.interfaces, interfaces.mgmt_interface);
+  parts.push(
+    el("div", { class: "row" }, el("label", { class: "field" }, "Faces the console (PTP)", ptp)),
+    el("div", { class: "row" }, el("label", { class: "field" }, "Talks to other Virgils (management)", mgmt)),
+    el("div", { class: "row" }, el("button", { disabled: !can, onclick: () => saveInterfaces(ptp.value, mgmt.value) },
+      "Save interfaces")),
+    el("p", { class: "hint" }, "Saving restarts Virgil. Changing the PTP interface also sets the clocks up from "
+      + "scratch, so the console re-locks once."));
+  const chosen = interfaces.interfaces.find((i) => i.name === ptp.value);
+  if (chosen && chosen.profile) {
+    parts.push(el("p", { class: "hint" }, `${chosen.profile.description}: ${chosen.profile.notes}`));
+  }
+  return parts;
+}
+
+async function saveInterfaces(ptp, mgmt) {
+  if (!ptp || !mgmt) return notice("Choose both interfaces first", true);
+  if (interfaces && interfaces.ptp_interface && ptp !== interfaces.ptp_interface &&
+      !confirm(`Change the PTP interface to ${ptp}? The clocks are set up from scratch, so the console re-locks once.`)) {
+    return;
+  }
+  const body = { ptp_interface: ptp, mgmt_interface: mgmt };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const reply = await fetch("/api/v1/interfaces", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Virgil-Request": "1" }, body: JSON.stringify(body),
+    });
+    const data = await reply.json().catch(() => ({}));
+    if (reply.status === 409 && data.needs === "software") {
+      if (!confirm(`${data.message}\n\nUse it anyway?`)) return;
+      body.accept_software = true;
+      continue;
+    }
+    if (reply.status === 409 && data.needs === "profile") {
+      body.accept_profile = confirm(data.message);
+      continue;
+    }
+    if (!reply.ok) return notice(data.error || `refused (${reply.status})`, true);
+    delete drafts.ptp;
+    delete drafts.mgmt;
+    notice(data.message || "Saved");
+    if (data.restarting) setTimeout(() => loadInterfaces().then(refresh), 6000);
+    return;
+  }
 }
 
 // A member heard from recently needs no mention; one that's gone quiet does.
@@ -371,7 +450,7 @@ function render() {
   renderAccount();
   renderChain();
   // Don't redraw a form while someone's typing in it.
-  const typing = document.activeElement && ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
+  const typing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
   if (!typing) {
     renderThisVirgil();
     renderGroup();
@@ -398,5 +477,5 @@ async function loadSession() {
   render();
 }
 
-loadSession().then(refresh);
+loadSession().then(loadInterfaces).then(refresh);
 setInterval(refresh, REFRESH_MS);

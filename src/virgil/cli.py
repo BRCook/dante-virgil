@@ -26,11 +26,8 @@ from virgil.control import CONTROL_SOCKET, LEAD_PATH
 from virgil.interfaces import Interface, Timestamping, get_interface, ipv4_addresses, list_interfaces
 from virgil.request import REQUEST_PATH, RequestError, TimingRequest, from_json, to_json
 from virgil.roles import CHRONY, PHC2SYS, PTP4L, ServiceError, Systemd, apply, current_request, write_request
+from virgil.setup import SOFTWARE_WARNING, SetupError, check_ptp_interface
 
-SOFTWARE_WARNING = (
-    "Software timestamping does not work. It is not stable enough for "
-    "production use. You can continue if you insist, but you're on your own."
-)
 
 
 class CliError(Exception):
@@ -139,32 +136,22 @@ def cmd_config_show(args: argparse.Namespace) -> int:
 
 def _choose_ptp_interface(name: str, assume_yes: bool) -> tuple[str, str | None]:
     """Check a PTP interface with the person, and return it with the NIC profile to use."""
-    interface = get_interface(name)
-    if interface is None:
-        raise CliError(f"there's no interface called {name}")
-    if not interface.physical or interface.mode is Timestamping.NONE:
-        raise CliError(f"{name} can't be used for PTP")
-
-    if interface.mode is Timestamping.SOFTWARE:
-        print(f"{name} only supports software timestamping.")
-        print(SOFTWARE_WARNING)
-        if not confirm("Use it anyway?", default=False, assume_yes=assume_yes):
-            raise CliError("not changed")
-        return name, None
-
-    profile = interface.profile
-    if profile is None:
-        print(f"{name} uses the {interface.driver} driver, which hasn't been tested. It will use Virgil's defaults.")
-        return name, None
-    if not profile.needs_hwstamp_ctl:
-        return name, interface.driver
-
-    print(f"{name} is a {profile.description}, which is known to need different settings from Virgil's defaults:")
-    print(f"  {profile.notes}")
-    if confirm("Apply these settings instead of the defaults?", default=True, assume_yes=assume_yes):
-        return name, interface.driver
-    print("Using the defaults. This NIC will probably not work with them.")
-    return name, None
+    try:
+        choice = check_ptp_interface(name, lookup=get_interface)
+        if choice.needs == "software":
+            print(choice.message)
+            if not confirm("Use it anyway?", default=False, assume_yes=assume_yes):
+                raise CliError("not changed")
+            choice = check_ptp_interface(name, accept_software=True, lookup=get_interface)
+        elif choice.needs == "profile":
+            print(choice.message)
+            accepted = confirm("Apply them?", default=True, assume_yes=assume_yes)
+            choice = check_ptp_interface(name, accept_profile=accepted, lookup=get_interface)
+    except SetupError as error:
+        raise CliError(str(error)) from error
+    if choice.note:
+        print(choice.note)
+    return choice.name, choice.nic_profile
 
 
 def cmd_config_set(args: argparse.Namespace) -> int:

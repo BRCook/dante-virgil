@@ -653,3 +653,17 @@ def test_auto_trim_pauses_when_the_consoles_dont_respond(tmp_path, caplog):
     a.config.auto_trim = True
     step_at(460.0)
     assert a.trim_paused is None and a.config.trim_ppb == paused_at - 500
+
+
+def test_a_requested_restart(tmp_path):
+    from virgil.daemon import RESTART_EXIT
+
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+
+    async def scenario():
+        a.request_restart(delay=0.01)
+        await asyncio.wait_for(a.restart.wait(), 1)
+
+    asyncio.run(scenario())
+    assert a.restart.is_set() and RESTART_EXIT == 75

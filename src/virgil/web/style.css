@@ -112,6 +112,11 @@ input[type="password"], input[type="number"], textarea {
   border: 1px solid var(--line); background: var(--bg); border-radius: var(--radius-control); padding: 0.35rem 0.55rem;
 }
 input[type="number"] { width: 7rem; }
+select {
+  font: inherit; color: inherit; border: 1px solid var(--line); background: var(--bg);
+  border-radius: var(--radius-control); padding: 0.35rem 0.55rem; max-width: 100%;
+}
+label.field { display: flex; flex-direction: column; gap: 0.25rem; font-weight: 600; max-width: 100%; }
 textarea { width: 100%; min-height: 4.5rem; font-size: 0.85rem; word-break: break-all; }
 label.check { display: inline-flex; gap: 0.4rem; align-items: center; }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }

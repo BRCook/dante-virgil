@@ -22,6 +22,7 @@ from virgil import joining
 from virgil.config import DeviceSettings
 from virgil.consoles import normalise_mac
 from virgil.group import GroupError, InviteToken
+from virgil.setup import SetupError, check_mgmt_interface, check_ptp_interface, describe_interfaces
 from virgil.webauth import COOKIE, SESSION_LIFETIME, Attempts, Sessions, check_password
 
 if TYPE_CHECKING:
@@ -196,8 +197,43 @@ class WebApi:
         names = sorted(m.name for i, m in updated.group.members.items() if i != updated.id)
         return web.json_response({"group_id": updated.group.id, "members": names})
 
+    async def interfaces(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "interfaces": describe_interfaces(),
+            "ptp_interface": self.daemon.config.ptp_interface,
+            "mgmt_interface": self.daemon.config.mgmt_interface,
+        })
+
+    async def choose_interfaces(self, request: web.Request, body: dict) -> web.Response:
+        """Choose the PTP and management interfaces, then restart virgild to use them."""
+        config = self.daemon.config
+        ptp, mgmt = body.get("ptp_interface"), body.get("mgmt_interface")
+        accept_profile, accept_software = body.get("accept_profile"), body.get("accept_software", False)
+        if not isinstance(ptp, str) or not isinstance(mgmt, str):
+            return _error("needs a PTP interface and a management interface", 400)
+        if accept_profile is not None and not isinstance(accept_profile, bool):
+            return _error("accept_profile must be true or false", 400)
+        try:
+            choice = check_ptp_interface(ptp, accept_profile, accept_software is True)
+            check_mgmt_interface(mgmt)
+        except SetupError as error:
+            return _error(str(error), 400)
+        if choice.needs:
+            # Someone has to agree to this first; the page asks, then sends it again.
+            return web.json_response({"needs": choice.needs, "message": choice.message}, status=409)
+        if (choice.name, choice.nic_profile, mgmt) == (config.ptp_interface, config.nic_profile, config.mgmt_interface):
+            return web.json_response({"message": "Nothing changed"})
+        config.ptp_interface, config.nic_profile, config.mgmt_interface = choice.name, choice.nic_profile, mgmt
+        self.daemon.save()
+        log.info("Interfaces changed from the web UI (PTP %s, management %s); restarting", choice.name, mgmt)
+        self.daemon.request_restart()
+        message = "Saved. Virgil is restarting to use them."
+        return web.json_response({"message": f"{choice.note} {message}" if choice.note else message,
+                                  "restarting": True})
+
     def routes(self, app: web.Application) -> None:
         app.router.add_get("/api/v1/session", self.session)
+        app.router.add_get("/api/v1/interfaces", self.interfaces)
         app.router.add_post("/api/v1/login", self.login)
         app.router.add_post("/api/v1/logout", self.logout)
         for path, handler in (
@@ -210,5 +246,6 @@ class WebApi:
             ("/api/v1/group/create", self.create_group),
             ("/api/v1/group/invite", self.invite),
             ("/api/v1/group/join", self.join),
+            ("/api/v1/interfaces", self.choose_interfaces),
         ):
             app.router.add_post(path, self.guarded(handler))
