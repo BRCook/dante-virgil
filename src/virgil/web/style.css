@@ -100,6 +100,15 @@ ul.plain { list-style: none; padding: 0; margin: 0.25rem 0; }
 ul.plain li { margin: 0.2rem 0; }
 .stale { color: var(--fault); font-weight: 700; }
 
+/* The consoles table: headings and values, no rules between them */
+.table-wrap { overflow-x: auto; }
+table.devices { border-collapse: collapse; width: 100%; min-width: 44rem; }
+table.devices th, table.devices td { text-align: left; padding: 0.3rem 1rem 0.3rem 0; vertical-align: middle; }
+table.devices thead th { color: var(--muted); font-weight: 600; font-size: 0.9rem; }
+table.devices tbody th { font-weight: 700; }
+table.devices .number { text-align: right; }
+table.devices .centre { text-align: center; }
+
 /* Controls */
 button, input, textarea { font: inherit; color: inherit; }
 button {
@@ -130,8 +139,17 @@ label.check { display: inline-flex; gap: 0.4rem; align-items: center; }
 }
 .notice.fault { background: var(--fault); color: #fff; }
 
-/* On a phone, the chain runs down the page instead of across it. */
+/* On a phone, the chain runs down the page instead of across it, and each
+   device in the consoles table becomes a short list of headings and values. */
 @media (max-width: 640px) {
+  table.devices { min-width: 0; }
+  table.devices thead { display: none; }
+  table.devices tr { display: block; padding: 0.4rem 0 0.6rem; }
+  table.devices tbody th { display: block; padding: 0 0 0.2rem; }
+  table.devices td {
+    display: flex; justify-content: space-between; align-items: center; padding: 0.15rem 0; text-align: right;
+  }
+  table.devices td::before { content: attr(data-label); color: var(--muted); text-align: left; }
   h1 { font-size: 1.5rem; }
   .chain-wrap { overflow-x: visible; }
   .chain { flex-direction: column; min-width: 0; }

@@ -378,12 +378,8 @@ def _describe_device(dante: dict | None, heard: dict | None) -> str:
 
 
 def _duration(ns: int | float) -> str:
-    """A signed time offset, in whichever unit reads best."""
-    if abs(ns) < 1_000:
-        return f"{ns:+.0f} ns"
-    if abs(ns) < 1_000_000:
-        return f"{ns / 1_000:+.3f} µs"
-    return f"{ns / 1_000_000:+.3f} ms"
+    """A signed time offset. Always in nanoseconds, so figures can be compared at a glance."""
+    return f"{ns:+,.0f} ns"
 
 
 def _describe_clock(clock: dict | None, names: dict[str, str], leader: str | None = None) -> list[str]:
@@ -636,8 +632,8 @@ def cmd_device(args: argparse.Namespace) -> int:
     mac, name = _find_device_mac(args.device, args)
     current = config.devices.get(mac, DeviceSettings())
     if args.value is None:
-        print(f"{name}: native PTPv2 toggle {'on' if current.native_ptpv2 else 'off'}, "
-              f"AES67 toggle {'on' if current.aes67 else 'off'}")
+        print(f"{name}: enforce native PTPv2 {'on' if current.native_ptpv2 else 'off'}, "
+              f"enforce AES67 {'on' if current.aes67 else 'off'}")
         return 0
     enabled = args.value == "on"
     if args.setting == "ptpv2":
@@ -646,12 +642,11 @@ def cmd_device(args: argparse.Namespace) -> int:
         current.aes67 = enabled
     config.devices[mac] = current
     config_file.save(config, args.config)
-    label = "Native PTPv2" if args.setting == "ptpv2" else "AES67 mode"
+    label = "native PTPv2" if args.setting == "ptpv2" else "AES67 mode"
     if enabled:
-        print(f"{label} will be kept on for {name}.")
+        print(f"Virgil will enforce {name}'s {label}, turning it back on whenever it's turned off.")
     else:
-        print(f"Virgil will leave {name}'s {label.lower() if args.setting == 'aes67' else 'native PTPv2'} alone. "
-              "It won't turn it off.")
+        print(f"Virgil will no longer enforce {name}'s {label}. It won't turn it off, either.")
     if not current.native_ptpv2 and not current.aes67:
         print(f"Note: {name} needs PTPv2, from native PTPv2 or AES67 mode, to follow a Virgil.")
     return 0
@@ -707,10 +702,10 @@ def build_parser() -> argparse.ArgumentParser:
     trim.add_argument("ppm", nargs="?", help="the new trim, such as +2.5 or -1")
     trim.set_defaults(func=cmd_trim)
 
-    device = commands.add_parser("device", help="the PTPv2 and AES67 toggles for a local Dante device")
+    device = commands.add_parser("device", help="enforce native PTPv2 or AES67 on a local Dante device")
     device.add_argument("device", help="the device's name, address or MAC address")
     device.add_argument("setting", nargs="?", choices=["ptpv2", "aes67"], help="which toggle")
-    device.add_argument("value", nargs="?", choices=["on", "off"], help="keep it on, or leave it alone")
+    device.add_argument("value", nargs="?", choices=["on", "off"], help="enforce it, or stop enforcing it")
     device.set_defaults(func=cmd_device)
 
     tls_parser = commands.add_parser("tls", help="this Virgil's TLS certificate")
