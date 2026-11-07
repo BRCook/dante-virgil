@@ -535,3 +535,15 @@ def test_the_advert_has_a_host_name_of_its_own(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon_module.discovery, "Discovery", Recording)
     asyncio.run(a.check_network())
     assert hosts == [(["10.10.100.253"], f"virgil-{configs['A'].id[:12]}")]
+
+
+def test_taking_the_lead_adopts_the_phc_rate_as_the_trim(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    b = Daemon(paths["B"], identities["B"])
+    b.clock = {"phc_adjustment_ppm": 22.345}
+    b.adopt_phc_rate()
+    assert b.config.trim_ppb == 22345
+    assert config_file.load(paths["B"]).trim_ppb == 22345
+    b.clock = None
+    b.adopt_phc_rate()  # nothing known: leave it
+    assert b.config.trim_ppb == 22345

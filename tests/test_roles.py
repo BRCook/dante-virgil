@@ -11,6 +11,7 @@ from virgil.roles import (
     PREPARE,
     PTP4L,
     SYNC,
+    TRIM,
     ServiceError,
     Step,
     Systemd,
@@ -66,7 +67,7 @@ def test_new_leader_for_a_follower():
 
 @pytest.mark.parametrize(
     "change",
-    [{"ptp_interface": "enp2s0"}, {"trim_ppb": 22000}, {"use_nic_profile": False}],
+    [{"ptp_interface": "enp2s0"}, {"use_nic_profile": False}],
 )
 def test_phc_changes_start_from_scratch(change):
     steps = transition(FOLLOWER, replace(FOLLOWER, **change))
@@ -124,3 +125,18 @@ def test_a_failure_stops_apply():
     with pytest.raises(ServiceError, match="Unit not found"):
         apply(None, LEADER, Systemd(run), write=lambda r: None)
     assert len(run.calls) == 1
+
+
+def test_a_leaders_trim_changes_in_place():
+    assert transition(LEADER, replace(LEADER, trim_ppb=23000)) == [W, start(PREPARE), start(TRIM)]
+
+
+def test_a_followers_trim_changes_nothing_running():
+    assert transition(FOLLOWER, replace(FOLLOWER, trim_ppb=23000)) == [W, start(PREPARE)]
+
+
+def test_taking_the_lead_with_a_new_trim():
+    new = replace(LEADER, trim_ppb=22345)
+    assert transition(FOLLOWER, new) == [
+        W, start(PREPARE), stop(PHC2SYS), start(TRIM), restart(CHRONY), start(PTP4L),
+    ]
