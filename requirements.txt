@@ -218,11 +218,11 @@ multidict==7.2.1 ; (platform_machine == 'aarch64' and sys_platform == 'linux') o
     # via
     #   aiohttp
     #   yarl
-netaudio @ https://github.com/BRCook/netaudio/releases/download/v1.0.0/netaudio-1.0.0-py3-none-manylinux_2_28_aarch64.whl ; platform_machine == 'aarch64' and sys_platform == 'linux' \
-    --hash=sha256:9cdb2432e1c9c6d92b2643d3a46949b465a4c94955152571830b08b4ebf34e76
+netaudio @ https://github.com/BRCook/netaudio/releases/download/v1.0.1/netaudio-1.0.1-py3-none-manylinux_2_28_aarch64.whl ; platform_machine == 'aarch64' and sys_platform == 'linux' \
+    --hash=sha256:34c0a9597b02dd62d1f1d89d8179047f3478dc0c96969afab01e397b88b64b26
     # via dante-virgil
-netaudio @ https://github.com/BRCook/netaudio/releases/download/v1.0.0/netaudio-1.0.0-py3-none-manylinux_2_28_x86_64.whl ; platform_machine == 'x86_64' and sys_platform == 'linux' \
-    --hash=sha256:2e9d9aa89a02c688a3cdab04f170d73d861654cbf1ced2d2c96f33064b5c3952
+netaudio @ https://github.com/BRCook/netaudio/releases/download/v1.0.1/netaudio-1.0.1-py3-none-manylinux_2_28_x86_64.whl ; platform_machine == 'x86_64' and sys_platform == 'linux' \
+    --hash=sha256:5692cd69e05e6fd3423f2eb66b475fa0959207a17d82568dd0ff02c523e4b8dd
     # via dante-virgil
 numpy==2.5.4 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') \
     --hash=sha256:0f02a46e49cfb6c73bdb7aea1c0d3461dbae9aba613542b65f657cd3d17b9fab \
