@@ -403,10 +403,32 @@ class Daemon:
             self._log_change(self.election.synced(now))
         change = self.election.tick(views, now)
         self._log_change(change)
+        if change is not None and change.new_state is State.LEADER and change.old_state is State.FOLLOWER:
+            self.adopt_phc_rate()
         if change is not None and self.timing is not None:
             target = self._target(change.new_state, change.new_leader)
             if target is not False:
                 self.timing.want(target)
+
+    def adopt_phc_rate(self) -> None:
+        """On taking the lead, make the PHC's current rate this Virgil's trim.
+
+        The PHC keeps the rate phc2sys last gave it, which is the old leader's
+        rate as closely as this Virgil could measure it. Its trim has to match,
+        or the next trim change would jump the PHC back to an old figure.
+        """
+        adjustment = (self.clock or {}).get("phc_adjustment_ppm")
+        if not isinstance(adjustment, (int, float)) or isinstance(adjustment, bool):
+            return
+        trim = round(adjustment * 1000)
+        if trim == self.config.trim_ppb:
+            return
+        log.info("Taking over the PHC's current rate as this Virgil's trim: %+.3f ppm", trim / 1000)
+        self.config.trim_ppb = trim
+        try:
+            self.save()
+        except OSError as error:
+            log.warning("Couldn't save the new trim: %s", error)
 
     @staticmethod
     def _target(state: State, leader: str | None) -> Target | None | bool:

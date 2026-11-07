@@ -7,8 +7,9 @@ It's run by Virgil's systemd units, never by hand:
   sync     Set the clocks before the timing services start.
   hwstamp  Turn on hardware timestamping, for NICs whose clock only runs once
            it's on.
+  trim     Change a leader's PHC rate to its trim, in place.
 
-sync and hwstamp only read what prepare generated, never the request itself.
+sync, hwstamp and trim only read what prepare generated, never the request itself.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from virgil.generate import (
     phc2sys_args,
     ptp4l_conf,
     sync_commands,
+    trim_command,
 )
 from virgil.interfaces import Interface, Timestamping, get_interface
 from virgil.request import MAX_REQUEST_BYTES, REQUEST_PATH, RequestError, from_json
@@ -80,6 +82,7 @@ def prepare(
         "role": request.role.value,
         "sync": [{"args": list(c.args), "may_fail": c.may_fail} for c in sync_commands(setup, request.leader)],
         "hwstamp": ["/usr/sbin/hwstamp_ctl", *hwstamp] if hwstamp else None,
+        "trim": list(trim.args) if (trim := trim_command(setup)) else None,
     }
 
     atomic_write(generated / "ptp4l.conf", ptp4l_conf(setup, request.tuning).encode())
@@ -126,11 +129,19 @@ def hwstamp(generated: Path = GENERATED_DIR, run: Runner = _run) -> int:
     return run(command)
 
 
+def trim(generated: Path = GENERATED_DIR, run: Runner = _run) -> int:
+    """Change the PHC's rate to the trim in place. Only a leader runs this."""
+    command = _plan(generated).get("trim")
+    if command is None:
+        return 0
+    return run(command)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="virgil-root", description="Virgil's root helper. Run by systemd.")
     parser.add_argument("--request", type=Path, default=REQUEST_PATH, help=argparse.SUPPRESS)
     parser.add_argument("--generated", type=Path, default=GENERATED_DIR, help=argparse.SUPPRESS)
-    parser.add_argument("command", choices=["prepare", "sync", "hwstamp"])
+    parser.add_argument("command", choices=["prepare", "sync", "hwstamp", "trim"])
     args = parser.parse_args(argv)
 
     try:
@@ -139,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "sync":
             return sync(args.generated)
+        if args.command == "trim":
+            return trim(args.generated)
         return hwstamp(args.generated)
     except (RequestError, PrepareError, UnsafeFileError, OSError) as error:
         print(f"virgil-root: {error}", file=sys.stderr)

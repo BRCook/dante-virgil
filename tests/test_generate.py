@@ -12,6 +12,7 @@ from virgil.generate import (
     phc2sys_args,
     ptp4l_conf,
     sync_commands,
+    trim_command,
 )
 from virgil.nic_profiles import profile_for
 
@@ -121,3 +122,8 @@ def test_sync_with_software_timestamping_only_takes_the_time():
         Command(("/usr/sbin/chronyd", "-q", "-t", "20", "server 10.0.0.1 iburst"), may_fail=True),
     ]
     assert sync_commands(SOFTWARE, leader=None) == []
+
+
+def test_trim_command():
+    assert trim_command(I226) == Command(("/usr/sbin/phc_ctl", "/dev/ptp0", "freq", "21500"))
+    assert trim_command(SOFTWARE) is None

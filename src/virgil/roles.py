@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from virgil.files import UnsafeFileError, atomic_write, read_small_file
@@ -21,6 +21,7 @@ SYNC = "dante-virgil-sync.service"
 CHRONY = "dante-virgil-chrony.service"
 PTP4L = "dante-virgil-ptp4l.service"
 PHC2SYS = "dante-virgil-phc2sys.service"
+TRIM = "dante-virgil-trim.service"
 
 PTP4L_TUNING = ("log_sync_interval", "log_announce_interval", "log_min_delay_req_interval")
 PHC2SYS_TUNING = ("phc2sys_kp", "phc2sys_ki")
@@ -65,25 +66,28 @@ def transition(old: TimingRequest | None, new: TimingRequest | None) -> list[Ste
 
     steps = [WRITE, _start(PREPARE)]
 
-    # Anything that changes the PHC itself needs the clocks set up from scratch,
-    # which the console will notice. Changing the trim this way is a stopgap
-    # until automatic trim can adjust the rate in place.
-    if (
-        old is None
-        or old.ptp_interface != new.ptp_interface
-        or old.trim_ppb != new.trim_ppb
-        or old.use_nic_profile != new.use_nic_profile
-    ):
+    # A different PHC, or different NIC settings, need the clocks set up from
+    # scratch, which the console will notice.
+    if old is None or old.ptp_interface != new.ptp_interface or old.use_nic_profile != new.use_nic_profile:
         steps += [_stop(PHC2SYS), _stop(PTP4L), _stop(CHRONY), _start(SYNC), _start(CHRONY)]
         if new.role is Role.FOLLOWER:
             steps.append(_start(PHC2SYS, block=False))
         steps.append(_start(PTP4L))
         return steps
 
+    # The trim changes a leader's PHC rate in place, with nothing restarted.
+    # A follower's rate belongs to phc2sys, so its trim only matters at the next sync.
+    retrim = old.trim_ppb != new.trim_ppb and new.role is Role.LEADER
+    if replace(old, trim_ppb=new.trim_ppb) == new:
+        return steps + ([_start(TRIM)] if retrim else [])
+
     if new.role is Role.LEADER:
         # The PHC keeps the rate phc2sys last gave it, so stopping phc2sys
-        # doesn't move it.
-        steps += [_stop(PHC2SYS), _restart(CHRONY)]
+        # doesn't move it. A new trim only takes over once phc2sys has stopped.
+        steps.append(_stop(PHC2SYS))
+        if retrim:
+            steps.append(_start(TRIM))
+        steps.append(_restart(CHRONY))
     else:
         steps.append(_restart(CHRONY))
         if old.role is Role.LEADER:

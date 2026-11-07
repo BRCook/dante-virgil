@@ -376,3 +376,32 @@ def test_a_follower_is_shown_following_its_leader_by_name(monkeypatch, capsys):
     monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
     assert cli.main(["status"]) == 0
     assert "System clock: following this Virgil: +1.466 µs" in capsys.readouterr().out
+
+
+def test_trim_show(config_path, monkeypatch, capsys):
+    _set(config_path, "trim_ppb", "21500")
+    status = {**STATUS, "state": "leader"}
+    status["group"] = {**STATUS["group"], "members": [
+        {**STATUS["group"]["members"][0], "name": "Box B",
+         "dante_devices": [{"name": "Wing Rack", "clock_offset_ppb": -1250}]},
+    ]}
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
+    capsys.readouterr()
+    assert cli.main(["--config", str(config_path), "trim"]) == 0
+    out = capsys.readouterr().out
+    assert "trim +21.500 ppm, leading" in out
+    assert "Wing Compact (on" in out and "clock +27.115 ppm" in out
+    assert "Wing Rack (on Box B): clock -1.250 ppm" in out
+
+
+def test_trim_set(config_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: {**STATUS, "state": "leader"})
+    assert cli.main(["--config", str(config_path), "trim", "+2.5"]) == 0
+    assert config_file.load(config_path).trim_ppb == 2500
+    assert "its PHC changes to +2.500 ppm" in capsys.readouterr().out
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: {**STATUS, "state": "follower"})
+    assert cli.main(["--config", str(config_path), "trim", "-1"]) == 0
+    assert config_file.load(config_path).trim_ppb == -1000
+    assert "only takes effect while it leads" in capsys.readouterr().out
+    assert cli.main(["--config", str(config_path), "trim", "lots"]) == 1
+    assert cli.main(["--config", str(config_path), "trim", "5000"]) == 1

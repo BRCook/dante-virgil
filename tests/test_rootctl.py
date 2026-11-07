@@ -8,7 +8,7 @@ from virgil.files import UnsafeFileError
 from virgil.generate import Role, Tuning
 from virgil.interfaces import Interface, TimestampingInfo
 from virgil.request import TimingRequest, to_json
-from virgil.rootctl import PrepareError, hwstamp, prepare, sync
+from virgil.rootctl import PrepareError, hwstamp, prepare, sync, trim
 
 HARDWARE = ifc.TX_HARDWARE | ifc.RX_HARDWARE | ifc.RAW_HARDWARE | ifc.TX_SOFTWARE | ifc.RX_SOFTWARE | ifc.SOFTWARE
 SOFTWARE = ifc.TX_SOFTWARE | ifc.RX_SOFTWARE | ifc.SOFTWARE
@@ -174,3 +174,12 @@ def test_an_unreadable_request_is_a_permission_error(tmp_path):
     path.chmod(0)
     with pytest.raises(PermissionError):
         prepare(path, tmp_path / "generated", lookup)
+
+
+def test_trim(tmp_path):
+    run = Recorder()
+    assert trim(_prepare(tmp_path, _leader()), run) == 0
+    assert run.calls == [["/usr/sbin/phc_ctl", "/dev/ptp0", "freq", "21500"]]
+    run = Recorder()
+    assert trim(_prepare(tmp_path, _leader("enp5s0")), run) == 0  # software timestamping: no PHC
+    assert run.calls == []

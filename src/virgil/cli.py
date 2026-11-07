@@ -513,6 +513,44 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+# trim
+
+
+def cmd_trim(args: argparse.Namespace) -> int:
+    config = config_file.load(args.config)
+    try:
+        status = fetch_status(args.tls_dir)
+    except CliError:
+        status = None
+    leading = status is not None and status.get("state") == "leader"
+
+    if args.ppm is None:
+        print(f"{config.name}: trim {config.trim_ppb / 1000:+.3f} ppm"
+              + ("" if status is None else (", leading" if leading else ", not leading, so not in use")))
+        if status is not None:
+            consoles = [(config.name, d) for d in status.get("dante_devices") or []]
+            for member in (status.get("group") or {}).get("members", []):
+                consoles += [(member["name"], d) for d in member.get("dante_devices") or []]
+            for virgil, device in consoles:
+                if device.get("clock_offset_ppb") is not None:
+                    print(f"  {device['name']} (on {virgil}): clock {device['clock_offset_ppb'] / 1000:+.3f} ppm")
+        return 0
+
+    try:
+        trim = round(float(args.ppm) * 1000)
+    except ValueError as error:
+        raise CliError("the trim must be a number of ppm, such as +2.5") from error
+    if abs(trim) > 1_000_000:
+        raise CliError("the trim must be within ±1000 ppm")
+    config.trim_ppb = trim
+    config_file.save(config, args.config)
+    if leading:
+        print(f"{config.name} is leading, so its PHC changes to {trim / 1000:+.3f} ppm within a few seconds.")
+    else:
+        print(f"Set {config.name}'s trim to {trim / 1000:+.3f} ppm. It only takes effect while it leads.")
+    return 0
+
+
 # device
 
 
@@ -606,6 +644,10 @@ def build_parser() -> argparse.ArgumentParser:
     role_commands.add_parser("stop", help="stop the timing services")
     role_commands.add_parser("show", help="show the current role")
     role.set_defaults(func=cmd_role)
+
+    trim = commands.add_parser("trim", help="show or set this Virgil's PHC trim, in ppm")
+    trim.add_argument("ppm", nargs="?", help="the new trim, such as +2.5 or -1")
+    trim.set_defaults(func=cmd_trim)
 
     device = commands.add_parser("device", help="the PTPv2 and AES67 toggles for a local Dante device")
     device.add_argument("device", help="the device's name, address or MAC address")

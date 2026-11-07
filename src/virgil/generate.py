@@ -185,3 +185,10 @@ def sync_commands(setup: TimingSetup, leader: str | None) -> list[Command]:
     commands.append(Command(("/usr/sbin/phc_ctl", setup.phc, "set")))
     commands.append(Command(("/usr/sbin/phc_ctl", setup.phc, "freq", str(setup.trim_ppb))))
     return commands
+
+
+def trim_command(setup: TimingSetup) -> Command | None:
+    """Set the PHC's frequency to the trim, without touching its time. None without a PHC."""
+    if not setup.hardware:
+        return None
+    return Command(("/usr/sbin/phc_ctl", setup.phc, "freq", str(setup.trim_ppb)))

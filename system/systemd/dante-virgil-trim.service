@@ -1,0 +1,7 @@
+[Unit]
+Description=Virgil: change the leader's PHC rate to its trim
+Documentation=https://github.com/BRCook/dante-virgil
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dante-virgil/venv/bin/virgil-root trim
