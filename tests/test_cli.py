@@ -379,8 +379,8 @@ def test_a_follower_is_shown_following_its_leader_by_name(monkeypatch, capsys):
 
 
 def test_trim_show(config_path, monkeypatch, capsys):
-    _set(config_path, "trim_ppb", "21500")
-    status = {**STATUS, "state": "leader"}
+    status = {**STATUS, "state": "leader", "trim_ppb": 21500,
+              "auto_trim": {"enabled": True, "last": {"at": 0, "from_ppb": 600, "to_ppb": 100, "consoles_ppb": 4750}}}
     status["group"] = {**STATUS["group"], "members": [
         {**STATUS["group"]["members"][0], "name": "Box B",
          "dante_devices": [{"name": "Wing Rack", "clock_offset_ppb": -1250}]},
@@ -390,6 +390,7 @@ def test_trim_show(config_path, monkeypatch, capsys):
     assert cli.main(["--config", str(config_path), "trim"]) == 0
     out = capsys.readouterr().out
     assert "trim +21.500 ppm, leading" in out
+    assert "Auto-trim: on, last +0.600 to +0.100 ppm (consoles +4.750 ppm)" in out
     assert "Wing Compact (on" in out and "clock +27.115 ppm" in out
     assert "Wing Rack (on Box B): clock -1.250 ppm" in out
 
@@ -405,3 +406,16 @@ def test_trim_set(config_path, monkeypatch, capsys):
     assert "only takes effect while it leads" in capsys.readouterr().out
     assert cli.main(["--config", str(config_path), "trim", "lots"]) == 1
     assert cli.main(["--config", str(config_path), "trim", "5000"]) == 1
+
+
+def test_trim_show_needs_no_config(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: {**STATUS, "trim_ppb": -4150})
+    assert cli.main(["--config", str(tmp_path / "unreadable.toml"), "trim"]) == 0
+    out = capsys.readouterr().out
+    assert "trim -4.150 ppm, leading" in out and "Auto-trim" not in out
+
+
+def test_auto_trim_setting(config_path):
+    assert config_file.load(config_path).auto_trim is True
+    assert _set(config_path, "auto_trim", "false") == 0
+    assert config_file.load(config_path).auto_trim is False

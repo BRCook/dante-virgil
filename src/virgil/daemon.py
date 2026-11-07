@@ -27,7 +27,7 @@ from aiohttp import web
 
 from virgil import __version__
 from virgil import config as config_file
-from virgil import clocks, discovery, ptpwatch, roles, tls
+from virgil import autotrim, clocks, discovery, ptpwatch, roles, tls
 from virgil.consoles import POLL_INTERVAL, Consoles, NetaudioClient
 from virgil.control import CONTROL_SOCKET, HANDOVER_PATH, LEAD_PATH
 from virgil.config import Config
@@ -102,6 +102,8 @@ class Daemon:
     netaudio_for: tuple[str, ...] | None = field(default=("unknown",), init=False)
     systemd: roles.Systemd | None = field(default=None, init=False)
     clock: dict | None = field(default=None, init=False)
+    # What auto-trim last did, for status.
+    last_trim: dict | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.config = config_file.load(self.config_path)
@@ -410,6 +412,50 @@ class Daemon:
             if target is not False:
                 self.timing.want(target)
 
+    # Automatic trim
+
+    def console_offsets(self, now: float) -> list[int]:
+        """The clock offsets of every console in the group that's following its Virgil."""
+        devices = list(self.consoles.summaries()) if self.consoles else []
+        for virgil_id in self.member_ids():
+            peer = self.peers.get(virgil_id)
+            if peer is not None and now - peer.heard_at <= self.election.timing.visible:
+                devices += list(peer.heartbeat.dante_devices)
+        return [
+            d["clock_offset_ppb"] for d in devices
+            if d.get("follows_this_virgil") and isinstance(d.get("clock_offset_ppb"), int)
+        ]
+
+    def trim_once(self, now: float) -> None:
+        """One auto-trim step, if this Virgil is leading and has consoles to go on."""
+        if self.timing is None or not self.config.auto_trim or self.election.state is not State.LEADER:
+            return
+        if now - self.election.since < autotrim.INTERVAL:
+            return  # Let things settle after taking the lead.
+        offsets = self.console_offsets(now)
+        new = autotrim.next_trim(self.config.trim_ppb, offsets)
+        if new is None:
+            return
+        old = self.config.trim_ppb
+        average = sum(autotrim.plausible(offsets)) / len(autotrim.plausible(offsets))
+        log.info("Auto-trim: consoles average %+.3f ppm, so the trim goes from %+.3f to %+.3f ppm",
+                 average / 1000, old / 1000, new / 1000)
+        self.config.trim_ppb = new
+        try:
+            self.save()
+        except OSError as error:
+            log.warning("Couldn't save the new trim: %s", error)
+        self.timing.poke()
+        self.last_trim = {"at": time.time(), "from_ppb": old, "to_ppb": new, "consoles_ppb": round(average)}
+
+    async def watch_trim(self) -> None:
+        while True:
+            await asyncio.sleep(autotrim.INTERVAL)
+            try:
+                self.trim_once(time.monotonic())
+            except Exception:
+                log.exception("Auto-trim failed")
+
     def adopt_phc_rate(self) -> None:
         """On taking the lead, make the PHC's current rate this Virgil's trim.
 
@@ -592,6 +638,8 @@ class Daemon:
                 "leader": self.name_of(self.election.leader),
                 "group": None if group is None else {"id": group.id, "members": members},
                 "clock": self.clock,
+                "trim_ppb": self.config.trim_ppb,
+                "auto_trim": {"enabled": self.config.auto_trim, "last": self.last_trim},
                 "ptp": {
                     "interface": self.config.ptp_interface,
                     "link_up": self._ptp_link_up(),
@@ -756,7 +804,7 @@ async def serve(daemon: Daemon, host: str) -> None:
     daemon.start_ptp_watch()
     daemon.start_consoles()
     jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election(),
-            daemon.tidy_ptp(), daemon.watch_consoles(), daemon.watch_clock()]
+            daemon.tidy_ptp(), daemon.watch_consoles(), daemon.watch_clock(), daemon.watch_trim()]
     if daemon.timing is not None:
         jobs.append(daemon.timing.run())
     tasks = [asyncio.create_task(job) for job in jobs]
