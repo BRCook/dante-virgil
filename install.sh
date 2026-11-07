@@ -22,7 +22,16 @@ APPARMOR_LOCAL=/etc/apparmor.d/local/usr.sbin.chronyd
 APPARMOR_RULE='/run/dante-virgil-generated/chrony.conf r,'
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-say() { printf '\n==> %s\n' "$*"; }
+# Each step reports how long the one before it took.
+STEP_STARTED=$SECONDS
+say() {
+    if [[ -n "${STEP_NAME:-}" ]]; then
+        printf '    (%ds)\n' $((SECONDS - STEP_STARTED))
+    fi
+    STEP_NAME="$*"
+    STEP_STARTED=$SECONDS
+    printf '\n==> %s\n' "$*"
+}
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "run this with sudo"
@@ -32,9 +41,20 @@ if [[ "${ID:-}" != debian || "${VERSION_ID:-}" != 13 ]]; then
     printf 'Warning: Virgil is built for Debian 13, and this is %s.\n' "${PRETTY_NAME:-something else}"
 fi
 
-say "Installing Debian packages"
-apt-get update
-apt-get install -y --no-install-recommends chrony linuxptp ethtool iproute2 openssl python3-venv polkitd
+PACKAGES=(chrony linuxptp ethtool iproute2 openssl python3-venv polkitd)
+missing=()
+for package in "${PACKAGES[@]}"; do
+    if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"; then
+        missing+=("$package")
+    fi
+done
+if (( ${#missing[@]} )); then
+    say "Installing Debian packages: ${missing[*]}"
+    apt-get update
+    apt-get install -y --no-install-recommends "${missing[@]}"
+else
+    say "The Debian packages Virgil needs are already installed"
+fi
 
 say "Creating the $SERVICE_USER user"
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
@@ -44,10 +64,19 @@ fi
 # phc2sys has no query interface; virgild reads its reports from the journal.
 usermod -a -G systemd-journal "$SERVICE_USER"
 
-say "Installing Virgil into $VENV"
-python3 -m venv --clear "$VENV"
-"$VENV/bin/pip" install --quiet --no-deps --require-hashes -r "$REPO/requirements.txt"
-"$VENV/bin/pip" install --quiet --no-deps "$REPO"
+# The virtual environment is only rebuilt when requirements.txt changes (or
+# Python does); otherwise only Virgil itself is reinstalled, which is quick.
+REQUIREMENTS_STAMP="$VENV/.requirements.sha256"
+wanted_stamp="$(sha256sum "$REPO/requirements.txt" | cut -d' ' -f1) $(python3 --version)"
+if [[ -x "$VENV/bin/python" && -f "$REQUIREMENTS_STAMP" && "$(cat "$REQUIREMENTS_STAMP")" == "$wanted_stamp" ]]; then
+    say "Updating Virgil in $VENV"
+else
+    say "Installing Virgil and its dependencies into $VENV (this takes a few minutes)"
+    python3 -m venv --clear "$VENV"
+    "$VENV/bin/pip" install --quiet --no-deps --require-hashes -r "$REPO/requirements.txt"
+    printf '%s\n' "$wanted_stamp" > "$REQUIREMENTS_STAMP"
+fi
+"$VENV/bin/pip" install --quiet --no-deps --force-reinstall "$REPO"
 ln -sf "$VENV/bin/virgilctl" /usr/local/bin/virgilctl
 
 say "Installing the systemd units, tmpfiles entry and polkit rule"
@@ -94,6 +123,7 @@ systemctl enable dante-virgil.service >/dev/null 2>&1
 systemctl restart dante-virgil.service
 
 say "Done"
+STEP_NAME=""
 cat << MESSAGE
 Virgil is installed, and this Virgil's config is at $CONFIG_DIR/virgil.toml.
 
