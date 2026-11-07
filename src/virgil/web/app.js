@@ -260,6 +260,13 @@ function renderThisVirgil() {
   }
 
   const actions = el("div", { class: "row" });
+  const netaudio = status.netaudio;
+  if (netaudio && netaudio.ui_port) {
+    actions.append(el("a", { class: "button", href: `https://${location.hostname}:${netaudio.ui_port}/`,
+      target: "_blank", rel: "noopener noreferrer",
+      title: can ? "netaudio, on this Virgil" : "Log in first: netaudio can change the consoles' settings" },
+      "Open netaudio"));
+  }
   if (status.state === "follower") {
     actions.append(el("button", { class: "primary", disabled: !can || !managing,
       onclick: () => act("/api/v1/lead") }, "Become leader"));

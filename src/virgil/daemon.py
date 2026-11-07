@@ -41,6 +41,7 @@ from virgil.timing import Target, TimingManager
 from virgil.joining import JOIN_PATH, JoinError, handle_join
 from virgil.tls import Identity, fingerprint, fingerprint_of_der
 from virgil.webapi import WebApi
+from virgil.webextra import HTTP_PORT, HTTPS_PORT, NETAUDIO_PROXY_PORT, netaudio_app, redirect_app
 
 log = logging.getLogger("virgild")
 
@@ -746,6 +747,7 @@ class Daemon:
                 "netaudio": None if self.consoles is None else {
                     "running": self.netaudio_running,
                     "reachable": self.consoles.reachable,
+                    "ui_port": NETAUDIO_PROXY_PORT if self.systemd is not None else None,
                 },
                 "dante_devices": self.consoles.summaries() if self.consoles else [],
                 "device_settings": {
@@ -918,6 +920,35 @@ class Daemon:
                 log.exception("Couldn't reload the config")
 
 
+async def start_extras(daemon: Daemon, host: str, public: web.AppRunner) -> list[web.AppRunner]:
+    """The web UI on 443, a redirect from HTTP on 80, and netaudio's UI. None of them is essential."""
+    runners: list[web.AppRunner] = []
+    context = tls.public_server_context(daemon.identity)
+    try:
+        await web.TCPSite(public, host, HTTPS_PORT, ssl_context=context).start()
+    except OSError as error:
+        log.warning("Couldn't serve the web UI on port %d: %s", HTTPS_PORT, error)
+    redirect = web.AppRunner(redirect_app(), access_log=None)
+    await redirect.setup()
+    runners.append(redirect)
+    try:
+        await web.TCPSite(redirect, host, HTTP_PORT).start()
+    except OSError as error:
+        log.warning("Couldn't redirect HTTP on port %d: %s", HTTP_PORT, error)
+    if daemon.systemd is not None:  # netaudio is installed
+        def logged_in(token: str | None) -> bool:
+            return daemon.web is not None and daemon.web.sessions.valid(token)
+
+        netaudio = web.AppRunner(netaudio_app(logged_in), access_log=None)
+        await netaudio.setup()
+        runners.append(netaudio)
+        try:
+            await web.TCPSite(netaudio, host, NETAUDIO_PROXY_PORT, ssl_context=context).start()
+        except OSError as error:
+            log.warning("Couldn't serve netaudio's UI on port %d: %s", NETAUDIO_PROXY_PORT, error)
+    return runners
+
+
 async def serve(daemon: Daemon, host: str) -> None:
     public = web.AppRunner(daemon.public_app(), access_log=None)
     group = web.AppRunner(daemon.group_app(), access_log=None)
@@ -939,6 +970,7 @@ async def serve(daemon: Daemon, host: str) -> None:
     daemon.start_timing()
     daemon.start_ptp_watch()
     daemon.start_consoles()
+    extras = await start_extras(daemon, host, public)
     jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election(),
             daemon.tidy_ptp(), daemon.watch_consoles(), daemon.watch_clock(), daemon.watch_trim()]
     if daemon.timing is not None:
@@ -961,6 +993,8 @@ async def serve(daemon: Daemon, host: str) -> None:
             daemon.ptp_watcher.stop(asyncio.get_running_loop())
         if daemon.discovery is not None:
             await daemon.discovery.stop()
+        for runner in extras:
+            await runner.cleanup()
         await public.cleanup()
         await group.cleanup()
         await control.cleanup()
