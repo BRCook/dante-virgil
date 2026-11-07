@@ -75,7 +75,13 @@ def prepare(
     request = from_json(read_small_file(request_path, MAX_REQUEST_BYTES))
     setup = resolve_setup(request.ptp_interface, request.trim_ppb, request.use_nic_profile, lookup)
 
-    chrony = chrony_conf(request.role, setup, list(request.allow), request.leader, request.tuning)
+    hwtimestamp = None
+    if request.ntp_hwtimestamp is not None:
+        # Only if the interface really does timestamp in hardware.
+        interface = lookup(request.ntp_hwtimestamp)
+        if interface is not None and interface.physical and interface.mode is Timestamping.HARDWARE:
+            hwtimestamp = interface.name
+    chrony = chrony_conf(request.role, setup, list(request.allow), request.leader, request.tuning, hwtimestamp)
     phc2sys = phc2sys_args(setup, request.tuning) if request.role is Role.FOLLOWER else None
     hwstamp = hwstamp_ctl_args(setup)
     plan = {

@@ -170,7 +170,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             config.trim_ppb = int(value)
         except ValueError as error:
             raise CliError("trim_ppb must be a whole number") from error
-    elif key in ("observe_only", "auto_trim"):
+    elif key in ("observe_only", "auto_trim", "ntp_hwtimestamp"):
         if value.lower() not in ("true", "false"):
             raise CliError(f"{key} must be true or false")
         setattr(config, key, value.lower() == "true")
@@ -446,6 +446,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             names[address] = member["name"]
     for line in _describe_clock(status.get("clock"), names, status.get("leader")):
         print(f"  {line}")
+    if status.get("ntp_hwtimestamp"):
+        print(f"  NTP: hardware timestamps on {status['ntp_hwtimestamp']}")
     if status.get("state") == "leader":
         line = _auto_trim_line(status)
         if line:
@@ -678,7 +680,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_commands.add_parser("show", help="print the config file").set_defaults(func=cmd_config_show)
     config_set = config_commands.add_parser("set", help="change a setting")
     config_set.add_argument("key", choices=["name", "ptp_interface", "mgmt_interface", "trim_ppb", "observe_only",
-                                            "auto_trim"])
+                                            "auto_trim", "ntp_hwtimestamp"])
     config_set.add_argument("value")
     config_set.add_argument("--yes", action="store_true", help="accept warnings and NIC profiles without asking")
     config_set.set_defaults(func=cmd_config_set)

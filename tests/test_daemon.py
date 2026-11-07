@@ -667,3 +667,26 @@ def test_a_requested_restart(tmp_path):
 
     asyncio.run(scenario())
     assert a.restart.is_set() and RESTART_EXIT == 75
+
+
+def test_when_chrony_gets_hardware_timestamps(tmp_path):
+    from tests.test_setup import HARDWARE, INTERFACES
+    from virgil.interfaces import Interface, TimestampingInfo
+
+    interfaces = dict(INTERFACES)
+    # A second port on the i226's card, sharing its hardware clock (/dev/ptp0).
+    interfaces["enp1s0d1"] = Interface("enp1s0d1", "ff", "igc", True, True, TimestampingInfo(HARDWARE, 0, 3, 3))
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    lookup = interfaces.get
+    c = a.config
+    c.ptp_interface, c.mgmt_interface = "enp1s0", "enp5s0"
+    assert a.ntp_hwtimestamp_interface(lookup) is None  # Realtek management: software only
+    c.mgmt_interface = "enp1s0"
+    assert a.ntp_hwtimestamp_interface(lookup) is None  # the PTP interface itself: never shared
+    c.mgmt_interface = "enp1s0d1"
+    assert a.ntp_hwtimestamp_interface(lookup) is None  # same card, same hardware clock: never shared
+    c.mgmt_interface = "enp2s0"
+    assert a.ntp_hwtimestamp_interface(lookup) == "enp2s0"  # a separate hardware NIC (/dev/ptp1)
+    c.ntp_hwtimestamp = False
+    assert a.ntp_hwtimestamp_interface(lookup) is None

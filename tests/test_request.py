@@ -80,3 +80,11 @@ def test_bad_requests_are_rejected(text):
 def test_a_leader_needs_no_leader():
     request = from_json(_with(role="leader", leader=None))
     assert request.role is Role.LEADER and request.leader is None
+
+
+def test_ntp_hwtimestamp():
+    request = from_json(_with(ntp_hwtimestamp="enp1s0"))
+    assert request.ntp_hwtimestamp == "enp1s0"
+    assert from_json(to_json(request)) == request
+    with pytest.raises(RequestError):
+        from_json(_with(ntp_hwtimestamp="enp1s0; reboot"))
