@@ -16,7 +16,6 @@ import asyncio
 import copy
 import logging
 import os
-import socket
 import ssl
 import sys
 import time
@@ -472,6 +471,17 @@ class Daemon:
         return discovery.properties(self.config.id, self.config.name, __version__, group_id,
                                     self.public_port, self.group_port)
 
+    @property
+    def mdns_host(self) -> str:
+        """The host name in this Virgil's mDNS advert.
+
+        It isn't the machine's hostname: netaudio's daemon publishes that on the
+        PTP interface, and a lookup would then return the PTP interface's
+        address as well as the management interface's. Nothing else publishes
+        this name, so it only ever resolves to the management interface.
+        """
+        return f"virgil-{self.config.id[:12]}"
+
     async def check_network(self) -> None:
         """Follow the management interface's addresses, (re)starting discovery when they change."""
         interface = self.config.mgmt_interface
@@ -501,7 +511,7 @@ class Daemon:
                 log.info("%s is at %s", interface, ", ".join(addresses))
                 self.discovery = discovery.Discovery(self.on_advert)
                 await self.discovery.start(list(addresses), f"Virgil on {self.config.name}",
-                                           socket.gethostname(), self.public_port, self.advert_properties())
+                                           self.mdns_host, self.public_port, self.advert_properties())
             elif interface:
                 log.warning("%s has no IPv4 address yet, so other Virgils can't be found", interface)
             else:
