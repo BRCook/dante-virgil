@@ -387,6 +387,8 @@ function interfaceFacts(i, forPtp) {
       : el("span", { class: "caution" }, "Software timestamping only"));
   }
   if (!i.link_up) facts.push(el("span", { class: "caution" }, "No link"));
+  const lease = (status && status.dhcp_names || {})[forPtp ? "ptp" : "mgmt"];
+  if (lease) facts.push(el("span", { title: "The name this interface gives the DHCP server" }, `DHCP name ${lease}`));
   return facts;
 }
 

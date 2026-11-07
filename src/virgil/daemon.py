@@ -14,8 +14,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+import json
 import logging
 import os
+import socket
 import ssl
 import sys
 import time
@@ -31,6 +33,7 @@ from virgil import autotrim, clocks, discovery, ptpwatch, roles, tls
 from virgil.consoles import POLL_INTERVAL, Consoles, NetaudioClient
 from virgil.control import CONTROL_SOCKET, HANDOVER_PATH, LEAD_PATH
 from virgil.config import Config
+from virgil.files import atomic_write
 from virgil.election import Change, Election, State
 from virgil.generate import Role
 from virgil.group import GROUP_PORT, PUBLIC_PORT
@@ -77,6 +80,8 @@ LINK_LOCAL_GRACE = 30.0
 # Exiting with this has systemd start virgild again (Restart=on-failure).
 RESTART_EXIT = 75
 NETAUDIO_UNIT = "dante-virgil-netaudio.service"
+DHCP_NAMES_UNIT = "dante-virgil-dhcpnames.service"
+DHCP_NAMES_REQUEST = Path("/run/dante-virgil/dhcp-names.json")
 NETAUDIO_ENV = Path("/run/dante-virgil/netaudio.env")
 
 
@@ -127,6 +132,8 @@ class Daemon:
     netaudio_for: tuple[str, ...] | None = field(default=("unknown",), init=False)
     systemd: roles.Systemd | None = field(default=None, init=False)
     clock: dict | None = field(default=None, init=False)
+    # The interfaces whose DHCP lease names were last set, so they're only set again on a change.
+    dhcp_names_for: tuple | None = field(default=None, init=False)
     # What auto-trim last did, for status.
     last_trim: dict | None = field(default=None, init=False)
     # (trim applied, consoles' average) for recent steps, and why auto-trim paused, if it has.
@@ -723,6 +730,7 @@ class Daemon:
                 "leader": self.name_of(self.election.leader),
                 "group": None if group is None else {"id": group.id, "members": members},
                 "clock": self.clock,
+                "dhcp_names": dhcp_lease_names(),
                 "trim_ppb": self.config.trim_ppb,
                 "ntp_hwtimestamp": (self.timing.request.ntp_hwtimestamp
                                     if self.timing is not None and self.timing.request is not None else None),
@@ -811,6 +819,22 @@ class Daemon:
         self._trust_members()
         if self.discovery is not None:
             asyncio.ensure_future(self._update_advert())
+
+    def update_dhcp_names(self, systemd: roles.Systemd | None = None, path: Path = DHCP_NAMES_REQUEST) -> None:
+        """Ask virgil-root to name each chosen interface's DHCP lease, if the interfaces have changed."""
+        if not self.manage_timing:
+            return
+        wanted = (self.config.ptp_interface, self.config.mgmt_interface)
+        if wanted == self.dhcp_names_for:
+            return
+        try:
+            atomic_write(path, json.dumps({"ptp_interface": wanted[0], "mgmt_interface": wanted[1]}).encode(),
+                         mode=0o640)
+            (systemd or roles.Systemd()).start(DHCP_NAMES_UNIT, block=False)
+        except (OSError, roles.ServiceError) as error:
+            log.warning("Couldn't update the DHCP lease names: %s", error)
+            return
+        self.dhcp_names_for = wanted
 
     def request_restart(self, delay: float = 1.0) -> None:
         """Restart virgild shortly, once the current reply has gone out.
@@ -914,10 +938,19 @@ class Daemon:
             try:
                 if self.reload_if_changed():
                     await self._update_advert()
+                    self.update_dhcp_names()
                     if self.timing is not None:
                         self.timing.poke()
             except Exception:
                 log.exception("Couldn't reload the config")
+
+
+def dhcp_lease_names() -> dict[str, str]:
+    """The DHCP lease name each kind of interface asks for."""
+    from virgil.dhcpnames import host_label
+
+    hostname = socket.gethostname()
+    return {"ptp": host_label(hostname, "ptp"), "mgmt": host_label(hostname, "mgmt")}
 
 
 async def start_extras(daemon: Daemon, host: str, public: web.AppRunner) -> list[web.AppRunner]:
@@ -970,6 +1003,7 @@ async def serve(daemon: Daemon, host: str) -> None:
     daemon.start_timing()
     daemon.start_ptp_watch()
     daemon.start_consoles()
+    daemon.update_dhcp_names()
     extras = await start_extras(daemon, host, public)
     jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election(),
             daemon.tidy_ptp(), daemon.watch_consoles(), daemon.watch_clock(), daemon.watch_trim()]
