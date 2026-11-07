@@ -45,6 +45,8 @@ class Config:
     observe_only: bool = False
     # While leading, nudge the trim toward the consoles' own rate.
     auto_trim: bool = True
+    # Have chrony use the management interface's hardware timestamps, where it safely can.
+    ntp_hwtimestamp: bool = True
     # The web UI's password, as a scrypt hash. None means the web UI is read-only.
     web_password: str | None = None
     devices: dict[str, DeviceSettings] = field(default_factory=dict)
@@ -103,6 +105,7 @@ def from_dict(data: dict[str, Any]) -> Config:
         trim_ppb=_expect(data, "trim_ppb", int, optional=True) or 0,
         observe_only=_expect(data, "observe_only", bool, optional=True) or False,
         auto_trim=_expect(data, "auto_trim", bool, optional=True) is not False,
+        ntp_hwtimestamp=_expect(data, "ntp_hwtimestamp", bool, optional=True) is not False,
         web_password=_expect(data, "web_password", str, optional=True),
         devices=devices,
         group=group,
@@ -119,6 +122,7 @@ def to_dict(config: Config) -> dict[str, Any]:
     data["trim_ppb"] = config.trim_ppb
     data["observe_only"] = config.observe_only
     data["auto_trim"] = config.auto_trim
+    data["ntp_hwtimestamp"] = config.ntp_hwtimestamp
     if config.devices:
         data["devices"] = {
             mac: {"native_ptpv2": settings.native_ptpv2, "aes67": settings.aes67}

@@ -214,3 +214,52 @@ def test_falling_back_to_the_ptp_clock_identity():
 def test_a_mac_given_as_a_clock_identity():
     (device,) = parse_devices({"WingCompact.local.": {**WING, "mac_address": "001dc1fffe8d5d66"}})
     assert device.mac == "00:1d:c1:8d:5d:66"
+
+
+# The clock fields from the WingCompact's real netaudio record.
+REAL_CLOCK = {"ptpv2_enabled": True, "ptpv2_grandmaster_identity": "8ca682fffe713bb6", "servo_state": "synchronized"}
+BOX_A = "8c:a6:82:ff:fe:71:3b:b6"
+BOX_B = "8c:a6:82:ff:fe:00:00:02"
+
+
+def test_the_consoles_own_view():
+    (device,) = parse_devices({"WingCompact.local.": {**WING, "clock_status": REAL_CLOCK}})
+    assert device.grandmaster == BOX_A and device.servo == "synchronized"
+
+
+def _run(record, own, local_follows=False, wait=25):
+    fake = FakeNetaudio({"WingCompact.local.": record})
+
+    async def scenario(client):
+        now = [100.0]
+        consoles = Consoles(client, lambda: {"10.10.100.50": local_follows}, lambda: {}, clock=lambda: now[0],
+                            own_identity=lambda: own, member_identities=lambda: {BOX_B: "Box B"})
+        await consoles.poll()
+        now[0] += wait
+        await consoles.poll()
+        return consoles.summaries()[0]
+
+    return asyncio.run(_with_fake(fake, scenario))
+
+
+def test_following_comes_from_the_console_itself():
+    summary = _run({**WING, "clock_status": REAL_CLOCK}, own=BOX_A, local_follows=False)
+    assert summary["follows_this_virgil"] is True and summary["warnings"] == []
+
+
+def test_a_console_following_another_members_grandmaster():
+    record = {**WING, "clock_status": {**REAL_CLOCK, "ptpv2_grandmaster_identity": "8ca682fffe000002"}}
+    summary = _run(record, own=BOX_A, local_follows=True)
+    assert summary["follows_this_virgil"] is False
+    assert summary["warnings"] == ["Wing-Compact is following Box B's grandmaster, not this Virgil's"]
+
+
+def test_a_console_still_settling():
+    record = {**WING, "clock_status": {**REAL_CLOCK, "servo_state": "holdover"}}
+    assert _run(record, own=BOX_A, wait=5)["warnings"] == []  # grace period
+    assert _run(record, own=BOX_A)["warnings"] == ["Wing-Compact's clock isn't synchronised yet (its servo is holdover)"]
+
+
+def test_without_our_own_identity_the_delay_requests_decide():
+    summary = _run({**WING, "clock_status": REAL_CLOCK}, own=None, local_follows=True)
+    assert summary["follows_this_virgil"] is True

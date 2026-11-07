@@ -154,9 +154,12 @@ function consoleRows(devices) {
   return el("ul", { class: "consoles" }, devices.map((d) => {
     const following = d.follows_this_virgil;
     const offset = d.clock_offset_ppb;
-    const state = !following ? "fault" : (offset !== null && Math.abs(offset) > 1000 ? "amber" : "ok");
+    const settling = d.servo && d.servo !== "synchronized";
+    const state = !following ? "fault"
+      : (settling || (offset !== null && Math.abs(offset) > 1000) ? "amber" : "ok");
     return el("li", { class: "console" },
-      el("span", { class: "console-name", title: d.model || "" }, el("span", { class: `dot ${state}` }), d.name),
+      el("span", { class: "console-name", title: [d.model, d.servo && `servo ${d.servo}`].filter(Boolean).join(", ") },
+        el("span", { class: `dot ${state}` }), d.name),
       el("span", {}, offset === null || offset === undefined ? (following ? "locked" : "not following") : ppm(offset)));
   }));
 }
@@ -337,15 +340,15 @@ function interfacesSection(can) {
   const ptp = choose("ptp", interfaces.interfaces.filter((i) => i.ptp_capable), interfaces.ptp_interface);
   const mgmt = choose("mgmt", interfaces.interfaces, interfaces.mgmt_interface);
   parts.push(
-    el("div", { class: "row" }, el("label", { class: "field" }, "Faces the console (PTP)", ptp)),
-    el("div", { class: "row" }, el("label", { class: "field" }, "Talks to other Virgils (management)", mgmt)),
+    el("div", { class: "row" }, el("label", { class: "field" }, "PTP (faces the console)", ptp)),
+    el("div", { class: "row" }, el("label", { class: "field" }, "Management (communicates with other Virgils)", mgmt)),
     el("div", { class: "row" }, el("button", { disabled: !can, onclick: () => saveInterfaces(ptp.value, mgmt.value) },
       "Save interfaces")),
     el("p", { class: "hint" }, "Saving restarts Virgil. Changing the PTP interface also sets the clocks up from "
       + "scratch, so the console re-locks once."));
   const chosen = interfaces.interfaces.find((i) => i.name === ptp.value);
   if (chosen && chosen.profile) {
-    parts.push(el("p", { class: "hint" }, `${chosen.profile.description}: ${chosen.profile.notes}`));
+    parts.push(el("p", { class: "hint" }, chosen.profile.description));
   }
   return parts;
 }

@@ -12,3 +12,4 @@ def test_known_drivers():
 def test_unknown_driver():
     assert profile_for("e1000e") is None
     assert profile_for(None) is None
+

@@ -55,6 +55,8 @@ class TimingRequest:
     # Whether to apply the known NIC profile for the PTP interface's driver.
     use_nic_profile: bool = True
     tuning: Tuning = Tuning()
+    # The management interface, if chrony should use its hardware timestamps.
+    ntp_hwtimestamp: str | None = None
 
 
 def to_json(request: TimingRequest) -> str:
@@ -155,6 +157,10 @@ def from_json(text: str | bytes) -> TimingRequest:
     if not isinstance(use_profile, bool):
         raise RequestError("use_nic_profile must be true or false")
 
+    hwtimestamp = data.get("ntp_hwtimestamp")
+    if hwtimestamp is not None and (not isinstance(hwtimestamp, str) or not INTERFACE_NAME.match(hwtimestamp)):
+        raise RequestError("ntp_hwtimestamp is not a valid interface name")
+
     return TimingRequest(
         role=role,
         ptp_interface=interface,
@@ -163,4 +169,5 @@ def from_json(text: str | bytes) -> TimingRequest:
         trim_ppb=trim,
         use_nic_profile=use_profile,
         tuning=_tuning(data.get("tuning", {})),
+        ntp_hwtimestamp=hwtimestamp,
     )

@@ -86,9 +86,16 @@ def _chrony_common() -> list[str]:
     ]
 
 
-def chrony_leader_conf(setup: TimingSetup, allow: list[str]) -> str:
+def _hwtimestamp(interface: str | None) -> list[str]:
+    """Timestamp NTP packets in the NIC, which cuts a follower's jitter a long way."""
+    if interface is None:
+        return []
+    return ["", "# NTP timestamps from the management interface's hardware", f"hwtimestamp {interface} rxfilter all"]
+
+
+def chrony_leader_conf(setup: TimingSetup, allow: list[str], hwtimestamp: str | None = None) -> str:
     """chrony on the leader: the system clock follows the PHC, and is served to the group."""
-    lines = _chrony_common()
+    lines = _chrony_common() + _hwtimestamp(hwtimestamp)
     lines += [
         "",
         "# Serve this Virgil's clock to the group, with no other source",
@@ -101,9 +108,10 @@ def chrony_leader_conf(setup: TimingSetup, allow: list[str]) -> str:
     return "\n".join(lines)
 
 
-def chrony_follower_conf(leader: str, allow: list[str], tuning: Tuning = DEFAULT_TUNING) -> str:
+def chrony_follower_conf(leader: str, allow: list[str], tuning: Tuning = DEFAULT_TUNING,
+                         hwtimestamp: str | None = None) -> str:
     """chrony on a follower: follow the leader, keeping only the fastest round trips."""
-    lines = _chrony_common()
+    lines = _chrony_common() + _hwtimestamp(hwtimestamp)
     lines += [
         "",
         "# Follow the leader over the link, keeping only the fastest round trips",
@@ -126,12 +134,12 @@ def chrony_follower_conf(leader: str, allow: list[str], tuning: Tuning = DEFAULT
 
 
 def chrony_conf(role: Role, setup: TimingSetup, allow: list[str], leader: str | None = None,
-                tuning: Tuning = DEFAULT_TUNING) -> str:
+                tuning: Tuning = DEFAULT_TUNING, hwtimestamp: str | None = None) -> str:
     if role is Role.LEADER:
-        return chrony_leader_conf(setup, allow)
+        return chrony_leader_conf(setup, allow, hwtimestamp)
     if leader is None:
         raise ValueError("a follower needs a leader")
-    return chrony_follower_conf(leader, allow, tuning)
+    return chrony_follower_conf(leader, allow, tuning, hwtimestamp)
 
 
 def phc2sys_args(setup: TimingSetup, tuning: Tuning = DEFAULT_TUNING) -> list[str] | None:

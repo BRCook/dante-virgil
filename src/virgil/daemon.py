@@ -35,7 +35,7 @@ from virgil.election import Change, Election, State
 from virgil.generate import Role
 from virgil.group import GROUP_PORT, PUBLIC_PORT
 from virgil.heartbeat import HEARTBEAT_PATH, Heartbeat, HeartbeatError, decode
-from virgil.interfaces import get_interface, ipv4_addresses, ipv4_networks, is_link_local
+from virgil.interfaces import Timestamping, get_interface, ipv4_addresses, ipv4_networks, is_link_local
 from virgil.request import TimingRequest
 from virgil.timing import Target, TimingManager
 from virgil.joining import JOIN_PATH, JoinError, handle_join
@@ -161,6 +161,28 @@ class Daemon:
         elif self.timing.request is not None:
             log.info("The timing services are running; keeping them as they are until the election decides")
 
+    def ntp_hwtimestamp_interface(self, lookup=get_interface) -> str | None:
+        """The management interface, if chrony can use its hardware timestamps.
+
+        Never on the NIC ptp4l uses: not the same interface, and not another
+        port sharing its hardware clock. Hardware timestamps are only ever
+        used by one program per NIC.
+        """
+        config = self.config
+        if not config.ntp_hwtimestamp or config.mgmt_interface is None:
+            return None
+        if config.mgmt_interface == config.ptp_interface:
+            return None
+        interface = lookup(config.mgmt_interface)
+        if interface is None or not interface.physical or interface.mode is not Timestamping.HARDWARE:
+            return None
+        ptp = lookup(config.ptp_interface) if config.ptp_interface else None
+        if ptp is not None and ptp.timestamping is not None and interface.timestamping is not None \
+                and ptp.timestamping.phc_index >= 0 \
+                and ptp.timestamping.phc_index == interface.timestamping.phc_index:
+            return None  # another port on the same card, sharing its hardware clock
+        return config.mgmt_interface
+
     def build_request(self, target: Target) -> TimingRequest | None:
         config = self.config
         if config.ptp_interface is None:
@@ -170,13 +192,15 @@ class Daemon:
             if not networks:
                 log.warning("The management interface has no network, so no follower can sync to this Virgil")
             return TimingRequest(Role.LEADER, config.ptp_interface, None, tuple(networks),
-                                 config.trim_ppb, config.nic_profile is not None)
+                                 config.trim_ppb, config.nic_profile is not None,
+                                 ntp_hwtimestamp=self.ntp_hwtimestamp_interface())
         addresses = self.addresses_for(target.leader_id) if target.leader_id else []
         if not addresses:
             return None
         leader = addresses[0]
         return TimingRequest(Role.FOLLOWER, config.ptp_interface, leader, tuple(networks or [leader]),
-                             config.trim_ppb, config.nic_profile is not None)
+                             config.trim_ppb, config.nic_profile is not None,
+                             ntp_hwtimestamp=self.ntp_hwtimestamp_interface())
 
     def on_applied(self, target: Target | None) -> None:
         """The timing services now match the election's decision."""
@@ -276,8 +300,13 @@ class Daemon:
             device = self.ptp.devices.get(address)
             return device.clock_identity if device else None
 
+        def member_identities() -> dict[str, str]:
+            return {p.heartbeat.ptp_identity: p.heartbeat.name for p in self.peers.values()
+                    if p.heartbeat.ptp_identity}
+
         self.consoles = Consoles(client or NetaudioClient(), local, lambda: self.config.devices,
-                                 clock_identity=clock_identity)
+                                 clock_identity=clock_identity, own_identity=lambda: self.ptp.own_identity,
+                                 member_identities=member_identities)
 
     def check_ptp_interface(self) -> None:
         """Follow the PTP interface's addresses, and run netaudio's daemon only while it has one."""
@@ -694,6 +723,8 @@ class Daemon:
                 "group": None if group is None else {"id": group.id, "members": members},
                 "clock": self.clock,
                 "trim_ppb": self.config.trim_ppb,
+                "ntp_hwtimestamp": (self.timing.request.ntp_hwtimestamp
+                                    if self.timing is not None and self.timing.request is not None else None),
                 "auto_trim": {"enabled": self.config.auto_trim, "last": self.last_trim, "paused": self.trim_paused},
                 "ptp": {
                     "interface": self.config.ptp_interface,

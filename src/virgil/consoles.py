@@ -33,7 +33,8 @@ POLL_INTERVAL = 10.0
 DIAGNOSTICS_INTERVAL = 60.0
 # The least time between attempts to change one setting on one device.
 CHANGE_INTERVAL = 30.0
-# How long a device with PTPv2 on gets to start following this Virgil before a warning.
+# How long a device with PTPv2 on gets to start following this Virgil, or to
+# synchronise, before a warning.
 FOLLOW_GRACE = 20.0
 
 
@@ -61,6 +62,9 @@ class DanteDevice:
     clock_offset_ppb: int | None
     # AES67 mode as configured; it may only take effect after the device restarts.
     aes67_configured: bool | None = None
+    # The device's own view of its clock: the PTPv2 grandmaster it follows, and its servo.
+    grandmaster: str | None = None
+    servo: str | None = None
     follows_this_virgil: bool = False
     warnings: list[str] = field(default_factory=list)
 
@@ -74,6 +78,8 @@ class DanteDevice:
             "aes67": self.aes67,
             "clock_offset_ppb": self.clock_offset_ppb,
             "follows_this_virgil": self.follows_this_virgil,
+            "grandmaster": self.grandmaster,
+            "servo": self.servo,
             "warnings": list(self.warnings),
         }
 
@@ -112,6 +118,16 @@ def mac_from_clock_identity(identity: str | None) -> str | None:
     return normalise_mac(digits[:6] + digits[10:])
 
 
+def clock_identity(value: Any) -> str | None:
+    """A PTP clock identity, such as '8ca682fffe713bb6', as '8c:a6:82:ff:fe:71:3b:b6'."""
+    if not isinstance(value, str):
+        return None
+    digits = re.sub(r"[^0-9a-fA-F]", "", value).lower()
+    if len(digits) != 16:
+        return None
+    return ":".join(digits[i : i + 2] for i in range(0, 16, 2))
+
+
 def _bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
@@ -141,6 +157,8 @@ def parse_devices(data: Any) -> list[DanteDevice]:
                 aes67=_bool(record.get("aes67_current")),
                 clock_offset_ppb=offset if isinstance(offset, int) and not isinstance(offset, bool) else None,
                 aes67_configured=_bool(record.get("aes67_configured")),
+                grandmaster=clock_identity(clock_status.get("ptpv2_grandmaster_identity")),
+                servo=str(clock_status["servo_state"]) if isinstance(clock_status.get("servo_state"), str) else None,
             )
         )
     return devices
@@ -186,6 +204,9 @@ class Consoles:
     clock: Callable[[], float] = time.monotonic
     # The PTP clock identity PTP watching has seen from an address, if any.
     clock_identity: Callable[[str], str | None] = lambda address: None
+    # This Virgil's own grandmaster identity, and the other members' (identity to name).
+    own_identity: Callable[[], str | None] = lambda: None
+    member_identities: Callable[[], dict[str, str]] = dict
     devices: dict[str, DanteDevice] = field(default_factory=dict)
     diagnostics: dict[str, Any] = field(default_factory=dict)
     reachable: bool | None = None
@@ -211,7 +232,12 @@ class Consoles:
         for device in parse_devices(data):
             if device.address not in local:
                 continue
-            device.follows_this_virgil = local[device.address]
+            own = self.own_identity()
+            # The device's own word is best; the Delay Requests PTP watching hears are the fallback.
+            if device.grandmaster is not None and own is not None:
+                device.follows_this_virgil = device.grandmaster == own
+            else:
+                device.follows_this_virgil = local[device.address]
             if device.mac is None:
                 device.mac = mac_from_clock_identity(self.clock_identity(device.address))
             if device.address not in self.devices:
@@ -267,10 +293,20 @@ class Consoles:
         if device.ptpv2 is False and device.aes67 is not True:
             self._ptpv2_since.pop(device.address, None)
             return [f"{device.name} has PTPv2 off, so it can't follow this Virgil"]
-        if device.ptpv2 or device.aes67:
-            since = self._ptpv2_since.setdefault(device.address, now)
-            if not device.follows_this_virgil and now - since >= FOLLOW_GRACE:
-                return [f"{device.name} has PTPv2 on, but isn't following this Virgil"]
+        if not (device.ptpv2 or device.aes67):
+            return []
+        since = self._ptpv2_since.setdefault(device.address, now)
+        if now - since < FOLLOW_GRACE:
+            return []
+        if not device.follows_this_virgil:
+            own = self.own_identity()
+            if device.grandmaster is not None and own is not None and device.grandmaster != own:
+                other = self.member_identities().get(device.grandmaster)
+                source = f"{other}'s grandmaster" if other else f"another grandmaster ({device.grandmaster})"
+                return [f"{device.name} is following {source}, not this Virgil's"]
+            return [f"{device.name} has PTPv2 on, but isn't following this Virgil"]
+        if device.servo is not None and device.servo != "synchronized":
+            return [f"{device.name}'s clock isn't synchronised yet (its servo is {device.servo})"]
         return []
 
     def summaries(self) -> list[dict[str, Any]]:

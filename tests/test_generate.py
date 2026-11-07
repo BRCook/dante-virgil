@@ -134,3 +134,11 @@ def test_a_negative_trim_isnt_read_as_an_option():
     (set_time, set_rate) = sync_commands(leader, leader=None)
     assert set_rate.args == ("/usr/sbin/phc_ctl", "/dev/ptp0", "--", "freq", "-5400")
     assert trim_command(leader).args == ("/usr/sbin/phc_ctl", "/dev/ptp0", "--", "freq", "-5400")
+
+
+def test_ntp_hardware_timestamps():
+    leader = chrony_conf(Role.LEADER, I226, allow=["10.0.0.0/24"], hwtimestamp="enp1s0")
+    follower = chrony_conf(Role.FOLLOWER, I226, allow=["10.0.0.1"], leader="10.0.0.1", hwtimestamp="enp1s0")
+    for text in (leader, follower):
+        assert "hwtimestamp enp1s0 rxfilter all" in _settings(text)
+    assert not any(line.startswith("hwtimestamp") for line in _settings(chrony_conf(Role.LEADER, I226, allow=[])))

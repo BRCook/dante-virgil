@@ -183,3 +183,10 @@ def test_trim(tmp_path):
     run = Recorder()
     assert trim(_prepare(tmp_path, _leader("enp5s0")), run) == 0  # software timestamping: no PHC
     assert run.calls == []
+
+
+def test_ntp_hardware_timestamps_only_on_hardware(tmp_path):
+    generated = _prepare(tmp_path, _follower(ntp_hwtimestamp="enp1s0"))
+    assert "hwtimestamp enp1s0 rxfilter all" in (generated / "chrony.conf").read_text()
+    generated = _prepare(tmp_path, _follower(ntp_hwtimestamp="enp5s0"))  # software only: ignored
+    assert "hwtimestamp" not in (generated / "chrony.conf").read_text()
