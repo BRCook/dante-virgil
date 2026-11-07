@@ -7,7 +7,7 @@ license = "AGPL-3.0-or-later"
 requires-python = ">=3.13"
 dependencies = [
     "aiohttp>=3.9",
-    "netaudio==1.0.0",
+    "netaudio==1.0.1",
     "tomli-w>=1.0",
     "zeroconf>=0.131",
 ]
@@ -28,8 +28,8 @@ environments = [
 # as the prebuilt wheel for each architecture on the fork's GitHub release.
 [tool.uv.sources]
 netaudio = [
-    { url = "https://github.com/BRCook/netaudio/releases/download/v1.0.0/netaudio-1.0.0-py3-none-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/BRCook/netaudio/releases/download/v1.0.0/netaudio-1.0.0-py3-none-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/BRCook/netaudio/releases/download/v1.0.1/netaudio-1.0.1-py3-none-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/BRCook/netaudio/releases/download/v1.0.1/netaudio-1.0.1-py3-none-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 
 [dependency-groups]
