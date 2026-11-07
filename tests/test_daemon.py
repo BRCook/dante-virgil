@@ -547,3 +547,64 @@ def test_taking_the_lead_adopts_the_phc_rate_as_the_trim(tmp_path):
     b.clock = None
     b.adopt_phc_rate()  # nothing known: leave it
     assert b.config.trim_ppb == 22345
+
+
+def _leading_with_consoles(tmp_path, offsets, auto_trim=True):
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.trim_ppb = 600
+    config.auto_trim = auto_trim
+    config_file.save(config, paths["A"])
+    a = Daemon(paths["A"], identities["A"])
+    a.election.resume(State.LEADER, None, 0.0)
+
+    class Timing:
+        pokes = 0
+
+        def poke(self):
+            Timing.pokes += 1
+
+    a.timing = Timing()
+    beat = Heartbeat(configs["B"].id, "Virgil B", "0.1.0", State.FOLLOWER, 1, configs["A"].id, False, None,
+                     dante_devices=tuple({"name": f"Wing {i}", "follows_this_virgil": True, "clock_offset_ppb": o}
+                                         for i, o in enumerate(offsets)))
+    from virgil.daemon import Peer
+
+    a.peers[configs["B"].id] = Peer(beat, 100.0)
+    return a, paths["A"], Timing
+
+
+def test_auto_trim_slows_a_fast_leader(tmp_path):
+    a, path, timing = _leading_with_consoles(tmp_path, [4750])
+    a.trim_once(101.0)
+    assert a.config.trim_ppb == 100  # 600 - 500, the most in one step
+    assert config_file.load(path).trim_ppb == 100
+    assert timing.pokes == 1
+    assert a.last_trim["from_ppb"] == 600 and a.last_trim["consoles_ppb"] == 4750
+
+
+def test_auto_trim_leaves_a_good_trim_alone(tmp_path):
+    a, path, timing = _leading_with_consoles(tmp_path, [150])
+    a.trim_once(101.0)
+    assert a.config.trim_ppb == 600 and timing.pokes == 0
+
+
+def test_auto_trim_off(tmp_path):
+    a, path, timing = _leading_with_consoles(tmp_path, [4750], auto_trim=False)
+    a.trim_once(101.0)
+    assert a.config.trim_ppb == 600
+
+
+def test_auto_trim_only_on_a_settled_leader(tmp_path):
+    a, path, timing = _leading_with_consoles(tmp_path, [4750])
+    a.trim_once(10.0)  # took the lead at 0; still settling
+    assert a.config.trim_ppb == 600
+    a.election.resume(State.FOLLOWER, "f" * 32, 0.0)
+    a.trim_once(101.0)
+    assert a.config.trim_ppb == 600
+
+
+def test_auto_trim_ignores_members_not_heard_from(tmp_path):
+    a, path, timing = _leading_with_consoles(tmp_path, [4750])
+    a.trim_once(200.0)  # B last heard at 100
+    assert a.config.trim_ppb == 600

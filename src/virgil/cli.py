@@ -183,10 +183,10 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             config.trim_ppb = int(value)
         except ValueError as error:
             raise CliError("trim_ppb must be a whole number") from error
-    elif key == "observe_only":
+    elif key in ("observe_only", "auto_trim"):
         if value.lower() not in ("true", "false"):
-            raise CliError("observe_only must be true or false")
-        config.observe_only = value.lower() == "true"
+            raise CliError(f"{key} must be true or false")
+        setattr(config, key, value.lower() == "true")
     config_file.save(config, args.config)
     print(f"Set {key}")
     if key in RESTART_KEYS:
@@ -456,6 +456,10 @@ def cmd_status(args: argparse.Namespace) -> int:
             names[address] = member["name"]
     for line in _describe_clock(status.get("clock"), names, status.get("leader")):
         print(f"  {line}")
+    if status.get("state") == "leader":
+        line = _auto_trim_line(status)
+        if line:
+            print(f"  {line}")
     ptp = status.get("ptp") or {}
     netaudio = status.get("netaudio")
     if ptp.get("interface") and ptp.get("link_up") is False:
@@ -516,25 +520,51 @@ def cmd_status(args: argparse.Namespace) -> int:
 # trim
 
 
+def _ago(when: float) -> str:
+    seconds = max(0, time.time() - when)
+    if seconds < 90:
+        return f"{seconds:.0f} s ago"
+    if seconds < 5400:
+        return f"{seconds / 60:.0f} min ago"
+    return f"{seconds / 3600:.1f} h ago"
+
+
+def _auto_trim_line(status: dict) -> str | None:
+    auto = status.get("auto_trim")
+    if auto is None:
+        return None  # an older virgild
+    if not auto.get("enabled"):
+        return "Auto-trim: off"
+    last = auto.get("last")
+    if not last:
+        return "Auto-trim: on, no changes yet" if status.get("state") == "leader" else None
+    return (f"Auto-trim: on, last {last['from_ppb'] / 1000:+.3f} to {last['to_ppb'] / 1000:+.3f} ppm "
+            f"(consoles {last['consoles_ppb'] / 1000:+.3f} ppm), {_ago(last['at'])}")
+
+
 def cmd_trim(args: argparse.Namespace) -> int:
+    if args.ppm is None:
+        status = fetch_status(args.tls_dir)
+        leading = status.get("state") == "leader"
+        print(f"{status['name']}: trim {status.get('trim_ppb', 0) / 1000:+.3f} ppm, "
+              + ("leading" if leading else "not leading, so not in use"))
+        line = _auto_trim_line(status)
+        if line:
+            print(f"  {line}")
+        consoles = [(status["name"], d) for d in status.get("dante_devices") or []]
+        for member in (status.get("group") or {}).get("members", []):
+            consoles += [(member["name"], d) for d in member.get("dante_devices") or []]
+        for virgil, device in consoles:
+            if device.get("clock_offset_ppb") is not None:
+                print(f"  {device['name']} (on {virgil}): clock {device['clock_offset_ppb'] / 1000:+.3f} ppm")
+        return 0
+
     config = config_file.load(args.config)
     try:
         status = fetch_status(args.tls_dir)
     except CliError:
         status = None
     leading = status is not None and status.get("state") == "leader"
-
-    if args.ppm is None:
-        print(f"{config.name}: trim {config.trim_ppb / 1000:+.3f} ppm"
-              + ("" if status is None else (", leading" if leading else ", not leading, so not in use")))
-        if status is not None:
-            consoles = [(config.name, d) for d in status.get("dante_devices") or []]
-            for member in (status.get("group") or {}).get("members", []):
-                consoles += [(member["name"], d) for d in member.get("dante_devices") or []]
-            for virgil, device in consoles:
-                if device.get("clock_offset_ppb") is not None:
-                    print(f"  {device['name']} (on {virgil}): clock {device['clock_offset_ppb'] / 1000:+.3f} ppm")
-        return 0
 
     try:
         trim = round(float(args.ppm) * 1000)
@@ -548,6 +578,9 @@ def cmd_trim(args: argparse.Namespace) -> int:
         print(f"{config.name} is leading, so its PHC changes to {trim / 1000:+.3f} ppm within a few seconds.")
     else:
         print(f"Set {config.name}'s trim to {trim / 1000:+.3f} ppm. It only takes effect while it leads.")
+    if config.auto_trim:
+        print("Auto-trim is on, so it will carry on adjusting from here. "
+              "To stop it: sudo virgilctl config set auto_trim false")
     return 0
 
 
@@ -626,7 +659,8 @@ def build_parser() -> argparse.ArgumentParser:
     config_commands.add_parser("init", help="create the config file").set_defaults(func=cmd_config_init)
     config_commands.add_parser("show", help="print the config file").set_defaults(func=cmd_config_show)
     config_set = config_commands.add_parser("set", help="change a setting")
-    config_set.add_argument("key", choices=["name", "ptp_interface", "mgmt_interface", "trim_ppb", "observe_only"])
+    config_set.add_argument("key", choices=["name", "ptp_interface", "mgmt_interface", "trim_ppb", "observe_only",
+                                            "auto_trim"])
     config_set.add_argument("value")
     config_set.add_argument("--yes", action="store_true", help="accept warnings and NIC profiles without asking")
     config_set.set_defaults(func=cmd_config_set)
