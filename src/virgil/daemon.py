@@ -104,6 +104,9 @@ class Daemon:
     clock: dict | None = field(default=None, init=False)
     # What auto-trim last did, for status.
     last_trim: dict | None = field(default=None, init=False)
+    # (trim applied, consoles' average) for recent steps, and why auto-trim paused, if it has.
+    trim_history: list = field(default_factory=list, init=False)
+    trim_paused: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.config = config_file.load(self.config_path)
@@ -428,16 +431,36 @@ class Daemon:
 
     def trim_once(self, now: float) -> None:
         """One auto-trim step, if this Virgil is leading and has consoles to go on."""
-        if self.timing is None or not self.config.auto_trim or self.election.state is not State.LEADER:
+        if not self.config.auto_trim:
+            self.trim_paused = None  # Turning it off and on again resumes it.
+            self.trim_history.clear()
+            return
+        if self.timing is None or self.election.state is not State.LEADER or self.trim_paused:
             return
         if now - self.election.since < autotrim.INTERVAL:
+            self.trim_history.clear()
             return  # Let things settle after taking the lead.
-        offsets = self.console_offsets(now)
+        request = self.timing.request
+        if request is None or request.trim_ppb != self.config.trim_ppb:
+            return  # The last trim hasn't been applied yet.
+        offsets = autotrim.plausible(self.console_offsets(now))
+        if not offsets:
+            return
+        average = sum(offsets) / len(offsets)
+        self.trim_history = (self.trim_history + [(self.config.trim_ppb, average)])[-4:]
+        if autotrim.unresponsive(self.trim_history):
+            first_trim, first_average = self.trim_history[0]
+            self.trim_paused = (
+                f"the trim moved {(self.config.trim_ppb - first_trim) / 1000:+.3f} ppm but the consoles only "
+                f"{(average - first_average) / 1000:+.3f} ppm"
+            )
+            log.warning("Auto-trim paused: %s. Restart virgild, or turn auto_trim off and on, to resume",
+                        self.trim_paused)
+            return
         new = autotrim.next_trim(self.config.trim_ppb, offsets)
         if new is None:
             return
         old = self.config.trim_ppb
-        average = sum(autotrim.plausible(offsets)) / len(autotrim.plausible(offsets))
         log.info("Auto-trim: consoles average %+.3f ppm, so the trim goes from %+.3f to %+.3f ppm",
                  average / 1000, old / 1000, new / 1000)
         self.config.trim_ppb = new
@@ -639,7 +662,7 @@ class Daemon:
                 "group": None if group is None else {"id": group.id, "members": members},
                 "clock": self.clock,
                 "trim_ppb": self.config.trim_ppb,
-                "auto_trim": {"enabled": self.config.auto_trim, "last": self.last_trim},
+                "auto_trim": {"enabled": self.config.auto_trim, "last": self.last_trim, "paused": self.trim_paused},
                 "ptp": {
                     "interface": self.config.ptp_interface,
                     "link_up": self._ptp_link_up(),

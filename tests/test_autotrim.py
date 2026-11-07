@@ -1,6 +1,6 @@
 import pytest
 
-from virgil.autotrim import DEADBAND, MAX_STEP, MAX_TRIM, next_trim
+from virgil.autotrim import DEADBAND, MAX_STEP, MAX_TRIM, next_trim, unresponsive
 
 
 def test_a_fast_leader_is_slowed_down():
@@ -44,3 +44,11 @@ def test_converges_for_a_range_of_console_responses(response):
             break
         trim = new
     assert abs(natural + response * trim) <= DEADBAND
+
+
+def test_unresponsive():
+    assert not unresponsive([])
+    assert not unresponsive([(2000, 7350)])
+    assert not unresponsive([(2000, 7350), (0, 5370)])  # the bench: 1:1
+    assert not unresponsive([(2000, 7350), (1000, 7300)])  # not far enough to judge yet
+    assert unresponsive([(0, 5370), (-500, 5379), (-1000, 5394), (-1500, 5379)])  # tonight's runaway

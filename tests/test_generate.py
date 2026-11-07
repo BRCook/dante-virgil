@@ -105,15 +105,15 @@ def test_sync_on_the_r8126_matches_the_reference_build():
     assert sync_commands(RTL8126, leader="192.168.20.21") == [
         Command(("/usr/sbin/chronyd", "-q", "-t", "20", "server 192.168.20.21 iburst"), may_fail=True),
         Command(("/usr/sbin/hwstamp_ctl", "-i", "enp191s0", "-t", "1", "-r", "12")),
-        Command(("/usr/sbin/phc_ctl", "/dev/ptp0", "set")),
-        Command(("/usr/sbin/phc_ctl", "/dev/ptp0", "freq", "22800")),
+        Command(("/usr/sbin/phc_ctl", "/dev/ptp0", "--", "set")),
+        Command(("/usr/sbin/phc_ctl", "/dev/ptp0", "--", "freq", "22800")),
     ]
 
 
 def test_sync_without_a_leader_keeps_its_own_clock():
     assert sync_commands(I226, leader=None) == [
-        Command(("/usr/sbin/phc_ctl", "/dev/ptp0", "set")),
-        Command(("/usr/sbin/phc_ctl", "/dev/ptp0", "freq", "21500")),
+        Command(("/usr/sbin/phc_ctl", "/dev/ptp0", "--", "set")),
+        Command(("/usr/sbin/phc_ctl", "/dev/ptp0", "--", "freq", "21500")),
     ]
 
 
@@ -125,5 +125,12 @@ def test_sync_with_software_timestamping_only_takes_the_time():
 
 
 def test_trim_command():
-    assert trim_command(I226) == Command(("/usr/sbin/phc_ctl", "/dev/ptp0", "freq", "21500"))
+    assert trim_command(I226) == Command(("/usr/sbin/phc_ctl", "/dev/ptp0", "--", "freq", "21500"))
     assert trim_command(SOFTWARE) is None
+
+
+def test_a_negative_trim_isnt_read_as_an_option():
+    leader = TimingSetup(ptp_interface="enp1s0", phc="/dev/ptp0", trim_ppb=-5400)
+    (set_time, set_rate) = sync_commands(leader, leader=None)
+    assert set_rate.args == ("/usr/sbin/phc_ctl", "/dev/ptp0", "--", "freq", "-5400")
+    assert trim_command(leader).args == ("/usr/sbin/phc_ctl", "/dev/ptp0", "--", "freq", "-5400")

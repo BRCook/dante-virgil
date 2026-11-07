@@ -56,7 +56,7 @@ def test_follower_with_a_phc(tmp_path):
         "args": ["/usr/sbin/chronyd", "-q", "-t", "20", "server 192.168.20.21 iburst"],
         "may_fail": True,
     }
-    assert plan["sync"][-1]["args"] == ["/usr/sbin/phc_ctl", "/dev/ptp0", "freq", "22800"]
+    assert plan["sync"][-1]["args"] == ["/usr/sbin/phc_ctl", "/dev/ptp0", "--", "freq", "22800"]
 
 
 def test_leader_has_no_phc2sys(tmp_path):
@@ -154,7 +154,7 @@ def test_sync_stops_when_the_phc_cant_be_set(tmp_path):
     generated = _prepare(tmp_path, _follower())
     run = Recorder({"/usr/sbin/phc_ctl": 2})
     assert sync(generated, run) == 2
-    assert run.calls[-1] == ["/usr/sbin/phc_ctl", "/dev/ptp0", "set"]
+    assert run.calls[-1] == ["/usr/sbin/phc_ctl", "/dev/ptp0", "--", "set"]
 
 
 def test_hwstamp(tmp_path):
@@ -179,7 +179,7 @@ def test_an_unreadable_request_is_a_permission_error(tmp_path):
 def test_trim(tmp_path):
     run = Recorder()
     assert trim(_prepare(tmp_path, _leader()), run) == 0
-    assert run.calls == [["/usr/sbin/phc_ctl", "/dev/ptp0", "freq", "21500"]]
+    assert run.calls == [["/usr/sbin/phc_ctl", "/dev/ptp0", "--", "freq", "21500"]]
     run = Recorder()
     assert trim(_prepare(tmp_path, _leader("enp5s0")), run) == 0  # software timestamping: no PHC
     assert run.calls == []
