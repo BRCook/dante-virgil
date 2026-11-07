@@ -419,3 +419,20 @@ def test_auto_trim_setting(config_path):
     assert config_file.load(config_path).auto_trim is True
     assert _set(config_path, "auto_trim", "false") == 0
     assert config_file.load(config_path).auto_trim is False
+
+
+def test_password(config_path, monkeypatch, capsys):
+    import getpass
+
+    from virgil.webauth import check_password
+
+    answers = iter(["showtime-2026", "showtime-2026"])
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: next(answers))
+    assert cli.main(["--config", str(config_path), "password"]) == 0
+    assert check_password("showtime-2026", config_file.load(config_path).web_password)
+    answers = iter(["short"])
+    assert cli.main(["--config", str(config_path), "password"]) == 1
+    answers = iter(["long enough one", "different one!"])
+    assert cli.main(["--config", str(config_path), "password"]) == 1
+    assert cli.main(["--config", str(config_path), "password", "--clear"]) == 0
+    assert config_file.load(config_path).web_password is None

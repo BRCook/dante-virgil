@@ -45,6 +45,8 @@ class Config:
     observe_only: bool = False
     # While leading, nudge the trim toward the consoles' own rate.
     auto_trim: bool = True
+    # The web UI's password, as a scrypt hash. None means the web UI is read-only.
+    web_password: str | None = None
     devices: dict[str, DeviceSettings] = field(default_factory=dict)
     group: Group | None = None
 
@@ -101,6 +103,7 @@ def from_dict(data: dict[str, Any]) -> Config:
         trim_ppb=_expect(data, "trim_ppb", int, optional=True) or 0,
         observe_only=_expect(data, "observe_only", bool, optional=True) or False,
         auto_trim=_expect(data, "auto_trim", bool, optional=True) is not False,
+        web_password=_expect(data, "web_password", str, optional=True),
         devices=devices,
         group=group,
     )
@@ -109,7 +112,7 @@ def from_dict(data: dict[str, Any]) -> Config:
 def to_dict(config: Config) -> dict[str, Any]:
     # TOML has no null, so unset settings are left out.
     data: dict[str, Any] = {"id": config.id, "name": config.name}
-    for key in ("ptp_interface", "nic_profile", "mgmt_interface"):
+    for key in ("ptp_interface", "nic_profile", "mgmt_interface", "web_password"):
         value = getattr(config, key)
         if value is not None:
             data[key] = value

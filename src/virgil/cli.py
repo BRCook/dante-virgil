@@ -517,6 +517,31 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+# password
+
+
+def cmd_password(args: argparse.Namespace) -> int:
+    import getpass
+
+    from virgil.webauth import MIN_PASSWORD, hash_password
+
+    config = config_file.load(args.config)
+    if args.clear:
+        config.web_password = None
+        config_file.save(config, args.config)
+        print("Cleared the web password. The web UI is read-only until a new one is set.")
+        return 0
+    first = getpass.getpass("New web password: ")
+    if len(first) < MIN_PASSWORD:
+        raise CliError(f"the password must be at least {MIN_PASSWORD} characters")
+    if getpass.getpass("Again: ") != first:
+        raise CliError("the passwords didn't match")
+    config.web_password = hash_password(first)
+    config_file.save(config, args.config)
+    print("Set the web password. Anyone already logged in to the web UI will need to log in again.")
+    return 0
+
+
 # trim
 
 
@@ -680,6 +705,10 @@ def build_parser() -> argparse.ArgumentParser:
     role_commands.add_parser("stop", help="stop the timing services")
     role_commands.add_parser("show", help="show the current role")
     role.set_defaults(func=cmd_role)
+
+    password = commands.add_parser("password", help="set the web UI's password, which is needed to change things")
+    password.add_argument("--clear", action="store_true", help="remove it, making the web UI read-only")
+    password.set_defaults(func=cmd_password)
 
     trim = commands.add_parser("trim", help="show or set this Virgil's PHC trim, in ppm")
     trim.add_argument("ppm", nargs="?", help="the new trim, such as +2.5 or -1")
