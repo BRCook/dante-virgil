@@ -317,3 +317,27 @@ def test_networks_are_known_before_the_election_can_start(tmp_path, monkeypatch)
     monkeypatch.setattr(daemon_module.discovery, "Discovery", SlowDiscovery)
     asyncio.run(a.check_network())
     assert seen == [("10.0.0.0/24",)]
+
+
+def test_local_dante_devices_reach_heartbeats_and_status(tmp_path):
+    from virgil.ptpwatch import LocalDevice
+
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.ptp_interface = "enp1s0"
+    config_file.save(config, paths["A"])
+    a = Daemon(paths["A"], identities["A"])
+
+    class Client:
+        async def devices(self):
+            return {"Wing.local.": {"name": "Wing", "ipv4": "10.10.100.50", "mac_address": "001dc1aabbcc",
+                                    "clock_status": {"ptpv2_enabled": True}, "aes67_current": False}}
+
+        async def diagnostics(self, server_name):
+            return {"clock": {}}
+
+    a.start_consoles(client=Client())
+    a.ptp.devices["10.10.100.50"] = LocalDevice("10.10.100.50", 0.0, ptpv1=True, follows_this_virgil=True)
+    asyncio.run(a.consoles.poll())
+    (summary,) = a.heartbeat().dante_devices
+    assert summary["name"] == "Wing" and summary["follows_this_virgil"] is True and summary["ptpv2"] is True

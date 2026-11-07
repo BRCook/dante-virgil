@@ -349,6 +349,23 @@ def fetch_status(tls_dir: Path, port: int = groups.PUBLIC_PORT) -> dict:
         raise CliError("couldn't reach virgild. Is it running? (systemctl status dante-virgil)") from error
 
 
+def _describe_device(dante: dict | None, heard: dict | None) -> str:
+    """One line about a local Dante device, from netaudio's view if there is one."""
+    following = (dante or heard or {}).get("follows_this_virgil")
+    where = (dante or heard or {}).get("address", "?")
+    if dante is None:
+        return f"Dante device at {where}: {'following' if following else 'NOT following'} this Virgil"
+    parts = [f"{dante['name']}" + (f" ({dante['model']})" if dante.get("model") else "") + f" at {where}"]
+    parts.append("following this Virgil" if following else "NOT following this Virgil")
+    if dante.get("ptpv2") is not None:
+        parts.append("PTPv2 " + ("on" if dante["ptpv2"] else "off"))
+    if dante.get("aes67") is not None:
+        parts.append("AES67 " + ("on" if dante["aes67"] else "off"))
+    if dante.get("clock_offset_ppb") is not None:
+        parts.append(f"clock {dante['clock_offset_ppb'] / 1000:+.3f} ppm")
+    return ", ".join(parts)
+
+
 def _describe(state: str | None, leader: str | None) -> str:
     if state is None:
         return "not heard from"
@@ -368,14 +385,20 @@ def cmd_status(args: argparse.Namespace) -> int:
     if ptp.get("watching"):
         identity = ptp.get("identity") or "not announced yet"
         print(f"  PTP grandmaster: {identity}")
+        dante = {d["address"]: d for d in status.get("dante_devices") or []}
         devices = ptp.get("local_devices") or []
         if not devices:
             print("  Local Dante devices: none heard yet")
         for device in devices:
-            following = "following this Virgil" if device["follows_this_virgil"] else "NOT following this Virgil"
-            print(f"  Local Dante device {device['address']}: {following}")
+            print("  " + _describe_device(dante.get(device["address"]), device))
+    netaudio = status.get("netaudio")
+    if netaudio is not None and netaudio.get("reachable") is False:
+        print("  WARNING: can't reach netaudio's daemon (systemctl status dante-virgil-netaudio)")
     for warning in ptp.get("warnings") or []:
         print(f"  WARNING: {warning}")
+    for device in status.get("dante_devices") or []:
+        for warning in device.get("warnings") or []:
+            print(f"  WARNING: {warning}")
     group = status.get("group")
     if group is None:
         print("Not in a group")
@@ -390,14 +413,72 @@ def cmd_status(args: argparse.Namespace) -> int:
             else:
                 line += ", address unknown"
             print(line)
+            for device in member.get("dante_devices") or []:
+                print("    " + _describe_device(device, None))
             for warning in member.get("ptp_warnings") or []:
                 print(f"    WARNING from {member['name']}: {warning}")
+            for device in member.get("dante_devices") or []:
+                for warning in device.get("warnings") or []:
+                    print(f"    WARNING from {member['name']}: {warning}")
     others = status.get("other_virgils") or []
     if others:
         print("Other Virgils on the network:")
         for other in others:
             where = "no group" if other["group_id"] is None else f"group {other['group_id'][:8]}"
             print(f"  {other['name']} ({where}), at {', '.join(other['addresses'])}")
+    return 0
+
+
+# device
+
+
+def _find_device_mac(who: str, args: argparse.Namespace) -> tuple[str, str]:
+    """A local Dante device's MAC address and name, from its MAC, address or name."""
+    from virgil.consoles import normalise_mac
+
+    mac = normalise_mac(who) if len(who.replace(":", "").replace("-", "")) == 12 else None
+    try:
+        devices = fetch_status(args.tls_dir).get("dante_devices") or []
+    except CliError:
+        if mac is not None:
+            return mac, mac
+        raise
+    for device in devices:
+        if who in (device.get("name"), device.get("address")) or (mac and device.get("mac") == mac):
+            if not device.get("mac"):
+                raise CliError(f"netaudio doesn't know {device.get('name')}'s MAC address yet")
+            return device["mac"], device.get("name") or device["mac"]
+    if mac is not None:
+        return mac, mac
+    names = ", ".join(d.get("name", "?") for d in devices) or "none"
+    raise CliError(f"no local Dante device called {who} (local devices: {names})")
+
+
+def cmd_device(args: argparse.Namespace) -> int:
+    from virgil.config import DeviceSettings
+
+    config = config_file.load(args.config)
+    mac, name = _find_device_mac(args.device, args)
+    current = config.devices.get(mac, DeviceSettings())
+    if args.value is None:
+        print(f"{name}: native PTPv2 toggle {'on' if current.native_ptpv2 else 'off'}, "
+              f"AES67 toggle {'on' if current.aes67 else 'off'}")
+        return 0
+    enabled = args.value == "on"
+    if args.setting == "ptpv2":
+        current.native_ptpv2 = enabled
+    else:
+        current.aes67 = enabled
+    config.devices[mac] = current
+    config_file.save(config, args.config)
+    label = "Native PTPv2" if args.setting == "ptpv2" else "AES67 mode"
+    if enabled:
+        print(f"{label} will be kept on for {name}.")
+    else:
+        print(f"Virgil will leave {name}'s {label.lower() if args.setting == 'aes67' else 'native PTPv2'} alone. "
+              "It won't turn it off.")
+    if not current.native_ptpv2 and not current.aes67:
+        print(f"Note: {name} needs PTPv2, from native PTPv2 or AES67 mode, to follow a Virgil.")
     return 0
 
 
@@ -439,6 +520,12 @@ def build_parser() -> argparse.ArgumentParser:
     role_commands.add_parser("stop", help="stop the timing services")
     role_commands.add_parser("show", help="show the current role")
     role.set_defaults(func=cmd_role)
+
+    device = commands.add_parser("device", help="the PTPv2 and AES67 toggles for a local Dante device")
+    device.add_argument("device", help="the device's name, address or MAC address")
+    device.add_argument("setting", nargs="?", choices=["ptpv2", "aes67"], help="which toggle")
+    device.add_argument("value", nargs="?", choices=["on", "off"], help="keep it on, or leave it alone")
+    device.set_defaults(func=cmd_device)
 
     tls_parser = commands.add_parser("tls", help="this Virgil's TLS certificate")
     tls_commands = tls_parser.add_subparsers(dest="tls_command", required=True)

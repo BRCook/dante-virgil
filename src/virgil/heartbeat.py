@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -14,6 +15,8 @@ MAX_COIN = 2**64 - 1
 PTP_IDENTITY = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){7}$")
 MAX_WARNINGS = 8
 MAX_WARNING_LENGTH = 200
+MAX_DEVICES = 16
+MAX_DEVICES_BYTES = 16 * 1024
 
 
 class HeartbeatError(Exception):
@@ -37,6 +40,8 @@ class Heartbeat:
     # This Virgil's PTP grandmaster identity, once known, and any PTP warnings.
     ptp_identity: str | None = None
     ptp_warnings: tuple[str, ...] = ()
+    # Summaries of this Virgil's local Dante devices, from netaudio.
+    dante_devices: tuple[dict[str, Any], ...] = ()
 
     def encode(self) -> dict[str, Any]:
         return {
@@ -52,6 +57,7 @@ class Heartbeat:
             "established": self.established,
             "ptp_identity": self.ptp_identity,
             "ptp_warnings": list(self.ptp_warnings),
+            "dante_devices": list(self.dante_devices),
         }
 
     def view(self, heard_at: float) -> PeerView:
@@ -96,6 +102,11 @@ def decode(data: Any) -> Heartbeat:
     if (not isinstance(warnings, list) or len(warnings) > MAX_WARNINGS
             or not all(isinstance(w, str) and len(w) <= MAX_WARNING_LENGTH for w in warnings)):
         raise HeartbeatError("bad ptp_warnings")
+    devices = data.get("dante_devices", [])
+    if (not isinstance(devices, list) or len(devices) > MAX_DEVICES
+            or not all(isinstance(d, dict) for d in devices)
+            or len(json.dumps(devices)) > MAX_DEVICES_BYTES):
+        raise HeartbeatError("bad dante_devices")
     return Heartbeat(
         id=virgil_id,
         name=name,
@@ -109,4 +120,5 @@ def decode(data: Any) -> Heartbeat:
         established=established,
         ptp_identity=ptp_identity,
         ptp_warnings=tuple(warnings),
+        dante_devices=tuple(devices),
     )
