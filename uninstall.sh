@@ -6,6 +6,9 @@
 #
 # The Debian packages Virgil installed (chrony, linuxptp and so on) are left alone.
 
+# Restart under bash if started with sh, which can't run this script.
+if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
+
 set -euo pipefail
 
 PREFIX=/opt/dante-virgil
