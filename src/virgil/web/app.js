@@ -4,9 +4,21 @@
 // the page is built with textContent and never from HTML strings.
 
 const REFRESH_MS = 2000;
+// Seconds without a heartbeat before a member counts as gone quiet.
+const QUIET_AFTER = 5;
 let status = null;
 let session = { logged_in: false, password_set: false };
 let lastInvite = null;
+// What's been typed into each text field, so a refresh never throws it away.
+const drafts = {};
+let accountShown = null;
+
+function draft(key, tag, attrs, initial = "") {
+  const field = el(tag, attrs);
+  field.value = key in drafts ? drafts[key] : initial;
+  field.addEventListener("input", () => { drafts[key] = field.value; });
+  return field;
+}
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -86,6 +98,9 @@ async function act(path, body, done) {
 // The parts of the page
 
 function renderAccount() {
+  const shown = `${session.password_set}/${session.logged_in}`;
+  if (shown === accountShown) return;  // Don't rebuild the login form on every refresh.
+  accountShown = shown;
   const canChange = session.logged_in;
   if (!session.password_set) {
     return replace("account", el("span", { class: "hint" },
@@ -95,7 +110,7 @@ function renderAccount() {
     return replace("account", el("button", { onclick: logout }, "Log out"));
   }
   const field = el("input", { type: "password", "aria-label": "Password", autocomplete: "current-password",
-                              placeholder: "Password" });
+                              placeholder: "Password", required: true });
   const form = el("form", { class: "account", onsubmit: async (event) => {
     event.preventDefault();
     try {
@@ -127,7 +142,7 @@ function collectWarnings() {
     warnings.push({ text: "Can't reach netaudio's daemon, so consoles aren't being monitored" });
   }
   for (const m of (status.group || {}).members || []) {
-    if (m.heard_ago === null || m.heard_ago > 5) warnings.push({ text: `${m.name} isn't being heard from`, fault: true });
+    if (m.heard_ago === null || m.heard_ago > QUIET_AFTER) warnings.push({ text: `${m.name} isn't being heard from`, fault: true });
     for (const w of m.ptp_warnings || []) warnings.push({ text: `${m.name}: ${w}`, fault: true });
     for (const d of m.dante_devices || []) for (const w of d.warnings || []) warnings.push({ text: `${m.name}: ${w}` });
   }
@@ -177,7 +192,7 @@ function renderChain() {
     if (index > 0) {
       const clock = v.clock || {};
       const following = v.state === "follower" || v.state === "sync";
-      const silent = v.heard_ago === null || v.heard_ago > 5;
+      const silent = v.heard_ago === null || v.heard_ago > QUIET_AFTER;
       parts.push(el("div", { class: `link${silent || !following ? " fault" : ""}`, "aria-hidden": "true" },
         el("span", { class: "link-figure" },
           following && clock.system_offset_ns !== undefined ? duration(clock.system_offset_ns) : "—"),
@@ -186,7 +201,7 @@ function renderChain() {
           following && clock.rms_offset_ns !== undefined ? `RMS ${duration(Math.abs(clock.rms_offset_ns)).slice(1)}`
             : (silent ? "not heard" : describeState(v.state, v.leader)))));
     }
-    const silent = !v.self && (v.heard_ago === null || v.heard_ago > 5);
+    const silent = !v.self && (v.heard_ago === null || v.heard_ago > QUIET_AFTER);
     parts.push(el("article", { class: `node${v.state === "leader" ? " leader" : ""}${silent ? " silent" : ""}` },
       el("p", { class: "node-name" }, v.name, v.self ? " (this Virgil)" : ""),
       el("span", { class: "node-role" }, describeState(v.state, v.leader === status.name ? "this Virgil" : v.leader)),
@@ -237,13 +252,15 @@ function renderThisVirgil() {
   parts.push(actions);
 
   parts.push(el("h3", {}, "Trim"));
-  const trimField = el("input", { type: "number", step: "0.1", "aria-label": "Trim in ppm",
-    value: ((status.trim_ppb || 0) / 1000).toFixed(3), disabled: !can });
+  const trimField = draft("trim", "input", { type: "number", step: "0.1", "aria-label": "Trim in ppm",
+    disabled: !can }, ((status.trim_ppb || 0) / 1000).toFixed(3));
   parts.push(el("div", { class: "row" },
     el("label", {}, trimField, " ppm"),
     el("button", { disabled: !can, onclick: () => {
       const value = Number(trimField.value);
-      if (Number.isFinite(value)) act("/api/v1/trim", { ppm: value }, `Trim set to ${value.toFixed(3)} ppm`);
+      if (!Number.isFinite(value)) return;
+      act("/api/v1/trim", { ppm: value }, `Trim set to ${value.toFixed(3)} ppm`)
+        .then((data) => { if (data) delete drafts.trim; });
     } }, "Set trim"),
     el("label", { class: "check" },
       el("input", { type: "checkbox", checked: !!auto.enabled, disabled: !can,
@@ -281,6 +298,13 @@ function renderThisVirgil() {
   replace("this-virgil", parts);
 }
 
+// A member heard from recently needs no mention; one that's gone quiet does.
+function silence(heardAgo) {
+  if (heardAgo !== null && heardAgo <= QUIET_AFTER) return null;
+  return el("span", { class: "stale" },
+    heardAgo === null ? " not heard from" : ` not heard for ${Math.round(heardAgo)} s`);
+}
+
 function renderGroup() {
   const can = session.logged_in;
   const group = status.group;
@@ -289,19 +313,23 @@ function renderGroup() {
     parts.push(el("p", {}, "This Virgil isn't in a group."));
     parts.push(el("div", { class: "row" }, el("button", { disabled: !can,
       onclick: () => act("/api/v1/group/create", {}, "Group created") }, "Create a group")));
-    const token = el("textarea", { "aria-label": "Invite token", placeholder: "Paste an invite token from a member",
-      disabled: !can });
+    const token = draft("join", "textarea", { "aria-label": "Invite token",
+      placeholder: "Paste an invite token from a member", disabled: !can });
     parts.push(el("h3", {}, "Join a group"), token,
       el("div", { class: "row" }, el("button", { class: "primary", disabled: !can, onclick: async () => {
         const data = await act("/api/v1/group/join", { token: token.value.trim() });
-        if (data) notice(`Joined, with ${data.members.join(", ")}`);
+        if (data) {
+          delete drafts.join;
+          notice(`Joined, with ${data.members.join(", ")}`);
+        }
       } }, "Join group")));
   } else {
     parts.push(el("ul", { class: "plain" }, group.members.map((m) => el("li", {},
-      el("strong", {}, m.name), " ", el("span", { class: "hint" },
-        `${describeState(m.state, m.leader === status.name ? "this Virgil" : m.leader)}` +
-        (m.heard_ago === null ? ", not heard from" : `, heard ${m.heard_ago} s ago`) +
-        (m.addresses && m.addresses.length ? `, at ${m.addresses.join(", ")}` : ""))))));
+      el("strong", {}, m.name), " ",
+      el("span", { class: "hint" },
+        describeState(m.state, m.leader === status.name ? "this Virgil" : m.leader) +
+        (m.addresses && m.addresses.length ? `, at ${m.addresses.join(", ")}` : "")),
+      silence(m.heard_ago)))));
     if (group.members.length === 0) parts.push(el("p", { class: "hint" }, "No other members yet."));
     parts.push(el("div", { class: "row" }, el("button", { disabled: !can, onclick: async () => {
       const data = await act("/api/v1/group/invite", { minutes: 60 }, "Invite made");

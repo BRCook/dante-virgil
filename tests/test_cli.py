@@ -222,7 +222,7 @@ def test_status(monkeypatch, capsys):
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
     assert "Virgil A (this Virgil): leader  (observing only" in out
-    assert "Virgil B: follower of Virgil A, heard 0.4 s ago, at 10.10.100.252" in out
+    assert "Virgil B: follower of Virgil A, at 10.10.100.252\n" in out
     assert "Virgil C: not heard from, address unknown" in out
     assert "Spare (no group), at 10.10.100.9" in out
     assert "PTP grandmaster: aa:bb:cc:ff:fe:00:00:01" in out
@@ -436,3 +436,11 @@ def test_password(config_path, monkeypatch, capsys):
     assert cli.main(["--config", str(config_path), "password"]) == 1
     assert cli.main(["--config", str(config_path), "password", "--clear"]) == 0
     assert config_file.load(config_path).web_password is None
+
+
+def test_status_flags_a_member_gone_quiet(monkeypatch, capsys):
+    status = {**STATUS}
+    status["group"] = {**STATUS["group"], "members": [{**STATUS["group"]["members"][0], "heard_ago": 12.4}]}
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
+    assert cli.main(["status"]) == 0
+    assert "Virgil B: follower of Virgil A, NOT HEARD FOR 12 s, at 10.10.100.252" in capsys.readouterr().out
