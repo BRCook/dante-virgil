@@ -71,6 +71,8 @@ def ptp4l_conf(setup: TimingSetup, tuning: Tuning = DEFAULT_TUNING) -> str:
         f"logAnnounceInterval     {tuning.log_announce_interval}",
         f"logMinDelayReqInterval  {tuning.log_min_delay_req_interval}",
         "tx_timestamp_timeout    50",
+        "# Answer unicast Delay Requests with unicast Delay Responses; multicast ones stay multicast.",
+        "hybrid_e2e              1",
     ]
     if not setup.hardware:
         lines.append("time_stamping           software")

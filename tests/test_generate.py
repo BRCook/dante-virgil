@@ -38,6 +38,7 @@ def test_ptp4l_matches_the_reference_build():
         "logAnnounceInterval 1",
         "logMinDelayReqInterval -3",
         "tx_timestamp_timeout 50",
+        "hybrid_e2e 1",
         "[enp191s0]",
     ]
 
