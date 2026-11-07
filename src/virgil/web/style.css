@@ -117,6 +117,10 @@ button {
   cursor: pointer; font-weight: 600;
 }
 button.primary { background: var(--amber); border-color: var(--amber); color: #1b1305; }
+a.button {
+  display: inline-block; border: 1px solid var(--line); background: var(--bg); padding: 0.4rem 0.9rem;
+  border-radius: var(--radius-control); font-weight: 600; color: inherit; text-decoration: none;
+}
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 input[type="password"], input[type="number"], textarea {
   border: 1px solid var(--line); background: var(--bg); border-radius: var(--radius-control); padding: 0.35rem 0.55rem;
