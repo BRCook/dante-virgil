@@ -365,3 +365,14 @@ def test_control_without_virgild(tmp_path):
         import asyncio
 
         asyncio.run(cli._control("POST", "/control/v1/lead", tmp_path / "missing.sock"))
+
+
+def test_a_follower_is_shown_following_its_leader_by_name(monkeypatch, capsys):
+    status = {**STATUS, "name": "Box A", "addresses": ["10.10.100.253"]}
+    status["group"] = {**STATUS["group"], "members": [
+        {**STATUS["group"]["members"][0], "name": "Box B", "state": "follower", "leader": "Box A",
+         "clock": {"source": "10.10.100.212", "system_offset_ns": 1466}},
+    ]}
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
+    assert cli.main(["status"]) == 0
+    assert "System clock: following this Virgil: +1.466 µs" in capsys.readouterr().out

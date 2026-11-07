@@ -399,14 +399,21 @@ def _duration(ns: int | float) -> str:
     return f"{ns / 1_000_000:+.3f} ms"
 
 
-def _describe_clock(clock: dict | None, names: dict[str, str]) -> list[str]:
-    """Lines describing what chrony and phc2sys are doing on one Virgil."""
+def _describe_clock(clock: dict | None, names: dict[str, str], leader: str | None = None) -> list[str]:
+    """Lines describing what chrony and phc2sys are doing on one Virgil.
+
+    A follower's clock source is shown as its leader's name, which every
+    Virgil reports, falling back to matching the address.
+    """
     if not clock:
         return []
     lines = []
     source = clock.get("source")
     if source is not None and "system_offset_ns" in clock:
-        follows = "PHC" if source.startswith("PHC") else names.get(source, source)
+        if source.startswith("PHC"):
+            follows = "PHC"
+        else:
+            follows = leader or names.get(source, source)
         parts = [_duration(clock["system_offset_ns"])]
         if "last_offset_ns" in clock:
             parts.append(f"last sample {_duration(clock['last_offset_ns'])}")
@@ -447,7 +454,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     for member in (status.get("group") or {}).get("members", []):
         for address in member.get("addresses") or []:
             names[address] = member["name"]
-    for line in _describe_clock(status.get("clock"), names):
+    for line in _describe_clock(status.get("clock"), names, status.get("leader")):
         print(f"  {line}")
     ptp = status.get("ptp") or {}
     netaudio = status.get("netaudio")
@@ -485,7 +492,10 @@ def cmd_status(args: argparse.Namespace) -> int:
             else:
                 line += ", address unknown"
             print(line)
-            for line in _describe_clock(member.get("clock"), names):
+            leader = member.get("leader")
+            if leader is not None and leader == status.get("name"):
+                leader = "this Virgil"
+            for line in _describe_clock(member.get("clock"), names, leader):
                 print(f"    {line}")
             for device in member.get("dante_devices") or []:
                 print("    " + _describe_device(device, None))
