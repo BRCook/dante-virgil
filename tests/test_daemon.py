@@ -241,8 +241,8 @@ def test_network_changes_restart_discovery_and_update_timing(tmp_path, monkeypat
     a = Daemon(paths["A"], identities["A"])
 
     state = {"addresses": [], "networks": []}
-    monkeypatch.setattr(daemon_module, "ipv4_addresses", lambda name: state["addresses"])
-    monkeypatch.setattr(daemon_module, "ipv4_networks", lambda name: state["networks"])
+    monkeypatch.setattr(daemon_module, "ipv4_addresses", lambda name, **kw: state["addresses"])
+    monkeypatch.setattr(daemon_module, "ipv4_networks", lambda name, **kw: state["networks"])
     started, stopped = [], []
 
     class FakeDiscovery:
@@ -299,8 +299,8 @@ def test_networks_are_known_before_the_election_can_start(tmp_path, monkeypatch)
     config.mgmt_interface = "enp5s0"
     config_file.save(config, paths["A"])
     a = Daemon(paths["A"], identities["A"])
-    monkeypatch.setattr(daemon_module, "ipv4_addresses", lambda name: ["10.0.0.5"])
-    monkeypatch.setattr(daemon_module, "ipv4_networks", lambda name: ["10.0.0.0/24"])
+    monkeypatch.setattr(daemon_module, "ipv4_addresses", lambda name, **kw: ["10.0.0.5"])
+    monkeypatch.setattr(daemon_module, "ipv4_networks", lambda name, **kw: ["10.0.0.0/24"])
     seen = []
 
     class SlowDiscovery:
@@ -341,3 +341,96 @@ def test_local_dante_devices_reach_heartbeats_and_status(tmp_path):
     asyncio.run(a.consoles.poll())
     (summary,) = a.heartbeat().dante_devices
     assert summary["name"] == "Wing" and summary["follows_this_virgil"] is True and summary["ptpv2"] is True
+
+
+def _fake_interfaces(monkeypatch, addresses):
+    """addresses: a dict the test changes, mapping interface name to its IPv4 addresses with prefixes."""
+    import ipaddress
+
+    import virgil.daemon as daemon_module
+    from virgil.interfaces import is_link_local
+
+    def ipv4_addresses(name, run=None, link_local=False):
+        return [a.split("/")[0] for a in addresses.get(name, []) if link_local or not is_link_local(a.split("/")[0])]
+
+    def ipv4_networks(name, run=None, link_local=False):
+        return [str(ipaddress.ip_network(a, strict=False)) for a in addresses.get(name, [])
+                if link_local or not is_link_local(a.split("/")[0])]
+
+    monkeypatch.setattr(daemon_module, "ipv4_addresses", ipv4_addresses)
+    monkeypatch.setattr(daemon_module, "ipv4_networks", ipv4_networks)
+
+    class QuietDiscovery:
+        def __init__(self, on_advert):
+            pass
+
+        async def start(self, *args):
+            pass
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(daemon_module.discovery, "Discovery", QuietDiscovery)
+
+
+def test_a_link_local_address_counts_once_dhcp_has_had_its_chance(tmp_path, monkeypatch):
+    import virgil.daemon as daemon_module
+
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.mgmt_interface = "enp5s0"
+    config_file.save(config, paths["A"])
+    a = Daemon(paths["A"], identities["A"])
+    addresses = {"enp5s0": ["169.254.13.123/16"]}
+    _fake_interfaces(monkeypatch, addresses)
+    clock = [1000.0]
+    monkeypatch.setattr(daemon_module.time, "monotonic", lambda: clock[0])
+
+    asyncio.run(a.check_network())
+    assert a.addresses == ()  # DHCP might still come
+    clock[0] += daemon_module.LINK_LOCAL_GRACE + 1
+    asyncio.run(a.check_network())
+    assert a.addresses == ("169.254.13.123",) and a.networks == ("169.254.0.0/16",)
+
+    # DHCP turning up later takes over.
+    addresses["enp5s0"] = ["169.254.13.123/16", "10.10.100.251/24"]
+    asyncio.run(a.check_network())
+    assert a.addresses == ("10.10.100.251",) and a.networks == ("10.10.100.0/24",)
+
+
+def test_netaudio_runs_only_while_the_ptp_interface_has_an_address(tmp_path, monkeypatch):
+    import virgil.daemon as daemon_module
+
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["B"])
+    config.ptp_interface = "enp1s0"
+    config_file.save(config, paths["B"])
+    b = Daemon(paths["B"], identities["B"])
+    addresses = {"enp1s0": []}
+    _fake_interfaces(monkeypatch, addresses)
+    monkeypatch.setattr(daemon_module, "NETAUDIO_ENV", tmp_path / "netaudio.env")
+
+    class Systemd:
+        calls = []
+
+        def restart(self, unit, block=True):
+            self.calls.append(("restart", unit))
+
+        def stop(self, unit):
+            self.calls.append(("stop", unit))
+
+    systemd = Systemd()
+    b.systemd = systemd
+    b.check_ptp_interface()
+    # Nothing plugged in: stopped, in case an older virgild left it retrying.
+    assert systemd.calls == [("stop", "dante-virgil-netaudio.service")]
+    b.check_ptp_interface()
+    assert len(systemd.calls) == 1
+    addresses["enp1s0"] = ["169.254.40.2/16"]  # a link-local Dante network counts at once
+    b.check_ptp_interface()
+    b.check_ptp_interface()
+    assert systemd.calls[1:] == [("restart", "dante-virgil-netaudio.service")]
+    assert (tmp_path / "netaudio.env").read_text() == "NETAUDIO_INTERFACE=enp1s0\n"
+    addresses["enp1s0"] = []
+    b.check_ptp_interface()
+    assert systemd.calls[-1] == ("stop", "dante-virgil-netaudio.service")
