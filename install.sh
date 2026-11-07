@@ -124,11 +124,13 @@ systemctl restart dante-virgil.service
 
 say "Done"
 STEP_NAME=""
-cat << MESSAGE
-Virgil is installed, and this Virgil's config is at $CONFIG_DIR/virgil.toml.
+echo "Virgil is installed, and this Virgil's config is at $CONFIG_DIR/virgil.toml."
+if ! grep -q '^ptp_interface' "$CONFIG_DIR/virgil.toml"; then
+    cat << MESSAGE
 
 Next, choose the interface that faces the console:
 
   virgilctl interfaces
   sudo virgilctl config set ptp_interface <name>
 MESSAGE
+fi

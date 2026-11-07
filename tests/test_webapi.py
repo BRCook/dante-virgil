@@ -228,3 +228,47 @@ def test_stop_and_start(virgil):
     stopped, started, wanted = run(virgil, scenario)
     assert stopped == (200, State.STOPPED) and wanted == [None]
     assert started == (200, State.LISTEN)
+
+
+def test_the_page_and_its_files(virgil):
+    async def scenario(daemon, session, base):
+        results = {}
+        for path in ("/", "/static/app.js", "/static/style.css", "/static/../daemon.py", "/static/secret"):
+            async with session.get(f"{base}{path}") as reply:
+                results[path] = (reply.status, reply.headers.get("Content-Security-Policy", ""),
+                                 reply.headers.get("X-Content-Type-Options"))
+        return results
+
+    results = run(virgil, scenario)
+    for path in ("/", "/static/app.js", "/static/style.css"):
+        status, policy, nosniff = results[path]
+        assert status == 200 and "default-src 'none'" in policy and "frame-ancestors 'none'" in policy
+        assert nosniff == "nosniff"
+    assert results["/static/secret"][0] == 404
+    assert results["/static/../daemon.py"][0] == 404
+
+
+def test_status_includes_the_device_toggles(virgil):
+    path, identity = virgil
+    from virgil.config import DeviceSettings
+
+    config = config_file.load(path)
+    config.devices["00:1d:c1:aa:bb:cc"] = DeviceSettings(native_ptpv2=True)
+    config_file.save(config, path)
+
+    async def scenario(daemon, session, base):
+        async with session.get(f"{base}/api/v1/status") as reply:
+            return (await reply.json())["device_settings"]
+
+    assert run(virgil, scenario) == {"00:1d:c1:aa:bb:cc": {"native_ptpv2": True, "aes67": False}}
+
+
+def test_the_page_never_builds_html_from_strings():
+    """Console names come from the network, so the script must never use innerHTML and friends."""
+    from pathlib import Path
+
+    import virgil
+
+    script = (Path(virgil.__file__).parent / "web" / "app.js").read_text()
+    for risky in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
+        assert risky not in script
