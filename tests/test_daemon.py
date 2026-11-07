@@ -508,3 +508,30 @@ def test_only_a_follower_can_ask_to_lead(tmp_path):
     b.timing = None
     status, body = asyncio.run(b.request_lead())
     assert status == 409 and "observing" in body["error"]
+
+
+def test_the_advert_has_a_host_name_of_its_own(tmp_path, monkeypatch):
+    import virgil.daemon as daemon_module
+
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.mgmt_interface = "enp5s0"
+    config_file.save(config, paths["A"])
+    a = Daemon(paths["A"], identities["A"])
+    monkeypatch.setattr(daemon_module, "ipv4_addresses", lambda name, **kw: ["10.10.100.253"])
+    monkeypatch.setattr(daemon_module, "ipv4_networks", lambda name, **kw: ["10.10.100.0/24"])
+    hosts = []
+
+    class Recording:
+        def __init__(self, on_advert):
+            pass
+
+        async def start(self, addresses, instance, host, port, props):
+            hosts.append((addresses, host))
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(daemon_module.discovery, "Discovery", Recording)
+    asyncio.run(a.check_network())
+    assert hosts == [(["10.10.100.253"], f"virgil-{configs['A'].id[:12]}")]
