@@ -535,6 +535,8 @@ def _auto_trim_line(status: dict) -> str | None:
         return None  # an older virgild
     if not auto.get("enabled"):
         return "Auto-trim: off"
+    if auto.get("paused"):
+        return f"Auto-trim: PAUSED, because {auto['paused']}"
     last = auto.get("last")
     if not last:
         return "Auto-trim: on, no changes yet" if status.get("state") == "leader" else None

@@ -182,8 +182,9 @@ def sync_commands(setup: TimingSetup, leader: str | None) -> list[Command]:
     hwstamp = hwstamp_ctl_args(setup)
     if hwstamp is not None:
         commands.append(Command(("/usr/sbin/hwstamp_ctl", *hwstamp)))
-    commands.append(Command(("/usr/sbin/phc_ctl", setup.phc, "set")))
-    commands.append(Command(("/usr/sbin/phc_ctl", setup.phc, "freq", str(setup.trim_ppb))))
+    # "--" ends phc_ctl's options, so a negative trim isn't read as one.
+    commands.append(Command(("/usr/sbin/phc_ctl", setup.phc, "--", "set")))
+    commands.append(Command(("/usr/sbin/phc_ctl", setup.phc, "--", "freq", str(setup.trim_ppb))))
     return commands
 
 
@@ -191,4 +192,5 @@ def trim_command(setup: TimingSetup) -> Command | None:
     """Set the PHC's frequency to the trim, without touching its time. None without a PHC."""
     if not setup.hardware:
         return None
-    return Command(("/usr/sbin/phc_ctl", setup.phc, "freq", str(setup.trim_ppb)))
+    # "--" ends phc_ctl's options, so a negative trim isn't read as one.
+    return Command(("/usr/sbin/phc_ctl", setup.phc, "--", "freq", str(setup.trim_ppb)))

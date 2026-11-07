@@ -559,11 +559,23 @@ def _leading_with_consoles(tmp_path, offsets, auto_trim=True):
     a.election.resume(State.LEADER, None, 0.0)
 
     class Timing:
+        """Applies every trim at once, unless told the trim unit is failing."""
+
         pokes = 0
+        failing = False
+        request = None
 
         def poke(self):
             Timing.pokes += 1
+            if not Timing.failing:
+                Timing.request = replace(Timing.request, trim_ppb=a.config.trim_ppb)
 
+    from dataclasses import replace
+
+    from virgil.generate import Role as R
+    from virgil.request import TimingRequest
+
+    Timing.request = TimingRequest(R.LEADER, "enp1s0", None, (), a.config.trim_ppb)
     a.timing = Timing()
     beat = Heartbeat(configs["B"].id, "Virgil B", "0.1.0", State.FOLLOWER, 1, configs["A"].id, False, None,
                      dante_devices=tuple({"name": f"Wing {i}", "follows_this_virgil": True, "clock_offset_ppb": o}
@@ -608,3 +620,36 @@ def test_auto_trim_ignores_members_not_heard_from(tmp_path):
     a, path, timing = _leading_with_consoles(tmp_path, [4750])
     a.trim_once(200.0)  # B last heard at 100
     assert a.config.trim_ppb == 600
+
+
+def test_auto_trim_waits_for_each_step_to_take_effect(tmp_path):
+    a, path, timing = _leading_with_consoles(tmp_path, [4750])
+    timing.failing = True  # as when phc_ctl was refusing negative trims
+    a.trim_once(101.0)
+    assert a.config.trim_ppb == 100
+    a.trim_once(131.0)
+    a.trim_once(161.0)
+    assert a.config.trim_ppb == 100  # no further steps until the first is applied
+
+
+def test_auto_trim_pauses_when_the_consoles_dont_respond(tmp_path, caplog):
+    a, path, timing = _leading_with_consoles(tmp_path, [5371])
+    (peer,) = a.peers.values()
+
+    def step_at(t):
+        peer.heard_at = t - 0.5  # B keeps heartbeating
+        a.trim_once(t)
+
+    for step in range(5):
+        step_at(101.0 + 30 * step)  # the consoles never move
+    assert a.trim_paused and "consoles only" in a.trim_paused
+    paused_at = a.config.trim_ppb
+    step_at(400.0)
+    assert a.config.trim_ppb == paused_at
+    assert "Auto-trim paused" in caplog.text
+    # Turning it off and on again resumes it.
+    a.config.auto_trim = False
+    step_at(430.0)
+    a.config.auto_trim = True
+    step_at(460.0)
+    assert a.trim_paused is None and a.config.trim_ppb == paused_at - 500

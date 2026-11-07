@@ -42,3 +42,22 @@ def next_trim(trim_ppb: int, offsets_ppb: Iterable[int]) -> int | None:
     step = max(-MAX_STEP, min(MAX_STEP, round(-GAIN * average)))
     new = max(-MAX_TRIM, min(MAX_TRIM, trim_ppb + step))
     return None if new == trim_ppb else new
+
+
+# If the trim has moved at least this far over recent steps (ppb)...
+UNRESPONSIVE_TRIM = 1500
+# ...and the consoles have moved less than this fraction of it, they aren't responding.
+UNRESPONSIVE_FRACTION = 0.2
+
+
+def unresponsive(history: list[tuple[int, float]]) -> bool:
+    """Whether the consoles have stopped responding to trim changes.
+
+    history holds (trim applied, consoles' average) for recent steps, oldest
+    first. A healthy console moves by roughly as much as the trim.
+    """
+    if len(history) < 2:
+        return False
+    (first_trim, first_average), (last_trim, last_average) = history[0], history[-1]
+    moved = abs(last_trim - first_trim)
+    return moved >= UNRESPONSIVE_TRIM and abs(last_average - first_average) < UNRESPONSIVE_FRACTION * moved
