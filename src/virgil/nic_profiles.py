@@ -41,7 +41,7 @@ PROFILES: dict[str, NicProfile] = {
         ),
         NicProfile(
             driver="r8126",
-            description="Realtek RTL8126 (patched vendor driver)",
+            description="Realtek RTL8126",
             status=ProfileStatus.TESTED,
             notes=(
                 "Needs the hardware timestamping patch from wireless-dante. "
@@ -59,7 +59,7 @@ PROFILES: dict[str, NicProfile] = {
         ),
         NicProfile(
             driver="r8169",
-            description="Realtek, in-kernel driver",
+            description="Realtek",
             status=ProfileStatus.UNSUPPORTED,
             notes="No PTP hardware clock. Software timestamping only.",
         ),

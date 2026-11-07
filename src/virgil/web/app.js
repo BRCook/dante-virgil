@@ -317,46 +317,64 @@ async function loadInterfaces() {
   }
 }
 
-function interfaceLabel(i, forPtp) {
-  // Timestamping only matters for the PTP interface.
-  const facts = [i.driver || "virtual",
-    forPtp && i.timestamping !== "virtual" ? `${i.timestamping} timestamping` : null,
-    i.link_up ? "link up" : "no link"].filter(Boolean);
-  return `${i.name} (${facts.join(", ")})`;
+function interfaceLabel(i) {
+  // The name, the NIC type where Virgil knows it, and the driver.
+  if (!i.physical) return `${i.name} (virtual)`;
+  const facts = [i.profile ? i.profile.description : null, i.driver].filter(Boolean);
+  return facts.length ? `${i.name} (${facts.join(", ")})` : i.name;
+}
+
+function interfaceFacts(i, forPtp) {
+  // What's worth knowing about the chosen interface, beside its dropdown.
+  if (!i) return [];
+  const facts = [];
+  if (forPtp) {
+    facts.push(i.timestamping === "hardware"
+      ? el("span", {}, "Hardware timestamping supported")
+      : el("span", { class: "caution" }, "Software timestamping only"));
+  }
+  if (!i.link_up) facts.push(el("span", { class: "caution" }, "No link"));
+  return facts;
 }
 
 function interfacesSection(can) {
   const parts = [el("h3", {}, "Interfaces")];
   if (!interfaces) return [...parts, el("p", { class: "hint" }, "Loading…")];
-  const choose = (key, options, current) => {
-    const select = el("select", { "aria-label": key === "ptp" ? "PTP interface" : "Management interface",
-      disabled: !can });
+  const byName = (name) => interfaces.interfaces.find((i) => i.name === name);
+  const choose = (key, label, options, current) => {
+    const forPtp = key === "ptp";
+    const select = el("select", { "aria-label": label, disabled: !can });
     if (!current) select.append(el("option", { value: "" }, "Choose…"));
-    for (const i of options) select.append(el("option", { value: i.name }, interfaceLabel(i, key === "ptp")));
+    for (const i of options) select.append(el("option", { value: i.name }, interfaceLabel(i)));
     select.value = key in drafts ? drafts[key] : (current || "");
-    select.addEventListener("change", () => { drafts[key] = select.value; });
-    return select;
+    const facts = el("span", { class: "select-facts", "aria-live": "polite" }, interfaceFacts(byName(select.value), forPtp));
+    select.addEventListener("change", () => {
+      drafts[key] = select.value;
+      facts.replaceChildren(...interfaceFacts(byName(select.value), forPtp));
+    });
+    const row = el("div", { class: "row" },
+      el("label", { class: "field" }, label, el("span", { class: "select-row" }, select, facts)));
+    return { select, row };
   };
-  const ptp = choose("ptp", interfaces.interfaces.filter((i) => i.ptp_capable), interfaces.ptp_interface);
-  const mgmt = choose("mgmt", interfaces.interfaces, interfaces.mgmt_interface);
+  const ptp = choose("ptp", "PTP (faces the console)",
+    interfaces.interfaces.filter((i) => i.ptp_capable), interfaces.ptp_interface);
+  const mgmt = choose("mgmt", "Management (communicates with other Virgils)",
+    interfaces.interfaces, interfaces.mgmt_interface);
   parts.push(
-    el("div", { class: "row" }, el("label", { class: "field" }, "PTP (faces the console)", ptp)),
-    el("div", { class: "row" }, el("label", { class: "field" }, "Management (communicates with other Virgils)", mgmt)),
-    el("div", { class: "row" }, el("button", { disabled: !can, onclick: () => saveInterfaces(ptp.value, mgmt.value) },
-      "Save interfaces")),
-    el("p", { class: "hint" }, "Saving restarts Virgil. Changing the PTP interface also sets the clocks up from "
-      + "scratch, so the console re-locks once."));
-  const chosen = interfaces.interfaces.find((i) => i.name === ptp.value);
-  if (chosen && chosen.profile) {
-    parts.push(el("p", { class: "hint" }, chosen.profile.description));
-  }
+    ptp.row,
+    mgmt.row,
+    el("p", { class: "hint" }, "Saving restarts Virgil. Changing the PTP interface resets the clock, so any "
+      + "connected consoles will re-lock. ", el("strong", {}, "This will interrupt audio.")),
+    el("div", { class: "row" }, el("button", { disabled: !can,
+      onclick: () => saveInterfaces(ptp.select.value, mgmt.select.value) }, "Save interfaces")));
   return parts;
 }
 
 async function saveInterfaces(ptp, mgmt) {
   if (!ptp || !mgmt) return notice("Choose both interfaces first", true);
   if (interfaces && interfaces.ptp_interface && ptp !== interfaces.ptp_interface &&
-      !confirm(`Change the PTP interface to ${ptp}? The clocks are set up from scratch, so the console re-locks once.`)) {
+      !confirm(`Change the PTP interface to ${ptp}? This resets the clock, so any connected consoles will `
+        + "re-lock. This will interrupt audio.")) {
     return;
   }
   const body = { ptp_interface: ptp, mgmt_interface: mgmt };
