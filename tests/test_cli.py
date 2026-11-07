@@ -305,11 +305,10 @@ def test_status_clocks(monkeypatch, capsys):
     monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
-    assert ("System clock: follows Virgil B, +307 ns, last sample -1.854 µs, RMS 79 ns; "
-            "runs 3.305 ppm fast on its own") in out
-    assert "PHC: -2.253 µs from the system clock (locked), adjusted -1.509 ppm by phc2sys" in out
-    assert "System clock: follows its own PHC, -12 ns; runs 13.590 ppm slow on its own" in out
-    assert "PHC: running free at its trim of +21.500 ppm" in out
+    assert "System clock: following Virgil B: +307 ns, last sample -1.854 µs, RMS 79 ns, 3.305 ppm fast" in out
+    assert "PHC: -2.253 µs from system clock (locked), adjusted -1.509 ppm" in out
+    assert "System clock: following PHC: -12 ns, 13.590 ppm slow" in out
+    assert "PHC: running free: trim 21.500 ppm" in out
 
 
 def test_status_unplugged_ptp_interface(monkeypatch, capsys):
@@ -319,5 +318,50 @@ def test_status_unplugged_ptp_interface(monkeypatch, capsys):
     monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
-    assert "PTP interface enp1s0 has no link" in out
+    assert "  PTP interface enp1s0 has no link\n" in out
     assert "not announced yet" not in out and "can't reach netaudio" not in out
+
+
+def test_a_member_following_this_virgil(monkeypatch, capsys):
+    status = {**STATUS, "addresses": ["10.10.100.211"]}
+    status["group"] = {**STATUS["group"], "members": [
+        {**STATUS["group"]["members"][0], "clock": {"source": "10.10.100.211", "system_offset_ns": -6096}},
+    ]}
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
+    assert cli.main(["status"]) == 0
+    assert "System clock: following this Virgil: -6.096 µs" in capsys.readouterr().out
+
+
+def test_role_lead(config_path, monkeypatch, capsys):
+    calls = []
+
+    async def control(method, path, socket_path):
+        calls.append((method, path))
+        return 202, {"message": "Virgil B is handing leadership over to Virgil A"}
+
+    monkeypatch.setattr(cli, "_control", control)
+    assert cli.main(["--config", str(config_path), "role", "lead"]) == 0
+    assert calls == [("POST", "/control/v1/lead")]
+    assert "handing leadership over" in capsys.readouterr().out
+
+
+def test_role_lead_refused(config_path, monkeypatch, capsys):
+    async def control(method, path, socket_path):
+        return 409, {"error": "Virgil A is listen; it can only take the lead as a follower"}
+
+    monkeypatch.setattr(cli, "_control", control)
+    assert cli.main(["--config", str(config_path), "role", "lead"]) == 1
+    assert "only take the lead as a follower" in capsys.readouterr().err
+
+
+def test_role_lead_needs_virgild_to_manage_roles(config_path, capsys):
+    _set(config_path, "observe_only", "true")
+    assert cli.main(["--config", str(config_path), "role", "lead"]) == 1
+    assert "observe_only" in capsys.readouterr().err
+
+
+def test_control_without_virgild(tmp_path):
+    with pytest.raises(cli.CliError, match="Is it running"):
+        import asyncio
+
+        asyncio.run(cli._control("POST", "/control/v1/lead", tmp_path / "missing.sock"))

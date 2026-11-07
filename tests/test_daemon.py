@@ -445,3 +445,66 @@ def test_netaudio_stopped_on_purpose_isnt_a_problem(tmp_path):
     assert not b.netaudio_running
     b.netaudio_for = ("10.10.100.211",)
     assert b.netaudio_running
+
+
+def test_hand_over_between_two_daemons(tmp_path):
+    """B, a follower, asks A, the leader, to hand over; a stranger to the request can't."""
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        b = Daemon(paths["B"], identities["B"])
+        runners = await start(a) + await start(b)
+        introduce(a, b)
+        introduce(b, a)
+        now = time.monotonic()
+        a.election.resume(State.LEADER, None, now)
+        b.election.resume(State.FOLLOWER, a.config.id, now)
+        a.timing = FakeTiming(a)
+        b.timing = FakeTiming(b)
+        try:
+            refused = await a.request_lead()  # a leader asking to lead
+            status, body = await b.request_lead()
+            return refused, status, body, a.election.handover_to
+        finally:
+            for runner in runners:
+                await runner.cleanup()
+
+    refused, status, body, handover_to = asyncio.run(scenario())
+    assert refused == (200, {"message": "Virgil A is already leading"})
+    assert status == 202 and "handing leadership over" in body["message"]
+    assert handover_to == configs["B"].id
+
+
+def test_a_member_can_only_ask_to_lead_itself(tmp_path):
+    from virgil.control import HANDOVER_PATH
+
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        a.election.resume(State.LEADER, None, time.monotonic())
+        runners = await start(a)
+        try:
+            context = tls.group_client_context(identities["B"], [identities["A"].cert_pem])
+            async with aiohttp.ClientSession() as session:
+                url = f"https://127.0.0.1:{a.group_port}{HANDOVER_PATH}"
+                async with session.post(url, json={"to": configs["A"].id}, ssl=context) as reply:
+                    return reply.status, a.election.handover_to
+        finally:
+            for runner in runners:
+                await runner.cleanup()
+
+    status, handover_to = asyncio.run(scenario())
+    assert status == 403 and handover_to is None
+
+
+def test_only_a_follower_can_ask_to_lead(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    b = Daemon(paths["B"], identities["B"])
+    b.timing = FakeTiming(b)
+    status, body = asyncio.run(b.request_lead())  # still listening
+    assert status == 409 and "only take the lead as a follower" in body["error"]
+    b.timing = None
+    status, body = asyncio.run(b.request_lead())
+    assert status == 409 and "observing" in body["error"]

@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import copy
 import logging
+import os
 import socket
 import ssl
 import sys
@@ -29,6 +30,7 @@ from virgil import __version__
 from virgil import config as config_file
 from virgil import clocks, discovery, ptpwatch, roles, tls
 from virgil.consoles import POLL_INTERVAL, Consoles, NetaudioClient
+from virgil.control import CONTROL_SOCKET, HANDOVER_PATH, LEAD_PATH
 from virgil.config import Config
 from virgil.election import Change, Election, State
 from virgil.generate import Role
@@ -551,6 +553,7 @@ class Daemon:
                 "version": __version__,
                 "id": self.config.id,
                 "name": self.config.name,
+                "addresses": list(self.addresses),
                 "observing": self.observing,
                 "waiting_for_network": not self.electing,
                 "state": self.election.state.value,
@@ -619,10 +622,68 @@ class Daemon:
     async def ping(self, request: web.Request) -> web.Response:
         return web.json_response({"id": self.config.id, "name": self.config.name})
 
+    async def receive_handover(self, request: web.Request) -> web.Response:
+        """A member asks this Virgil, the leader, to hand leadership over to it."""
+        sender = self._member_for_certificate(request)
+        if sender is None or sender == self.config.id:
+            return web.json_response({"error": "not a member"}, status=403)
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.json_response({"error": "the request must be JSON"}, status=400)
+        if not isinstance(body, dict) or body.get("to") != sender:
+            # A member can only ask for leadership for itself.
+            return web.json_response({"error": "a member can only ask to lead itself"}, status=403)
+        if self.election.state is not State.LEADER:
+            return web.json_response({"error": f"{self.config.name} isn't leading"}, status=409)
+        self.election.hand_over(sender)
+        log.info("Handing leadership over to %s, at its request", self.name_of(sender))
+        return web.json_response({"handing_over_to": sender}, status=202)
+
     def group_app(self) -> web.Application:
         app = web.Application(client_max_size=256 * 1024)
         app.router.add_get("/group/v1/ping", self.ping)
         app.router.add_post(HEARTBEAT_PATH, self.receive_heartbeat)
+        app.router.add_post(HANDOVER_PATH, self.receive_handover)
+        return app
+
+    # Local control
+
+    async def request_lead(self) -> tuple[int, dict]:
+        """Ask the current leader to hand leadership over to this Virgil."""
+        if self.timing is None:
+            return 409, {"error": "virgild is only observing, so it can't take the lead"}
+        state, leader = self.election.state, self.election.leader
+        if state is State.LEADER:
+            return 200, {"message": f"{self.config.name} is already leading"}
+        if state is not State.FOLLOWER or leader is None:
+            return 409, {"error": f"{self.config.name} is {state.value}; it can only take the lead as a follower"}
+        context = tls.group_client_context(self.identity, self.member_certs())
+        advert = self.adverts.get(leader)
+        port = advert.group_port if advert else self.group_port
+        errors = []
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            for address in self.addresses_for(leader):
+                try:
+                    url = f"https://{address}:{port}{HANDOVER_PATH}"
+                    async with session.post(url, json={"to": self.config.id}, ssl=context) as reply:
+                        data = await reply.json(content_type=None)
+                        if reply.status == 202:
+                            log.info("%s agreed to hand leadership over", self.name_of(leader))
+                            return 202, {"message": f"{self.name_of(leader)} is handing leadership over to "
+                                                    f"{self.config.name}"}
+                        return reply.status, {"error": (data or {}).get("error", f"refused ({reply.status})")}
+                except (aiohttp.ClientError, TimeoutError, ssl.SSLError, OSError) as error:
+                    errors.append(f"{address}: {error or type(error).__name__}")
+        return 503, {"error": f"couldn't reach {self.name_of(leader)} (" + "; ".join(errors or ["no address"]) + ")"}
+
+    async def control_lead(self, request: web.Request) -> web.Response:
+        status, body = await self.request_lead()
+        return web.json_response(body, status=status)
+
+    def control_app(self) -> web.Application:
+        app = web.Application(client_max_size=4096)
+        app.router.add_post(LEAD_PATH, self.control_lead)
         return app
 
     async def _update_advert(self) -> None:
@@ -648,6 +709,14 @@ async def serve(daemon: Daemon, host: str) -> None:
     await group.setup()
     await web.TCPSite(public, host, daemon.public_port, ssl_context=tls.public_server_context(daemon.identity)).start()
     await web.TCPSite(group, host, daemon.group_port, ssl_context=daemon.group_context).start()
+    control = web.AppRunner(daemon.control_app(), access_log=None)
+    await control.setup()
+    try:
+        CONTROL_SOCKET.unlink(missing_ok=True)
+        await web.UnixSite(control, str(CONTROL_SOCKET)).start()
+        os.chmod(CONTROL_SOCKET, 0o660)
+    except OSError as error:
+        log.warning("Couldn't open the control socket: %s", error)
     log.info("Virgil %s: %s (%s), public port %d, group port %d",
              __version__, daemon.config.name, daemon.config.id, daemon.public_port, daemon.group_port)
     await daemon.check_network()
@@ -670,6 +739,7 @@ async def serve(daemon: Daemon, host: str) -> None:
             await daemon.discovery.stop()
         await public.cleanup()
         await group.cleanup()
+        await control.cleanup()
 
 
 def main(argv: list[str] | None = None) -> int:
