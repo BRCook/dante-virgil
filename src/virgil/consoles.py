@@ -78,6 +78,40 @@ class DanteDevice:
         }
 
 
+def find_mac(record: Any, depth: int = 0) -> str | None:
+    """A device's MAC address from netaudio's record, wherever in it netaudio puts it."""
+    if depth > 4:
+        return None
+    if isinstance(record, dict):
+        for key in ("mac_address", "mac"):
+            value = record.get(key)
+            # netaudio sometimes gives the 16-digit PTP clock identity made from the MAC.
+            mac = normalise_mac(value) or (mac_from_clock_identity(value) if isinstance(value, str) else None)
+            if mac:
+                return mac
+        children = record.values()
+    elif isinstance(record, list):
+        children = record
+    else:
+        return None
+    for child in children:
+        if isinstance(child, (dict, list)):
+            mac = find_mac(child, depth + 1)
+            if mac:
+                return mac
+    return None
+
+
+def mac_from_clock_identity(identity: str | None) -> str | None:
+    """A PTP clock identity made from a MAC address (ff:fe inserted in the middle) back to the MAC."""
+    if not identity:
+        return None
+    digits = identity.replace(":", "").lower()
+    if len(digits) != 16 or digits[6:10] != "fffe":
+        return None
+    return normalise_mac(digits[:6] + digits[10:])
+
+
 def _bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
@@ -101,7 +135,7 @@ def parse_devices(data: Any) -> list[DanteDevice]:
                 server_name=str(server_name),
                 name=str(record.get("name") or server_name),
                 address=address,
-                mac=normalise_mac(record.get("mac_address")),
+                mac=find_mac(record),
                 model=str(model) if model else None,
                 ptpv2=_bool(clock_status.get("ptpv2_enabled")),
                 aes67=_bool(record.get("aes67_current")),
@@ -150,6 +184,8 @@ class Consoles:
     local: Callable[[], dict[str, bool]]
     settings: Callable[[], dict[str, DeviceSettings]]
     clock: Callable[[], float] = time.monotonic
+    # The PTP clock identity PTP watching has seen from an address, if any.
+    clock_identity: Callable[[str], str | None] = lambda address: None
     devices: dict[str, DanteDevice] = field(default_factory=dict)
     diagnostics: dict[str, Any] = field(default_factory=dict)
     reachable: bool | None = None
@@ -176,6 +212,8 @@ class Consoles:
             if device.address not in local:
                 continue
             device.follows_this_virgil = local[device.address]
+            if device.mac is None:
+                device.mac = mac_from_clock_identity(self.clock_identity(device.address))
             if device.address not in self.devices:
                 log.info("Local Dante device: %s (%s) at %s", device.name, device.model or "unknown model",
                          device.address)

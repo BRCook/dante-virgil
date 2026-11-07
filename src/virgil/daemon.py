@@ -268,7 +268,12 @@ class Daemon:
                 return
             self.systemd = systemd or roles.Systemd()
         local = lambda: {a: d.follows_this_virgil for a, d in self.ptp.devices.items()}  # noqa: E731
-        self.consoles = Consoles(client or NetaudioClient(), local, lambda: self.config.devices)
+        def clock_identity(address: str) -> str | None:
+            device = self.ptp.devices.get(address)
+            return device.clock_identity if device else None
+
+        self.consoles = Consoles(client or NetaudioClient(), local, lambda: self.config.devices,
+                                 clock_identity=clock_identity)
 
     def check_ptp_interface(self) -> None:
         """Follow the PTP interface's addresses, and run netaudio's daemon only while it has one."""

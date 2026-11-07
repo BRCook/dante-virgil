@@ -177,3 +177,40 @@ def test_netaudio_unreachable():
 
     consoles = asyncio.run(scenario())
     assert consoles.reachable is False and consoles.summaries() == []
+
+
+def test_a_mac_nested_anywhere_in_the_record():
+    from virgil.consoles import find_mac
+
+    nested = {**WING, "mac_address": None, "network": {"interfaces": [{"name": "primary", "mac_address": "00:1D:C1:8D:5D:66"}]}}
+    del nested["mac_address"]
+    (device,) = parse_devices({"WingCompact.local.": nested})
+    assert device.mac == "00:1d:c1:8d:5d:66"
+    assert find_mac({"a": {"b": {"c": {"d": {"e": {"f": {"mac_address": "001dc1aabbcc"}}}}}}}) is None  # too deep
+
+
+def test_the_mac_from_a_ptp_clock_identity():
+    from virgil.consoles import mac_from_clock_identity
+
+    assert mac_from_clock_identity("00:1d:c1:ff:fe:8d:5d:66") == "00:1d:c1:8d:5d:66"
+    assert mac_from_clock_identity("001dc1fffe8d5d66") == "00:1d:c1:8d:5d:66"
+    assert mac_from_clock_identity("00:1d:c1:12:34:8d:5d:66") is None  # not made from a MAC
+    assert mac_from_clock_identity(None) is None
+
+
+def test_falling_back_to_the_ptp_clock_identity():
+    no_mac = {k: v for k, v in WING.items() if k != "mac_address"}
+    fake = FakeNetaudio({"WingCompact.local.": {**no_mac, "clock_status": {"ptpv2_enabled": True}}})
+
+    async def scenario(client):
+        consoles = Consoles(client, lambda: {"10.10.100.50": True}, lambda: {}, clock=lambda: 100.0,
+                            clock_identity=lambda address: "00:1d:c1:ff:fe:8d:5d:66")
+        await consoles.poll()
+        return consoles.summaries()[0]["mac"]
+
+    assert asyncio.run(_with_fake(fake, scenario)) == "00:1d:c1:8d:5d:66"
+
+
+def test_a_mac_given_as_a_clock_identity():
+    (device,) = parse_devices({"WingCompact.local.": {**WING, "mac_address": "001dc1fffe8d5d66"}})
+    assert device.mac == "00:1d:c1:8d:5d:66"

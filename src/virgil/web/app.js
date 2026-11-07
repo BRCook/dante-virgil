@@ -287,6 +287,10 @@ function renderThisVirgil() {
         onchange: (event) => act("/api/v1/device", { mac: d.mac, setting, enabled: event.target.checked },
           `${label} ${event.target.checked ? "will be kept on" : "left alone"} for ${d.name}`) }),
       label);
+    if (!d.mac) {
+      parts.push(el("p", { class: "hint" },
+        `Virgil doesn't know ${d.name}'s MAC address yet, so its toggles can't be set.`));
+    }
     parts.push(el("div", { class: "row" },
       el("strong", {}, d.name),
       el("span", { class: "hint" }, [d.model, d.address,
