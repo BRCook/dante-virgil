@@ -276,10 +276,10 @@ def test_device_toggles(config_path, monkeypatch, capsys):
     assert cli.main(["--config", str(config_path), "device", "00-1D-C1-AA-BB-CC", "ptpv2", "off"]) == 0
     settings = config_file.load(config_path).devices["00:1d:c1:aa:bb:cc"]
     assert settings.native_ptpv2 is False and settings.aes67 is True
-    assert "won't turn it off" in capsys.readouterr().out
+    assert "won't turn it off, either" in capsys.readouterr().out
     capsys.readouterr()
     assert cli.main(["--config", str(config_path), "device", "Wing Compact"]) == 0
-    assert "native PTPv2 toggle off, AES67 toggle on" in capsys.readouterr().out
+    assert "enforce native PTPv2 off, enforce AES67 on" in capsys.readouterr().out
 
 
 def test_device_unknown(config_path, monkeypatch, capsys):
@@ -305,8 +305,8 @@ def test_status_clocks(monkeypatch, capsys):
     monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
-    assert "System clock: following Virgil B: +307 ns, last sample -1.854 µs, RMS 79 ns, 3.305 ppm fast" in out
-    assert "PHC: -2.253 µs from system clock (locked), adjusted -1.509 ppm" in out
+    assert "System clock: following Virgil B: +307 ns, last sample -1,854 ns, RMS 79 ns, 3.305 ppm fast" in out
+    assert "PHC: -2,253 ns from system clock (locked), adjusted -1.509 ppm" in out
     assert "System clock: following PHC: -12 ns, 13.590 ppm slow" in out
     assert "PHC: running free: trim 21.500 ppm" in out
 
@@ -329,7 +329,7 @@ def test_a_member_following_this_virgil(monkeypatch, capsys):
     ]}
     monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
     assert cli.main(["status"]) == 0
-    assert "System clock: following this Virgil: -6.096 µs" in capsys.readouterr().out
+    assert "System clock: following this Virgil: -6,096 ns" in capsys.readouterr().out
 
 
 def test_role_lead(config_path, monkeypatch, capsys):
@@ -375,7 +375,7 @@ def test_a_follower_is_shown_following_its_leader_by_name(monkeypatch, capsys):
     ]}
     monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
     assert cli.main(["status"]) == 0
-    assert "System clock: following this Virgil: +1.466 µs" in capsys.readouterr().out
+    assert "System clock: following this Virgil: +1,466 ns" in capsys.readouterr().out
 
 
 def test_trim_show(config_path, monkeypatch, capsys):

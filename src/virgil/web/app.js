@@ -42,13 +42,12 @@ function replace(id, ...children) {
 
 // Figures
 
+// Every time offset is in nanoseconds, so figures can be compared at a glance.
+const grouped = new Intl.NumberFormat("en", { maximumFractionDigits: 0 });
 function duration(ns) {
-  const sign = ns < 0 ? "-" : "+";
-  const size = Math.abs(ns);
-  if (size < 1000) return `${sign}${size.toFixed(0)} ns`;
-  if (size < 1e6) return `${sign}${(size / 1000).toFixed(3)} µs`;
-  return `${sign}${(size / 1e6).toFixed(3)} ms`;
+  return `${ns < 0 ? "-" : "+"}${grouped.format(Math.abs(ns))} ns`;
 }
+const magnitude = (ns) => `${grouped.format(Math.abs(ns))} ns`;
 const ppm = (ppb) => `${ppb >= 0 ? "+" : "-"}${Math.abs(ppb / 1000).toFixed(3)} ppm`;
 
 function describeState(state, leader) {
@@ -201,7 +200,7 @@ function renderChain() {
           following && clock.system_offset_ns !== undefined ? duration(clock.system_offset_ns) : "—"),
         el("span", { class: "link-line" }),
         el("span", { class: "link-detail" },
-          following && clock.rms_offset_ns !== undefined ? `RMS ${duration(Math.abs(clock.rms_offset_ns)).slice(1)}`
+          following && clock.rms_offset_ns !== undefined ? `RMS ${magnitude(clock.rms_offset_ns)}`
             : (silent ? "not heard" : describeState(v.state, v.leader)))));
     }
     const silent = !v.self && (v.heard_ago === null || v.heard_ago > QUIET_AFTER);
@@ -226,7 +225,7 @@ function renderThisVirgil() {
   if (clock.source) {
     const source = clock.source.startsWith("PHC") ? "its PHC" : (status.leader || clock.source);
     facts.push(`System clock following ${source}: ${duration(clock.system_offset_ns)}` +
-      (clock.rms_offset_ns !== undefined ? `, RMS ${duration(Math.abs(clock.rms_offset_ns)).slice(1)}` : ""));
+      (clock.rms_offset_ns !== undefined ? `, RMS ${magnitude(clock.rms_offset_ns)}` : ""));
   }
   facts.push(...clockFacts(clock));
   if (ptp.interface && ptp.link_up === false) facts.push(`PTP interface ${ptp.interface} has no link`);
@@ -278,32 +277,58 @@ function renderThisVirgil() {
 
   parts.push(el("h3", {}, "Consoles"));
   const devices = status.dante_devices || [];
-  const settings = status.device_settings || {};
   if (devices.length === 0) {
     parts.push(el("p", { class: "hint" }, ptp.link_up === false ? "Nothing is plugged into the PTP interface."
       : "No Dante devices heard on the PTP interface yet."));
-  }
-  for (const d of devices) {
-    const wanted = settings[d.mac] || {};
-    const toggle = (setting, label, name, on) => el("label", { class: "check" },
-      el("input", { type: "checkbox", checked: !!on, disabled: !can || !d.mac,
-        onchange: (event) => act("/api/v1/device", { mac: d.mac, setting, enabled: event.target.checked },
-          event.target.checked ? `${d.name}'s ${name} will be kept on` : `Virgil will leave ${d.name}'s ${name} alone`) }),
-      label);
-    if (!d.mac) {
+  } else {
+    parts.push(devicesTable(devices, status.device_settings || {}, can));
+    for (const d of devices.filter((d) => !d.mac)) {
       parts.push(el("p", { class: "hint" },
-        `Virgil doesn't know ${d.name}'s MAC address yet, so its toggles can't be set.`));
+        `Virgil doesn't know ${d.name}'s MAC address yet, so its settings can't be enforced.`));
     }
-    parts.push(el("div", { class: "row" },
-      el("strong", {}, d.name),
-      el("span", { class: "hint" }, [d.model, d.address,
-        d.ptpv2 === null ? null : `PTPv2 ${d.ptpv2 ? "on" : "off"}`,
-        d.aes67 === null ? null : `AES67 ${d.aes67 ? "on" : "off"}`].filter(Boolean).join(", ")),
-      toggle("ptpv2", "Keep native PTPv2 on", "native PTPv2", wanted.native_ptpv2),
-      toggle("aes67", "Keep AES67 mode on", "AES67 mode", wanted.aes67)));
   }
   parts.push(...interfacesSection(can));
   replace("this-virgil", parts);
+}
+
+const ENFORCE = {
+  ptpv2: { heading: "Enforce native PTPv2", name: "native PTPv2" },
+  aes67: { heading: "Enforce AES67", name: "AES67 mode" },
+};
+const enforceTip = (name) => `Watches this device, and asks it to turn ${name} back on whenever it's turned off.`;
+const onOff = (value) => (value === null || value === undefined ? "unknown" : value ? "on" : "off");
+
+function devicesTable(devices, settings, can) {
+  const header = el("tr", {},
+    ["Device", "Model", "Address", "PTPv2", "AES67"].map((h) => el("th", { scope: "col" }, h)),
+    el("th", { scope: "col", class: "number" }, "Clock"),
+    Object.values(ENFORCE).map((e) => el("th", { scope: "col", class: "centre", title: enforceTip(e.name) },
+      e.heading)));
+  const rows = devices.map((d) => {
+    const wanted = settings[d.mac] || {};
+    const enforce = (setting, on) => {
+      const { name, heading } = ENFORCE[setting];
+      return el("td", { class: "centre", "data-label": heading }, el("input", {
+        type: "checkbox", checked: !!on, disabled: !can || !d.mac, title: enforceTip(name),
+        "aria-label": `${heading} on ${d.name}`,
+        onchange: (event) => act("/api/v1/device", { mac: d.mac, setting, enabled: event.target.checked },
+          event.target.checked ? `Virgil will enforce ${d.name}'s ${name}`
+            : `Virgil will no longer enforce ${d.name}'s ${name}`),
+      }));
+    };
+    return el("tr", {},
+      el("th", { scope: "row" }, d.name),
+      el("td", { "data-label": "Model" }, d.model || ""),
+      el("td", { "data-label": "Address" }, d.address),
+      el("td", { "data-label": "PTPv2" }, onOff(d.ptpv2)),
+      el("td", { "data-label": "AES67" }, onOff(d.aes67)),
+      el("td", { class: "number", "data-label": "Clock" }, d.clock_offset_ppb === null || d.clock_offset_ppb === undefined
+        ? "" : ppm(d.clock_offset_ppb)),
+      enforce("ptpv2", wanted.native_ptpv2),
+      enforce("aes67", wanted.aes67));
+  });
+  return el("div", { class: "table-wrap" }, el("table", { class: "devices" }, el("thead", {}, header),
+    el("tbody", {}, rows)));
 }
 
 // Interfaces: fetched when the page opens and after a change, not on every refresh.
