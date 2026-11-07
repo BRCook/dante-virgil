@@ -8,6 +8,7 @@ It's run by Virgil's systemd units, never by hand:
   hwstamp  Turn on hardware timestamping, for NICs whose clock only runs once
            it's on.
   trim     Change a leader's PHC rate to its trim, in place.
+  dhcpnames  Name each chosen interface's DHCP lease, in /etc/network/interfaces.
 
 sync, hwstamp and trim only read what prepare generated, never the request itself.
 """
@@ -143,11 +144,53 @@ def trim(generated: Path = GENERATED_DIR, run: Runner = _run) -> int:
     return run(command)
 
 
+DHCP_NAMES_REQUEST = Path("/run/dante-virgil/dhcp-names.json")
+INTERFACES_FILE = Path("/etc/network/interfaces")
+
+
+def dhcpnames(request_path: Path = DHCP_NAMES_REQUEST, interfaces_file: Path = INTERFACES_FILE,
+              hostname: str | None = None) -> int:
+    """Name each chosen interface's DHCP lease, in ifupdown's interfaces file."""
+    import re
+    import shutil
+    import socket
+
+    from virgil import dhcpnames as names_module
+
+    if not interfaces_file.exists():
+        print("No /etc/network/interfaces (ifupdown isn't in use), so the leases aren't named")
+        return 0
+    try:
+        data = json.loads(read_small_file(request_path, 4096))
+    except FileNotFoundError:
+        data = {}
+    wanted = {}
+    for key in ("ptp_interface", "mgmt_interface"):
+        value = data.get(key)
+        if value is not None and not (isinstance(value, str) and re.match(r"^[A-Za-z0-9_.:-]{1,15}$", value)):
+            print(f"virgil-root: {key} isn't a valid interface name", file=sys.stderr)
+            return 1
+        wanted[key] = value
+    names = names_module.wanted_names(hostname or socket.gethostname(), wanted["ptp_interface"],
+                                      wanted["mgmt_interface"])
+    old = interfaces_file.read_text()
+    new, notes = names_module.apply(old, names)
+    for note in notes:
+        print(note)
+    if new != old:
+        backup = interfaces_file.with_name(interfaces_file.name + ".virgil-backup")
+        if not backup.exists():
+            shutil.copy2(interfaces_file, backup)
+        atomic_write(interfaces_file, new.encode())
+        print("Updated the interfaces file; the names apply the next time each interface comes up")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="virgil-root", description="Virgil's root helper. Run by systemd.")
     parser.add_argument("--request", type=Path, default=REQUEST_PATH, help=argparse.SUPPRESS)
     parser.add_argument("--generated", type=Path, default=GENERATED_DIR, help=argparse.SUPPRESS)
-    parser.add_argument("command", choices=["prepare", "sync", "hwstamp", "trim"])
+    parser.add_argument("command", choices=["prepare", "sync", "hwstamp", "trim", "dhcpnames"])
     args = parser.parse_args(argv)
 
     try:
@@ -158,6 +201,8 @@ def main(argv: list[str] | None = None) -> int:
             return sync(args.generated)
         if args.command == "trim":
             return trim(args.generated)
+        if args.command == "dhcpnames":
+            return dhcpnames()
         return hwstamp(args.generated)
     except (RequestError, PrepareError, UnsafeFileError, OSError) as error:
         print(f"virgil-root: {error}", file=sys.stderr)

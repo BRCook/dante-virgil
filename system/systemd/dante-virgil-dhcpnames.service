@@ -1,0 +1,7 @@
+[Unit]
+Description=Virgil: name each interface's DHCP lease
+Documentation=https://github.com/BRCook/dante-virgil
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dante-virgil/venv/bin/virgil-root dhcpnames

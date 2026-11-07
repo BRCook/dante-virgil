@@ -190,3 +190,19 @@ def test_ntp_hardware_timestamps_only_on_hardware(tmp_path):
     assert "hwtimestamp enp1s0 rxfilter all" in (generated / "chrony.conf").read_text()
     generated = _prepare(tmp_path, _follower(ntp_hwtimestamp="enp5s0"))  # software only: ignored
     assert "hwtimestamp" not in (generated / "chrony.conf").read_text()
+
+
+def test_dhcpnames(tmp_path):
+    from tests.test_dhcpnames import BOX
+    from virgil.rootctl import dhcpnames
+
+    interfaces = tmp_path / "interfaces"
+    interfaces.write_text(BOX)
+    request = tmp_path / "dhcp-names.json"
+    request.write_text(json.dumps({"ptp_interface": "enp1s0", "mgmt_interface": "enp5s0"}))
+    assert dhcpnames(request, interfaces, hostname="debian-server-1") == 0
+    assert "hostname debian-server-1-ptp" in interfaces.read_text()
+    assert (tmp_path / "interfaces.virgil-backup").read_text() == BOX
+    request.write_text(json.dumps({"ptp_interface": "enp1s0; reboot", "mgmt_interface": None}))
+    assert dhcpnames(request, interfaces, hostname="x") == 1
+    assert dhcpnames(request, tmp_path / "missing", hostname="x") == 0  # no ifupdown: nothing to do

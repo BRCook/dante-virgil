@@ -36,6 +36,11 @@ rm -f "$UNIT_DIR"/dante-virgil.service "$UNIT_DIR"/dante-virgil-*.service "$TMPF
 rm -rf "$PREFIX" /run/dante-virgil /run/dante-virgil-generated /var/lib/dante-virgil
 systemctl daemon-reload
 
+if [[ -e /etc/network/interfaces ]] && grep -q '# Set by Virgil' /etc/network/interfaces; then
+    echo "Removing the DHCP lease names Virgil set"
+    sed -i '/^[[:space:]]*# Set by Virgil$/{N;/\n[[:space:]]*hostname /d}' /etc/network/interfaces
+fi
+
 if [[ -e "$APPARMOR_LOCAL" ]]; then
     echo "Removing Virgil's AppArmor rule"
     sed -i -e '\|^# Added by Virgil$|d' -e '\|^/run/dante-virgil-generated/chrony\.conf r,$|d' "$APPARMOR_LOCAL"

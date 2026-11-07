@@ -690,3 +690,34 @@ def test_when_chrony_gets_hardware_timestamps(tmp_path):
     assert a.ntp_hwtimestamp_interface(lookup) == "enp2s0"  # a separate hardware NIC (/dev/ptp1)
     c.ntp_hwtimestamp = False
     assert a.ntp_hwtimestamp_interface(lookup) is None
+
+
+def test_dhcp_names_are_set_on_start_and_on_change(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    a.manage_timing = True
+    a.config.ptp_interface, a.config.mgmt_interface = "enp1s0", "enp5s0"
+    started = []
+
+    class Systemd:
+        def start(self, unit, block=True):
+            started.append(unit)
+
+    request = tmp_path / "dhcp-names.json"
+    a.update_dhcp_names(Systemd(), request)
+    a.update_dhcp_names(Systemd(), request)  # nothing changed
+    assert started == ["dante-virgil-dhcpnames.service"]
+    assert json.loads(request.read_text()) == {"ptp_interface": "enp1s0", "mgmt_interface": "enp5s0"}
+    a.config.mgmt_interface = "enp2s0"
+    a.update_dhcp_names(Systemd(), request)
+    assert len(started) == 2
+
+
+def test_status_shows_the_dhcp_names(tmp_path):
+    import socket
+
+    from virgil.daemon import dhcp_lease_names
+
+    names = dhcp_lease_names()
+    assert names["ptp"].endswith("-ptp") and names["mgmt"].endswith("-mgmt")
+    assert names["ptp"].startswith(socket.gethostname().split(".")[0].lower()[:10])
