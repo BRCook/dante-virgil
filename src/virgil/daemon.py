@@ -73,6 +73,8 @@ NETWORK_WAIT = 60.0
 # How long a self-assigned 169.254.x.x address has to be the only one before
 # it counts, so DHCP has time to finish on networks that have it.
 LINK_LOCAL_GRACE = 30.0
+# Exiting with this has systemd start virgild again (Restart=on-failure).
+RESTART_EXIT = 75
 NETAUDIO_UNIT = "dante-virgil-netaudio.service"
 NETAUDIO_ENV = Path("/run/dante-virgil/netaudio.env")
 
@@ -105,6 +107,8 @@ class Daemon:
     discovery: discovery.Discovery | None = field(default=None, init=False)
     timing: TimingManager | None = field(default=None, init=False)
     web: WebApi | None = field(default=None, init=False)
+    # Set to have virgild shut down cleanly and exit with RESTART_EXIT, so systemd starts it again.
+    restart: asyncio.Event = field(default_factory=asyncio.Event, init=False)
     # The management interface's addresses and networks, as last seen.
     addresses: tuple[str, ...] = field(default=(), init=False)
     networks: tuple[str, ...] = field(default=(), init=False)
@@ -775,6 +779,15 @@ class Daemon:
         if self.discovery is not None:
             asyncio.ensure_future(self._update_advert())
 
+    def request_restart(self, delay: float = 1.0) -> None:
+        """Restart virgild shortly, once the current reply has gone out.
+
+        virgild can't restart its own unit through polkit, on purpose, so it
+        exits instead, and systemd's Restart=on-failure starts it again.
+        Restarting never disturbs the timing services.
+        """
+        asyncio.get_running_loop().call_later(delay, self.restart.set)
+
     def stop_timing(self) -> bool:
         """Stop this Virgil's timing services, until started again. False if roles aren't managed."""
         if self.timing is None:
@@ -900,9 +913,17 @@ async def serve(daemon: Daemon, host: str) -> None:
     if daemon.timing is not None:
         jobs.append(daemon.timing.run())
     tasks = [asyncio.create_task(job) for job in jobs]
+    waiting = asyncio.create_task(daemon.restart.wait())
     try:
-        await asyncio.gather(*tasks)
+        await asyncio.wait([*tasks, waiting], return_when=asyncio.FIRST_COMPLETED)
+        if daemon.restart.is_set():
+            log.info("Restarting")
+        else:
+            for task in tasks:
+                if task.done() and task.exception():
+                    raise task.exception()
     finally:
+        waiting.cancel()
         for task in tasks:
             task.cancel()
         if daemon.ptp_watcher is not None:
@@ -926,7 +947,7 @@ def main(argv: list[str] | None = None) -> int:
     daemon = Daemon(args.config, tls.default_identity(args.tls_dir),
                     group_port=args.group_port, public_port=args.public_port)
     asyncio.run(serve(daemon, args.host))
-    return 0
+    return RESTART_EXIT if daemon.restart.is_set() else 0
 
 
 if __name__ == "__main__":
