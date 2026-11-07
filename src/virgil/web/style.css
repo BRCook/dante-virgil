@@ -46,6 +46,8 @@ h1 { margin: 0; font-size: 1.9rem; line-height: 1.15; font-weight: 700; letter-s
 .role { font-weight: 600; }
 .role.leader { color: var(--amber); }
 .account { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.controls { display: flex; gap: 0.75rem 1.25rem; align-items: center; flex-wrap: wrap; }
+.units { color: var(--muted); display: inline-flex; gap: 0.4rem; align-items: center; }
 
 /* Warnings: the first thing that matters */
 .warnings { max-width: 1100px; margin: 0 auto; padding: 0 1rem; }
@@ -103,11 +105,10 @@ ul.plain li { margin: 0.2rem 0; }
 /* The consoles table: headings and values, no rules between them */
 .table-wrap { overflow-x: auto; }
 table.devices { border-collapse: collapse; width: 100%; min-width: 44rem; }
-table.devices th, table.devices td { text-align: left; padding: 0.3rem 1rem 0.3rem 0; vertical-align: middle; }
+table.devices th, table.devices td { text-align: center; padding: 0.3rem 0.75rem; vertical-align: middle; }
+table.devices .name { text-align: left; padding-left: 0; }
 table.devices thead th { color: var(--muted); font-weight: 600; font-size: 0.9rem; }
 table.devices tbody th { font-weight: 700; }
-table.devices .number { text-align: right; }
-table.devices .centre { text-align: center; }
 
 /* Controls */
 button, input, textarea { font: inherit; color: inherit; }
@@ -150,6 +151,7 @@ label.check { display: inline-flex; gap: 0.4rem; align-items: center; }
     display: flex; justify-content: space-between; align-items: center; padding: 0.15rem 0; text-align: right;
   }
   table.devices td::before { content: attr(data-label); color: var(--muted); text-align: left; }
+  table.devices .name { padding-left: 0; }
   h1 { font-size: 1.5rem; }
   .chain-wrap { overflow-x: visible; }
   .chain { flex-direction: column; min-width: 0; }
