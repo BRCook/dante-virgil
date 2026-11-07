@@ -366,6 +366,43 @@ def _describe_device(dante: dict | None, heard: dict | None) -> str:
     return ", ".join(parts)
 
 
+def _duration(ns: int | float) -> str:
+    """A signed time offset, in whichever unit reads best."""
+    if abs(ns) < 1_000:
+        return f"{ns:+.0f} ns"
+    if abs(ns) < 1_000_000:
+        return f"{ns / 1_000:+.3f} µs"
+    return f"{ns / 1_000_000:+.3f} ms"
+
+
+def _describe_clock(clock: dict | None, names: dict[str, str]) -> list[str]:
+    """Lines describing what chrony and phc2sys are doing on one Virgil."""
+    if not clock:
+        return []
+    lines = []
+    source = clock.get("source")
+    if source is not None and "system_offset_ns" in clock:
+        follows = "its own PHC" if source.startswith("PHC") else names.get(source, source)
+        line = f"System clock: follows {follows}, {_duration(clock['system_offset_ns'])}"
+        if "last_offset_ns" in clock:
+            line += f", last sample {_duration(clock['last_offset_ns'])}"
+        if "rms_offset_ns" in clock:
+            line += f", RMS {_duration(abs(clock['rms_offset_ns'])).lstrip('+')}"
+        if "frequency_ppm" in clock:
+            frequency = clock["frequency_ppm"]
+            line += f"; runs {abs(frequency):.3f} ppm {'fast' if frequency >= 0 else 'slow'} on its own"
+        lines.append(line)
+        if clock.get("synchronised") is False:
+            lines.append("System clock: chrony isn't synchronised yet")
+    if "phc_offset_ns" in clock:
+        state = "locked" if clock.get("phc_locked") else "settling"
+        lines.append(f"PHC: {_duration(clock['phc_offset_ns'])} from the system clock ({state}), "
+                     f"adjusted {clock.get('phc_adjustment_ppm', 0):+.3f} ppm by phc2sys")
+    elif "phc_trim_ppm" in clock:
+        lines.append(f"PHC: running free at its trim of {clock['phc_trim_ppm']:+.3f} ppm")
+    return lines
+
+
 def _describe(state: str | None, leader: str | None) -> str:
     if state is None:
         return "not heard from"
@@ -381,8 +418,20 @@ def cmd_status(args: argparse.Namespace) -> int:
     if status.get("waiting_for_network"):
         observing += "  (waiting for the management network before electing)"
     print(f"{status['name']} (this Virgil): {_describe(status['state'], status['leader'])}{observing}")
+    # Member addresses, so a follower's clock source can be shown by name.
+    names = {}
+    for member in (status.get("group") or {}).get("members", []):
+        for address in member.get("addresses") or []:
+            names[address] = member["name"]
+    for line in _describe_clock(status.get("clock"), names):
+        print(f"  {line}")
     ptp = status.get("ptp") or {}
-    if ptp.get("watching"):
+    netaudio = status.get("netaudio")
+    if ptp.get("interface") and ptp.get("link_up") is False:
+        print(f"  PTP interface {ptp['interface']} has no link, so no console is connected")
+    elif ptp.get("interface") and ptp.get("has_address") is False:
+        print(f"  PTP interface {ptp['interface']} has no IPv4 address yet; Dante monitoring waits for one")
+    elif ptp.get("watching"):
         identity = ptp.get("identity") or "not announced yet"
         print(f"  PTP grandmaster: {identity}")
         dante = {d["address"]: d for d in status.get("dante_devices") or []}
@@ -391,8 +440,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             print("  Local Dante devices: none heard yet")
         for device in devices:
             print("  " + _describe_device(dante.get(device["address"]), device))
-    netaudio = status.get("netaudio")
-    if netaudio is not None and netaudio.get("reachable") is False:
+    if netaudio is not None and netaudio.get("running", True) and netaudio.get("reachable") is False:
         print("  WARNING: can't reach netaudio's daemon (systemctl status dante-virgil-netaudio)")
     for warning in ptp.get("warnings") or []:
         print(f"  WARNING: {warning}")
@@ -413,6 +461,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             else:
                 line += ", address unknown"
             print(line)
+            for line in _describe_clock(member.get("clock"), names):
+                print(f"    {line}")
             for device in member.get("dante_devices") or []:
                 print("    " + _describe_device(device, None))
             for warning in member.get("ptp_warnings") or []:

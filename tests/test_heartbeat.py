@@ -70,3 +70,16 @@ def test_ptp_fields_round_trip():
 def test_bad_ptp_fields(change):
     with pytest.raises(HeartbeatError):
         decode({**BEAT.encode(), **change})
+
+
+def test_clock_round_trip():
+    from dataclasses import replace
+
+    beat = replace(BEAT, clock={"source": "10.10.100.253", "system_offset_ns": 307, "phc_locked": True})
+    assert decode(beat.encode()).clock == beat.clock
+
+
+@pytest.mark.parametrize("clock", ["fast", {"a": [1]}, {str(i): i for i in range(17)}, {"x": "y" * 3000}])
+def test_bad_clock(clock):
+    with pytest.raises(HeartbeatError):
+        decode({**BEAT.encode(), "clock": clock})
