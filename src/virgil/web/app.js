@@ -42,12 +42,33 @@ function replace(id, ...children) {
 
 // Figures
 
-// Every time offset is in nanoseconds, so figures can be compared at a glance.
-const grouped = new Intl.NumberFormat("en", { maximumFractionDigits: 0 });
-function duration(ns) {
-  return `${ns < 0 ? "-" : "+"}${grouped.format(Math.abs(ns))} ns`;
+// Every time offset on the page is in one unit, chosen in the header and
+// remembered by the browser. The precision is the same in each: whole nanoseconds.
+const UNITS = {
+  ns: { label: "ns", scale: 1, format: new Intl.NumberFormat("en", { maximumFractionDigits: 0 }) },
+  us: { label: "µs", scale: 1e3, format: new Intl.NumberFormat("en", { minimumFractionDigits: 3, maximumFractionDigits: 3 }) },
+  ms: { label: "ms", scale: 1e6, format: new Intl.NumberFormat("en", { minimumFractionDigits: 6, maximumFractionDigits: 6 }) },
+};
+let unit = "ns";
+try { unit = UNITS[localStorage.getItem("virgil-unit")] ? localStorage.getItem("virgil-unit") : "ns"; } catch { /* private browsing */ }
+
+function magnitude(ns) {
+  const u = UNITS[unit];
+  return `${u.format.format(Math.abs(ns) / u.scale)} ${u.label}`;
 }
-const magnitude = (ns) => `${grouped.format(Math.abs(ns))} ns`;
+const duration = (ns) => `${ns < 0 ? "-" : "+"}${magnitude(ns)}`;
+
+function setUpUnits() {
+  const select = document.getElementById("units");
+  for (const [key, u] of Object.entries(UNITS)) select.append(el("option", { value: key }, u.label));
+  select.value = unit;
+  select.addEventListener("change", () => {
+    unit = select.value;
+    try { localStorage.setItem("virgil-unit", unit); } catch { /* private browsing */ }
+    select.blur();
+    render();
+  });
+}
 const ppm = (ppb) => `${ppb >= 0 ? "+" : "-"}${Math.abs(ppb / 1000).toFixed(3)} ppm`;
 
 function describeState(state, leader) {
@@ -223,7 +244,7 @@ function renderThisVirgil() {
 
   const facts = [];
   if (clock.source) {
-    const source = clock.source.startsWith("PHC") ? "its PHC" : (status.leader || clock.source);
+    const source = clock.source.startsWith("PHC") ? "PHC" : (status.leader || clock.source);
     facts.push(`System clock following ${source}: ${duration(clock.system_offset_ns)}` +
       (clock.rms_offset_ns !== undefined ? `, RMS ${magnitude(clock.rms_offset_ns)}` : ""));
   }
@@ -296,19 +317,19 @@ const ENFORCE = {
   aes67: { heading: "Enforce AES67", name: "AES67 mode" },
 };
 const enforceTip = (name) => `Watches this device, and asks it to turn ${name} back on whenever it's turned off.`;
-const onOff = (value) => (value === null || value === undefined ? "unknown" : value ? "on" : "off");
+const onOff = (value) => (value === null || value === undefined ? "Unknown" : value ? "On" : "Off");
+const ppmValue = (ppb) => `${ppb >= 0 ? "+" : "-"}${Math.abs(ppb / 1000).toFixed(3)}`;
 
 function devicesTable(devices, settings, can) {
   const header = el("tr", {},
-    ["Device", "Model", "Address", "PTPv2", "AES67"].map((h) => el("th", { scope: "col" }, h)),
-    el("th", { scope: "col", class: "number" }, "Clock"),
-    Object.values(ENFORCE).map((e) => el("th", { scope: "col", class: "centre", title: enforceTip(e.name) },
-      e.heading)));
+    el("th", { scope: "col", class: "name" }, "Device"),
+    ["Model", "Address", "PTPv2", "AES67", "Clock (ppm)"].map((h) => el("th", { scope: "col" }, h)),
+    Object.values(ENFORCE).map((e) => el("th", { scope: "col", title: enforceTip(e.name) }, e.heading)));
   const rows = devices.map((d) => {
     const wanted = settings[d.mac] || {};
     const enforce = (setting, on) => {
       const { name, heading } = ENFORCE[setting];
-      return el("td", { class: "centre", "data-label": heading }, el("input", {
+      return el("td", { "data-label": heading }, el("input", {
         type: "checkbox", checked: !!on, disabled: !can || !d.mac, title: enforceTip(name),
         "aria-label": `${heading} on ${d.name}`,
         onchange: (event) => act("/api/v1/device", { mac: d.mac, setting, enabled: event.target.checked },
@@ -317,13 +338,13 @@ function devicesTable(devices, settings, can) {
       }));
     };
     return el("tr", {},
-      el("th", { scope: "row" }, d.name),
+      el("th", { scope: "row", class: "name" }, d.name),
       el("td", { "data-label": "Model" }, d.model || ""),
       el("td", { "data-label": "Address" }, d.address),
       el("td", { "data-label": "PTPv2" }, onOff(d.ptpv2)),
       el("td", { "data-label": "AES67" }, onOff(d.aes67)),
-      el("td", { class: "number", "data-label": "Clock" }, d.clock_offset_ppb === null || d.clock_offset_ppb === undefined
-        ? "" : ppm(d.clock_offset_ppb)),
+      el("td", { "data-label": "Clock (ppm)" }, d.clock_offset_ppb === null || d.clock_offset_ppb === undefined
+        ? "" : ppmValue(d.clock_offset_ppb)),
       enforce("ptpv2", wanted.native_ptpv2),
       enforce("aes67", wanted.aes67));
   });
@@ -523,5 +544,6 @@ async function loadSession() {
   render();
 }
 
+setUpUnits();
 loadSession().then(loadInterfaces).then(refresh);
 setInterval(refresh, REFRESH_MS);
