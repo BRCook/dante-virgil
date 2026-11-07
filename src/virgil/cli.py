@@ -22,6 +22,7 @@ from virgil import group as groups
 from virgil import joining, tls
 from virgil.generate import Role
 from virgil.group import GroupError, InviteToken
+from virgil.control import CONTROL_SOCKET, LEAD_PATH
 from virgil.interfaces import Interface, Timestamping, get_interface, ipv4_addresses, list_interfaces
 from virgil.request import REQUEST_PATH, RequestError, TimingRequest, from_json, to_json
 from virgil.roles import CHRONY, PHC2SYS, PTP4L, ServiceError, Systemd, apply, current_request, write_request
@@ -218,6 +219,21 @@ def _request_for(role: Role, args: argparse.Namespace) -> TimingRequest:
     return from_json(to_json(request))
 
 
+async def _control(method: str, path: str, socket_path: Path) -> tuple[int, dict]:
+    """Talk to the local virgild over its control socket."""
+    import aiohttp
+
+    try:
+        connector = aiohttp.UnixConnector(path=str(socket_path))
+        async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.request(method, f"http://virgil{path}") as reply:
+                return reply.status, await reply.json(content_type=None) or {}
+    except PermissionError as error:
+        raise PermissionError(error.errno, error.strerror, str(socket_path)) from error
+    except (aiohttp.ClientError, OSError) as error:
+        raise CliError("couldn't reach virgild. Is it running? (systemctl status dante-virgil)") from error
+
+
 def cmd_role(args: argparse.Namespace) -> int:
     systemd = Systemd()
     old = current_request(systemd, args.request)
@@ -233,6 +249,14 @@ def cmd_role(args: argparse.Namespace) -> int:
         return 0
 
     managed = not config_file.load(args.config).observe_only
+    if args.role == "lead":
+        if not managed:
+            raise CliError("observe_only is set, so virgild doesn't manage roles. Use 'virgilctl role leader'.")
+        status, body = asyncio.run(_control("POST", LEAD_PATH, args.control))
+        if status >= 300:
+            raise CliError(body.get("error", f"virgild refused ({status})"))
+        print(body.get("message", "Done"))
+        return 0
     if args.role == "stop":
         if managed:
             # Otherwise virgild would start them again.
@@ -382,24 +406,24 @@ def _describe_clock(clock: dict | None, names: dict[str, str]) -> list[str]:
     lines = []
     source = clock.get("source")
     if source is not None and "system_offset_ns" in clock:
-        follows = "its own PHC" if source.startswith("PHC") else names.get(source, source)
-        line = f"System clock: follows {follows}, {_duration(clock['system_offset_ns'])}"
+        follows = "PHC" if source.startswith("PHC") else names.get(source, source)
+        parts = [_duration(clock["system_offset_ns"])]
         if "last_offset_ns" in clock:
-            line += f", last sample {_duration(clock['last_offset_ns'])}"
+            parts.append(f"last sample {_duration(clock['last_offset_ns'])}")
         if "rms_offset_ns" in clock:
-            line += f", RMS {_duration(abs(clock['rms_offset_ns'])).lstrip('+')}"
+            parts.append(f"RMS {_duration(abs(clock['rms_offset_ns'])).lstrip('+')}")
         if "frequency_ppm" in clock:
             frequency = clock["frequency_ppm"]
-            line += f"; runs {abs(frequency):.3f} ppm {'fast' if frequency >= 0 else 'slow'} on its own"
-        lines.append(line)
+            parts.append(f"{abs(frequency):.3f} ppm {'fast' if frequency >= 0 else 'slow'}")
+        lines.append(f"System clock: following {follows}: " + ", ".join(parts))
         if clock.get("synchronised") is False:
-            lines.append("System clock: chrony isn't synchronised yet")
+            lines.append("System clock: not synchronised yet")
     if "phc_offset_ns" in clock:
         state = "locked" if clock.get("phc_locked") else "settling"
-        lines.append(f"PHC: {_duration(clock['phc_offset_ns'])} from the system clock ({state}), "
-                     f"adjusted {clock.get('phc_adjustment_ppm', 0):+.3f} ppm by phc2sys")
+        lines.append(f"PHC: {_duration(clock['phc_offset_ns'])} from system clock ({state}), "
+                     f"adjusted {clock.get('phc_adjustment_ppm', 0):+.3f} ppm")
     elif "phc_trim_ppm" in clock:
-        lines.append(f"PHC: running free at its trim of {clock['phc_trim_ppm']:+.3f} ppm")
+        lines.append(f"PHC: running free: trim {clock['phc_trim_ppm']:.3f} ppm")
     return lines
 
 
@@ -419,7 +443,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         observing += "  (waiting for the management network before electing)"
     print(f"{status['name']} (this Virgil): {_describe(status['state'], status['leader'])}{observing}")
     # Member addresses, so a follower's clock source can be shown by name.
-    names = {}
+    names = {address: "this Virgil" for address in status.get("addresses") or []}
     for member in (status.get("group") or {}).get("members", []):
         for address in member.get("addresses") or []:
             names[address] = member["name"]
@@ -428,9 +452,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     ptp = status.get("ptp") or {}
     netaudio = status.get("netaudio")
     if ptp.get("interface") and ptp.get("link_up") is False:
-        print(f"  PTP interface {ptp['interface']} has no link, so no console is connected")
+        print(f"  PTP interface {ptp['interface']} has no link")
     elif ptp.get("interface") and ptp.get("has_address") is False:
-        print(f"  PTP interface {ptp['interface']} has no IPv4 address yet; Dante monitoring waits for one")
+        print(f"  PTP interface {ptp['interface']} has no IPv4 address")
     elif ptp.get("watching"):
         identity = ptp.get("identity") or "not announced yet"
         print(f"  PTP grandmaster: {identity}")
@@ -538,6 +562,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=config_file.DEFAULT_PATH, help=argparse.SUPPRESS)
     parser.add_argument("--request", type=Path, default=REQUEST_PATH, help=argparse.SUPPRESS)
     parser.add_argument("--tls-dir", type=Path, default=tls.TLS_DIR, help=argparse.SUPPRESS)
+    parser.add_argument("--control", type=Path, default=CONTROL_SOCKET, help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", required=True)
 
     status = commands.add_parser("status", help="show this Virgil, its group, and other Virgils it can see")
@@ -567,6 +592,7 @@ def build_parser() -> argparse.ArgumentParser:
     follower.add_argument("--leader", required=True, metavar="ADDRESS", help="the leader's address")
     follower.add_argument("--allow", action="append", metavar="ADDRESS",
                           help="an address or network to serve NTP to (default: the leader)")
+    role_commands.add_parser("lead", help="ask the current leader to hand leadership over to this Virgil")
     role_commands.add_parser("stop", help="stop the timing services")
     role_commands.add_parser("show", help="show the current role")
     role.set_defaults(func=cmd_role)
