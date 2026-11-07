@@ -5,6 +5,9 @@
 #
 # Running it again from a newer copy updates Virgil, and keeps this Virgil's config.
 
+# Restart under bash if started with sh, which can't run this script.
+if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
+
 set -euo pipefail
 
 PREFIX=/opt/dante-virgil
@@ -43,12 +46,6 @@ say "Installing Virgil into $VENV"
 python3 -m venv --clear "$VENV"
 "$VENV/bin/pip" install --quiet --no-deps --require-hashes -r "$REPO/requirements.txt"
 "$VENV/bin/pip" install --quiet --no-deps "$REPO"
-if [[ -n "${NETAUDIO_WHEEL:-}" ]]; then
-    # For development, until netaudio's wheels are pinned in requirements.txt:
-    #   sudo NETAUDIO_WHEEL=/path/to/netaudio-....whl ./install.sh
-    echo "Installing netaudio from $NETAUDIO_WHEEL (its dependencies come from PyPI, unpinned)"
-    "$VENV/bin/pip" install --quiet "$NETAUDIO_WHEEL"
-fi
 ln -sf "$VENV/bin/virgilctl" /usr/local/bin/virgilctl
 
 say "Installing the systemd units, tmpfiles entry and polkit rule"
