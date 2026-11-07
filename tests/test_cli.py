@@ -286,3 +286,38 @@ def test_device_unknown(config_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: STATUS)
     assert cli.main(["--config", str(config_path), "device", "Nope", "ptpv2", "on"]) == 1
     assert "Wing Compact" in capsys.readouterr().err
+
+
+def test_status_clocks(monkeypatch, capsys):
+    status = {
+        **STATUS,
+        "state": "follower",
+        "leader": "Virgil B",
+        "observing": False,
+        "clock": {"source": "10.10.100.252", "system_offset_ns": 307, "last_offset_ns": -1854,
+                  "rms_offset_ns": 79, "frequency_ppm": 3.305, "synchronised": True,
+                  "phc_offset_ns": -2253, "phc_locked": True, "phc_adjustment_ppm": -1.509},
+    }
+    status["group"] = {**STATUS["group"], "members": [
+        {**STATUS["group"]["members"][0], "name": "Virgil B", "state": "leader", "leader": None,
+         "clock": {"source": "PHC0", "system_offset_ns": -12, "frequency_ppm": -13.59, "phc_trim_ppm": 21.5}},
+    ]}
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert ("System clock: follows Virgil B, +307 ns, last sample -1.854 µs, RMS 79 ns; "
+            "runs 3.305 ppm fast on its own") in out
+    assert "PHC: -2.253 µs from the system clock (locked), adjusted -1.509 ppm by phc2sys" in out
+    assert "System clock: follows its own PHC, -12 ns; runs 13.590 ppm slow on its own" in out
+    assert "PHC: running free at its trim of +21.500 ppm" in out
+
+
+def test_status_unplugged_ptp_interface(monkeypatch, capsys):
+    status = {**STATUS, "ptp": {"interface": "enp1s0", "link_up": False, "has_address": False, "watching": True,
+                                "identity": None, "local_devices": [], "warnings": []},
+              "netaudio": {"running": False, "reachable": None}, "dante_devices": []}
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "PTP interface enp1s0 has no link" in out
+    assert "not announced yet" not in out and "can't reach netaudio" not in out

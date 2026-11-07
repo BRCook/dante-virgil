@@ -434,3 +434,14 @@ def test_netaudio_runs_only_while_the_ptp_interface_has_an_address(tmp_path, mon
     addresses["enp1s0"] = []
     b.check_ptp_interface()
     assert systemd.calls[-1] == ("stop", "dante-virgil-netaudio.service")
+
+
+def test_netaudio_stopped_on_purpose_isnt_a_problem(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    b = Daemon(paths["B"], identities["B"])
+    assert b.netaudio_running  # without systemd (as here), assumed running
+    b.systemd = object()
+    b.netaudio_for = None
+    assert not b.netaudio_running
+    b.netaudio_for = ("10.10.100.211",)
+    assert b.netaudio_running

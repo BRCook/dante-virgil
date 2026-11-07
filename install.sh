@@ -41,6 +41,8 @@ if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
     useradd --system --user-group --no-create-home --home-dir /nonexistent \
         --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
+# phc2sys has no query interface; virgild reads its reports from the journal.
+usermod -a -G systemd-journal "$SERVICE_USER"
 
 say "Installing Virgil into $VENV"
 python3 -m venv --clear "$VENV"

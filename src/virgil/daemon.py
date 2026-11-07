@@ -27,14 +27,14 @@ from aiohttp import web
 
 from virgil import __version__
 from virgil import config as config_file
-from virgil import discovery, ptpwatch, roles, tls
+from virgil import clocks, discovery, ptpwatch, roles, tls
 from virgil.consoles import POLL_INTERVAL, Consoles, NetaudioClient
 from virgil.config import Config
 from virgil.election import Change, Election, State
 from virgil.generate import Role
 from virgil.group import GROUP_PORT, PUBLIC_PORT
 from virgil.heartbeat import HEARTBEAT_PATH, Heartbeat, HeartbeatError, decode
-from virgil.interfaces import ipv4_addresses, ipv4_networks, is_link_local
+from virgil.interfaces import get_interface, ipv4_addresses, ipv4_networks, is_link_local
 from virgil.request import TimingRequest
 from virgil.timing import Target, TimingManager
 from virgil.joining import JOIN_PATH, JoinError, handle_join
@@ -100,6 +100,7 @@ class Daemon:
     # stopped. It starts unknown, so the first check always starts or stops it.
     netaudio_for: tuple[str, ...] | None = field(default=("unknown",), init=False)
     systemd: roles.Systemd | None = field(default=None, init=False)
+    clock: dict | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.config = config_file.load(self.config_path)
@@ -209,7 +210,16 @@ class Daemon:
         devices = tuple(self.consoles.summaries()[:16]) if self.consoles else ()
         return Heartbeat(self.config.id, self.config.name, __version__, e.state, e.coin, e.leader,
                          e.lost_leader, e.handover_to, self.observing, e.established,
-                         self.ptp.own_identity, tuple(self.ptp_warnings()[:8]), devices)
+                         self.ptp.own_identity, tuple(self.ptp_warnings()[:8]), devices, self.clock)
+
+    async def watch_clock(self) -> None:
+        while True:
+            try:
+                follower = self.election.state in (State.FOLLOWER, State.SYNC)
+                self.clock = await clocks.read_clock(follower, None if follower else self.config.trim_ppb) or None
+            except Exception:
+                log.exception("Couldn't read the clocks")
+            await asyncio.sleep(5.0)
 
     # Local Dante devices, through netaudio
 
@@ -256,9 +266,21 @@ class Daemon:
             return
         self.netaudio_for = wanted
 
+    @property
+    def netaudio_running(self) -> bool:
+        """Whether netaudio's daemon should be running. Without systemd (in tests), it's assumed to be."""
+        if self.systemd is None:
+            return True
+        return self.netaudio_for not in (None, ("unknown",))
+
     async def watch_consoles(self) -> None:
         while True:
             await asyncio.sleep(POLL_INTERVAL)
+            if self.consoles is not None and not self.netaudio_running:
+                # Stopped on purpose, so there's nothing to poll or warn about.
+                self.consoles.devices.clear()
+                self.consoles.reachable = None
+                continue
             if self.consoles is not None:
                 try:
                     await self.consoles.poll()
@@ -273,6 +295,12 @@ class Daemon:
             if peer.heartbeat.ptp_identity:
                 members[peer.heartbeat.ptp_identity] = peer.heartbeat.name
         return [w[:200] for w in self.ptp.leaks(members)]
+
+    def _ptp_link_up(self) -> bool | None:
+        if self.config.ptp_interface is None:
+            return None
+        interface = get_interface(self.config.ptp_interface, timestamping=lambda name: None)
+        return None if interface is None else interface.link_up
 
     def own_addresses(self) -> set[str]:
         return set(self.addresses) | set(self.ptp_addresses)
@@ -509,6 +537,7 @@ class Daemon:
                     "ptp_identity": beat.ptp_identity if beat else None,
                     "ptp_warnings": list(beat.ptp_warnings) if beat else [],
                     "dante_devices": list(beat.dante_devices) if beat else [],
+                    "clock": beat.clock if beat else None,
                 }
             )
         others = [
@@ -527,7 +556,11 @@ class Daemon:
                 "state": self.election.state.value,
                 "leader": self.name_of(self.election.leader),
                 "group": None if group is None else {"id": group.id, "members": members},
+                "clock": self.clock,
                 "ptp": {
+                    "interface": self.config.ptp_interface,
+                    "link_up": self._ptp_link_up(),
+                    "has_address": bool(self.ptp_addresses),
                     "watching": self.ptp_watcher is not None,
                     "identity": self.ptp.own_identity,
                     "local_devices": [
@@ -541,7 +574,10 @@ class Daemon:
                     ],
                     "warnings": self.ptp_warnings(),
                 },
-                "netaudio": None if self.consoles is None else {"reachable": self.consoles.reachable},
+                "netaudio": None if self.consoles is None else {
+                    "running": self.netaudio_running,
+                    "reachable": self.consoles.reachable,
+                },
                 "dante_devices": self.consoles.summaries() if self.consoles else [],
                 "diagnostics": self.consoles.diagnostics if self.consoles else {},
                 "other_virgils": others,
@@ -619,7 +655,7 @@ async def serve(daemon: Daemon, host: str) -> None:
     daemon.start_ptp_watch()
     daemon.start_consoles()
     jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election(),
-            daemon.tidy_ptp(), daemon.watch_consoles()]
+            daemon.tidy_ptp(), daemon.watch_consoles(), daemon.watch_clock()]
     if daemon.timing is not None:
         jobs.append(daemon.timing.run())
     tasks = [asyncio.create_task(job) for job in jobs]

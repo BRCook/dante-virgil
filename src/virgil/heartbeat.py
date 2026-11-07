@@ -42,6 +42,8 @@ class Heartbeat:
     ptp_warnings: tuple[str, ...] = ()
     # Summaries of this Virgil's local Dante devices, from netaudio.
     dante_devices: tuple[dict[str, Any], ...] = ()
+    # What chrony and phc2sys are doing (see virgil.clocks).
+    clock: dict[str, Any] | None = None
 
     def encode(self) -> dict[str, Any]:
         return {
@@ -58,6 +60,7 @@ class Heartbeat:
             "ptp_identity": self.ptp_identity,
             "ptp_warnings": list(self.ptp_warnings),
             "dante_devices": list(self.dante_devices),
+            "clock": self.clock,
         }
 
     def view(self, heard_at: float) -> PeerView:
@@ -107,6 +110,14 @@ def decode(data: Any) -> Heartbeat:
             or not all(isinstance(d, dict) for d in devices)
             or len(json.dumps(devices)) > MAX_DEVICES_BYTES):
         raise HeartbeatError("bad dante_devices")
+    clock = data.get("clock")
+    if clock is not None and (
+        not isinstance(clock, dict) or len(clock) > 16
+        or not all(isinstance(k, str) and (v is None or isinstance(v, (str, int, float, bool)))
+                   for k, v in clock.items())
+        or len(json.dumps(clock)) > 2048
+    ):
+        raise HeartbeatError("bad clock")
     return Heartbeat(
         id=virgil_id,
         name=name,
@@ -121,4 +132,5 @@ def decode(data: Any) -> Heartbeat:
         ptp_identity=ptp_identity,
         ptp_warnings=tuple(warnings),
         dante_devices=tuple(devices),
+        clock=clock,
     )
