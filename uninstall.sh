@@ -31,6 +31,9 @@ for unit in dante-virgil-netaudio dante-virgil-phc2sys dante-virgil-ptp4l dante-
 done
 
 echo "Removing Virgil's files"
+if [[ "$(readlink /usr/local/bin/netaudio 2>/dev/null)" == "$PREFIX/venv/bin/netaudio" ]]; then
+    rm -f /usr/local/bin/netaudio
+fi
 rm -f "$UNIT_DIR"/dante-virgil.service "$UNIT_DIR"/dante-virgil-*.service "$TMPFILES_DIR/dante-virgil.conf" \
     "$POLKIT_DIR/50-dante-virgil.rules" /usr/local/bin/virgilctl
 rm -rf "$PREFIX" /run/dante-virgil /run/dante-virgil-generated /var/lib/dante-virgil

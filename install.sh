@@ -78,6 +78,12 @@ else
 fi
 "$VENV/bin/pip" install --quiet --no-deps --force-reinstall "$REPO"
 ln -sf "$VENV/bin/virgilctl" /usr/local/bin/virgilctl
+# netaudio too, unless someone has a netaudio of their own there.
+if [[ -e /usr/local/bin/netaudio && "$(readlink /usr/local/bin/netaudio)" != "$VENV/bin/netaudio" ]]; then
+    echo "Leaving /usr/local/bin/netaudio alone: it isn't Virgil's"
+elif [[ -x "$VENV/bin/netaudio" ]]; then
+    ln -sf "$VENV/bin/netaudio" /usr/local/bin/netaudio
+fi
 
 say "Installing the systemd units, tmpfiles entry and polkit rule"
 install -d "$UNIT_DIR" "$TMPFILES_DIR" "$POLKIT_DIR"
