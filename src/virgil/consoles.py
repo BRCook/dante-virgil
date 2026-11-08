@@ -221,6 +221,9 @@ class Consoles:
             if self.reachable is not False:
                 log.warning("Can't reach netaudio's daemon: %s", error or type(error).__name__)
             self.reachable = False
+            # Old readings would look like consoles that have stopped changing; drop them.
+            self.devices = {}
+            self.diagnostics = {}
             return
         if self.reachable is not True:
             log.info("Connected to netaudio's daemon")

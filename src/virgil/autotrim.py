@@ -44,6 +44,9 @@ def next_trim(trim_ppb: int, offsets_ppb: Iterable[int]) -> int | None:
     return None if new == trim_ppb else new
 
 
+# A pause ends by itself after this long, and starts afresh.
+RESUME_AFTER = 600.0
+
 # If the trim has moved at least this far over recent steps (ppb)...
 UNRESPONSIVE_TRIM = 1500
 # ...and the consoles have moved less than this fraction of it, they aren't responding.

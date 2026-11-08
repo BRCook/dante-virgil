@@ -157,7 +157,7 @@ function collectWarnings() {
   for (const w of ptp.warnings || []) warnings.push({ text: w, fault: true });
   for (const d of status.dante_devices || []) for (const w of d.warnings || []) warnings.push({ text: w });
   const auto = status.auto_trim || {};
-  if (auto.paused) warnings.push({ text: `Auto-trim paused: ${auto.paused}` });
+  if (auto.paused) warnings.push({ text: `Auto-trim paused: ${auto.paused}. It resumes within 10 minutes.` });
   if (status.netaudio && status.netaudio.running && status.netaudio.reachable === false) {
     warnings.push({ text: "Can't reach netaudio's daemon, so consoles aren't being monitored" });
   }
@@ -515,21 +515,47 @@ function renderGroup() {
   replace("group", parts);
 }
 
+// The page only changes what has actually changed, and nothing at all while
+// someone has text selected, so copying from it works.
+const shown = {};
+function changed(key, data) {
+  const signature = JSON.stringify(data);
+  if (shown[key] === signature) return false;
+  shown[key] = signature;
+  return true;
+}
+
+function selecting() {
+  const selection = window.getSelection();
+  return selection && !selection.isCollapsed;
+}
+
+// A member's last heartbeat changes every refresh; only whether it's gone quiet matters for drawing.
+function steady(member) {
+  const { heard_ago: heardAgo, ...rest } = member;
+  return { ...rest, quiet: heardAgo === null || heardAgo > QUIET_AFTER };
+}
+
 function render() {
-  if (!status) return;
+  if (!status || selecting()) return;
   document.getElementById("name").textContent = status.name;
   document.title = `${status.name} · Virgil`;
   const role = document.getElementById("role");
   role.textContent = describeState(status.state, status.leader);
   role.className = status.state === "leader" ? "role leader" : "role";
-  replace("warnings", collectWarnings().map((w) => el("p", { class: w.fault ? "warning fault" : "warning" }, w.text)));
+  const warnings = collectWarnings();
+  if (changed("warnings", warnings)) {
+    replace("warnings", warnings.map((w) => el("p", { class: w.fault ? "warning fault" : "warning" }, w.text)));
+  }
   renderAccount();
-  renderChain();
+  const members = ((status.group || {}).members || []).map(steady);
+  const { group, ...own } = status;
+  if (changed("chain", [own, members, unit])) renderChain();
   // Don't redraw a form while someone's typing in it.
   const typing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
   if (!typing) {
-    renderThisVirgil();
-    renderGroup();
+    if (changed("this", [own, session, interfaces, unit])) renderThisVirgil();
+    if (changed("group", [group && group.id, members, status.other_virgils, session, lastInvite])) renderGroup();
   }
 }
 
