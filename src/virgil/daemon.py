@@ -139,6 +139,10 @@ class Daemon:
     # (trim applied, consoles' average) for recent steps, and why auto-trim paused, if it has.
     trim_history: list = field(default_factory=list, init=False)
     trim_paused: str | None = field(default=None, init=False)
+    # When auto-trim paused (monotonic, and wall time for status), and the consoles it was steering by.
+    trim_paused_at: float = field(default=0.0, init=False)
+    trim_paused_wall: float | None = field(default=None, init=False)
+    trim_paused_consoles: frozenset = field(default_factory=frozenset, init=False)
 
     def __post_init__(self) -> None:
         self.config = config_file.load(self.config_path)
@@ -488,24 +492,45 @@ class Daemon:
 
     def console_offsets(self, now: float) -> list[int]:
         """The clock offsets of every console in the group that's following its Virgil."""
-        devices = list(self.consoles.summaries()) if self.consoles else []
+        return list(self.console_readings(now).values())
+
+    def console_readings(self, now: float) -> dict[str, int]:
+        """Each following console's clock offset, by Virgil and device name."""
+        sources = [(self.config.name, self.consoles.summaries() if self.consoles else [])]
         for virgil_id in self.member_ids():
             peer = self.peers.get(virgil_id)
             if peer is not None and now - peer.heard_at <= self.election.timing.visible:
-                devices += list(peer.heartbeat.dante_devices)
-        return [
-            d["clock_offset_ppb"] for d in devices
+                sources.append((peer.heartbeat.name, peer.heartbeat.dante_devices))
+        return {
+            f"{virgil}/{d.get('name')}": d["clock_offset_ppb"]
+            for virgil, devices in sources for d in devices
             if d.get("follows_this_virgil") and isinstance(d.get("clock_offset_ppb"), int)
-        ]
+            and abs(d["clock_offset_ppb"]) <= autotrim.PLAUSIBLE
+        }
+
+    def resume_trim(self, reason: str) -> None:
+        log.info("Auto-trim resuming: %s", reason)
+        self.trim_paused = None
+        self.trim_paused_wall = None
+        self.trim_history.clear()
 
     def trim_once(self, now: float) -> None:
         """One auto-trim step, if this Virgil is leading and has consoles to go on."""
         if not self.config.auto_trim:
             self.trim_paused = None  # Turning it off and on again resumes it.
+            self.trim_paused_wall = None
             self.trim_history.clear()
             return
-        if self.timing is None or self.election.state is not State.LEADER or self.trim_paused:
+        if self.timing is None or self.election.state is not State.LEADER:
             return
+        if self.trim_paused:
+            # A pause isn't for ever: it ends once the evidence for it is out of date.
+            if now - self.trim_paused_at >= autotrim.RESUME_AFTER:
+                self.resume_trim(f"it has been {autotrim.RESUME_AFTER / 60:.0f} minutes")
+            elif frozenset(self.console_readings(now)) != self.trim_paused_consoles:
+                self.resume_trim("the consoles it steers by have changed")
+            else:
+                return
         if now - self.election.since < autotrim.INTERVAL:
             self.trim_history.clear()
             return  # Let things settle after taking the lead.
@@ -523,8 +548,11 @@ class Daemon:
                 f"the trim moved {(self.config.trim_ppb - first_trim) / 1000:+.3f} ppm but the consoles only "
                 f"{(average - first_average) / 1000:+.3f} ppm"
             )
-            log.warning("Auto-trim paused: %s. Restart virgild, or turn auto_trim off and on, to resume",
-                        self.trim_paused)
+            self.trim_paused_at = now
+            self.trim_paused_wall = time.time()
+            self.trim_paused_consoles = frozenset(self.console_readings(now))
+            log.warning("Auto-trim paused: %s. It resumes in %.0f minutes, or as soon as the consoles change",
+                        self.trim_paused, autotrim.RESUME_AFTER / 60)
             return
         new = autotrim.next_trim(self.config.trim_ppb, offsets)
         if new is None:
@@ -734,7 +762,8 @@ class Daemon:
                 "trim_ppb": self.config.trim_ppb,
                 "ntp_hwtimestamp": (self.timing.request.ntp_hwtimestamp
                                     if self.timing is not None and self.timing.request is not None else None),
-                "auto_trim": {"enabled": self.config.auto_trim, "last": self.last_trim, "paused": self.trim_paused},
+                "auto_trim": {"enabled": self.config.auto_trim, "last": self.last_trim, "paused": self.trim_paused,
+                              "paused_at": self.trim_paused_wall},
                 "ptp": {
                     "interface": self.config.ptp_interface,
                     "link_up": self._ptp_link_up(),

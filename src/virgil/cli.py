@@ -550,7 +550,8 @@ def _auto_trim_line(status: dict) -> str | None:
     if not auto.get("enabled"):
         return "Auto-trim: off"
     if auto.get("paused"):
-        return f"Auto-trim: PAUSED, because {auto['paused']}"
+        since = f" ({_ago(auto['paused_at'])}; resumes within 10 minutes)" if auto.get("paused_at") else ""
+        return f"Auto-trim: PAUSED, because {auto['paused']}{since}"
     last = auto.get("last")
     if not last:
         return "Auto-trim: on, no changes yet" if status.get("state") == "leader" else None

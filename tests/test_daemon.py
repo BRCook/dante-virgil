@@ -721,3 +721,50 @@ def test_status_shows_the_dhcp_names(tmp_path):
     names = dhcp_lease_names()
     assert names["ptp"].endswith("-ptp") and names["mgmt"].endswith("-mgmt")
     assert names["ptp"].startswith(socket.gethostname().split(".")[0].lower()[:10])
+
+
+def _paused(tmp_path):
+    a, path, timing = _leading_with_consoles(tmp_path, [5371])
+    (peer,) = a.peers.values()
+
+    def step_at(t, devices=None):
+        peer.heard_at = t - 0.5
+        if devices is not None:
+            from dataclasses import replace
+
+            peer.heartbeat = replace(peer.heartbeat, dante_devices=tuple(devices))
+        a.trim_once(t)
+
+    for step in range(5):
+        step_at(101.0 + 30 * step)
+    assert a.trim_paused
+    return a, step_at
+
+
+def test_a_pause_ends_by_itself(tmp_path):
+    a, step_at = _paused(tmp_path)
+    paused_at, trim = a.trim_paused_at, a.config.trim_ppb
+    step_at(paused_at + 300)
+    assert a.trim_paused and a.config.trim_ppb == trim  # still paused after 5 minutes
+    step_at(paused_at + 601)
+    assert a.trim_paused is None and a.config.trim_ppb == trim - 500  # resumed, and stepping again
+
+
+def test_a_pause_ends_when_the_consoles_change(tmp_path):
+    a, step_at = _paused(tmp_path)
+    trim = a.config.trim_ppb
+    both = [{"name": "Wing 0", "follows_this_virgil": True, "clock_offset_ppb": 5371},
+            {"name": "Wing Rack", "follows_this_virgil": True, "clock_offset_ppb": 2000}]
+    step_at(a.trim_paused_at + 30, both)  # a second console starts following
+    assert a.trim_paused is None and a.config.trim_ppb < trim
+
+
+def test_unreachable_netaudio_drops_old_readings():
+    import asyncio
+
+    from virgil.consoles import Consoles, DanteDevice, NetaudioClient
+
+    consoles = Consoles(NetaudioClient("http://127.0.0.1:9", timeout=1), lambda: {}, lambda: {})
+    consoles.devices = {"10.0.0.5": DanteDevice("Wing.local.", "Wing", "10.0.0.5", None, None, True, False, 5000)}
+    asyncio.run(consoles.poll())
+    assert consoles.devices == {} and consoles.summaries() == []
