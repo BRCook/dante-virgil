@@ -420,6 +420,44 @@ def _describe_clock(clock: dict | None, names: dict[str, str], leader: str | Non
 QUIET_AFTER = 5
 
 
+def _alert_line(alert: dict) -> str:
+    since = _clock_time(alert.get("since"))
+    detail = f" ({alert['summary']})" if alert.get("summary") else ""
+    return f"{alert['label']} on {alert['device']}{f' since {since}' if since else ''}: {alert['title']}{detail}"
+
+
+def _clock_time(value) -> str:
+    """A time of day, from netaudio's ISO timestamps or from Unix time."""
+    try:
+        if isinstance(value, (int, float)):
+            moment = datetime.fromtimestamp(value)
+        else:
+            moment = datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone()
+    except (TypeError, ValueError, OSError):
+        return ""
+    return moment.strftime("%H:%M:%S")
+
+
+def cmd_events(args: argparse.Namespace) -> int:
+    alerts = fetch_status(args.tls_dir).get("alerts")
+    if alerts is None:
+        print("This Virgil isn't watching for alerts (netaudio isn't running here).")
+        return 0
+    if alerts.get("supported") is False:
+        print("This Virgil's netaudio doesn't report issues; alerts need netaudio 2.0.0 or later.")
+        return 0
+    events = alerts.get("recent") or []
+    if not events:
+        print("No alerts since virgild started. The full record is in /var/lib/dante-virgil/events.jsonl.")
+        return 0
+    for event in events:
+        lasted = f" (lasted {event['lasted_s']:.0f} s)" if event.get("lasted_s") is not None else ""
+        detail = f" ({event['summary']})" if event.get("summary") else ""
+        print(f"{_clock_time(event['t'])}  {event['event']:8s}  {event['label']} on {event['device']}: "
+              f"{event['title']}{detail}{lasted}")
+    return 0
+
+
 def _describe(state: str | None, leader: str | None) -> str:
     if state is None:
         return "not heard from"
@@ -435,6 +473,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     if status.get("waiting_for_network"):
         observing += "  (waiting for the management network before electing)"
     print(f"{status['name']} (this Virgil): {_describe(status['state'], status['leader'])}{observing}")
+    # Alerts come first: a lost lock or a mute matters more than anything else here.
+    for alert in (status.get("alerts") or {}).get("open") or []:
+        print(f"  ALERT: {_alert_line(alert)}")
+    for member in (status.get("group") or {}).get("members", []):
+        for alert in member.get("alerts") or []:
+            print(f"  ALERT from {member['name']}: {_alert_line(alert)}")
     # Member addresses, so a follower's clock source can be shown by name.
     names = {address: "this Virgil" for address in status.get("addresses") or []}
     for member in (status.get("group") or {}).get("members", []):
@@ -661,6 +705,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tls-dir", type=Path, default=tls.TLS_DIR, help=argparse.SUPPRESS)
     parser.add_argument("--control", type=Path, default=CONTROL_SOCKET, help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", required=True)
+
+    events = commands.add_parser("events", help="list recent alerts: lost locks, mutes and audio problems")
+    events.set_defaults(func=cmd_events)
 
     status = commands.add_parser("status", help="show this Virgil, its group, and other Virgils it can see")
     status.add_argument("--json", action="store_true", help="print JSON instead of text")

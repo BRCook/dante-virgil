@@ -83,3 +83,12 @@ def test_clock_round_trip():
 def test_bad_clock(clock):
     with pytest.raises(HeartbeatError):
         decode({**BEAT.encode(), "clock": clock})
+
+
+def test_alerts_round_trip():
+    from dataclasses import replace
+
+    beat = replace(BEAT, alerts=({"label": "LOCK LOST", "device": "WingCompact", "title": "x"},))
+    assert decode(beat.encode()).alerts == beat.alerts
+    with pytest.raises(HeartbeatError):
+        decode({**BEAT.encode(), "alerts": ["x"] * 3})

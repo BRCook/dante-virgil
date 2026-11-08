@@ -444,3 +444,35 @@ def test_status_flags_a_member_gone_quiet(monkeypatch, capsys):
     monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
     assert cli.main(["status"]) == 0
     assert "Virgil B: follower of Virgil A, NOT HEARD FOR 12 s, at 10.10.100.252" in capsys.readouterr().out
+
+
+ALERT = {"id": "a", "kind": "clock_synchronization", "severity": "error", "label": "LOCK LOST",
+         "device": "WingCompact", "title": "Clock synchronization lost", "summary": "",
+         "since": "2026-11-07T21:05:03+00:00"}
+
+
+def test_alerts_come_first_in_status(monkeypatch, capsys):
+    status = {**STATUS, "alerts": {"supported": True, "open": [ALERT], "recent": []}}
+    status["group"] = {**STATUS["group"], "members": [{**STATUS["group"]["members"][0], "alerts": [
+        {**ALERT, "label": "AUDIO MUTED", "device": "WingRack", "title": "Audio muted by clock state",
+         "summary": "Unlocked"}]}]}
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
+    assert cli.main(["status"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1].startswith("  ALERT: LOCK LOST on WingCompact since ") and lines[1].endswith(
+        ": Clock synchronization lost")
+    assert "ALERT from Virgil B: AUDIO MUTED on WingRack" in lines[2] and "(Unlocked)" in lines[2]
+
+
+def test_events(monkeypatch, capsys):
+    events = [{"t": 1794000037, "event": "resolved", **ALERT, "lasted_s": 37.2},
+              {"t": 1794000000, "event": "opened", **ALERT}]
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: {**STATUS, "alerts": {"supported": True, "open": [],
+                                                                                  "recent": events}})
+    assert cli.main(["events"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert "resolved  LOCK LOST on WingCompact: Clock synchronization lost (lasted 37 s)" in out[0]
+    assert "opened    LOCK LOST on WingCompact" in out[1]
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: {**STATUS, "alerts": {"supported": False}})
+    assert cli.main(["events"]) == 0
+    assert "2.0.0" in capsys.readouterr().out
