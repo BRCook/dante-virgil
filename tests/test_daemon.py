@@ -768,3 +768,33 @@ def test_unreachable_netaudio_drops_old_readings():
     consoles.devices = {"10.0.0.5": DanteDevice("Wing.local.", "Wing", "10.0.0.5", None, None, True, False, 5000)}
     asyncio.run(consoles.poll())
     assert consoles.devices == {} and consoles.summaries() == []
+
+
+def test_alerts_reach_heartbeats_and_status(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.ptp_interface = "enp1s0"
+    config_file.save(config, paths["A"])
+    a = Daemon(paths["A"], identities["A"])
+    a.events_path = tmp_path / "events.jsonl"
+
+    class Client:
+        async def devices(self):
+            return {"Wing.local.": {"name": "Wing", "ipv4": "10.0.0.5", "clock_status": {"ptpv2_enabled": True}}}
+
+        async def diagnostics(self, server_name):
+            return {}
+
+        async def issues(self):
+            return {"issues": [{"issue_id": "1", "kind": "clock_muted", "severity": "error", "state": "open",
+                                "first_seen": "2026-11-07T21:05:03Z", "title": "Audio muted by clock state",
+                                "summary": "", "scope": {"device_name": "Wing", "server_name": "Wing.local."}}]}
+
+    from virgil.ptpwatch import LocalDevice
+
+    a.start_consoles(client=Client())
+    a.ptp.devices["10.0.0.5"] = LocalDevice("10.0.0.5", 0.0, ptpv1=True, follows_this_virgil=True)
+    asyncio.run(a.consoles.poll())
+    asyncio.run(a.alerts.poll())
+    (alert,) = a.heartbeat().alerts
+    assert alert["label"] == "AUDIO MUTED" and alert["device"] == "Wing"

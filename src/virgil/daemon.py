@@ -30,6 +30,7 @@ from aiohttp import web
 from virgil import __version__
 from virgil import config as config_file
 from virgil import autotrim, clocks, discovery, ptpwatch, roles, tls
+from virgil.alerts import EVENTS_PATH, Alerts
 from virgil.consoles import POLL_INTERVAL, Consoles, NetaudioClient
 from virgil.control import CONTROL_SOCKET, HANDOVER_PATH, LEAD_PATH
 from virgil.config import Config
@@ -132,6 +133,8 @@ class Daemon:
     netaudio_for: tuple[str, ...] | None = field(default=("unknown",), init=False)
     systemd: roles.Systemd | None = field(default=None, init=False)
     clock: dict | None = field(default=None, init=False)
+    alerts: Alerts | None = field(default=None, init=False)
+    events_path: Path = field(default=EVENTS_PATH, init=False)
     # The interfaces whose DHCP lease names were last set, so they're only set again on a change.
     dhcp_names_for: tuple | None = field(default=None, init=False)
     # What auto-trim last did, for status.
@@ -279,7 +282,8 @@ class Daemon:
         devices = tuple(self.consoles.summaries()[:16]) if self.consoles else ()
         return Heartbeat(self.config.id, self.config.name, __version__, e.state, e.coin, e.leader,
                          e.lost_leader, e.handover_to, self.observing, e.established,
-                         self.ptp.own_identity, tuple(self.ptp_warnings()[:8]), devices, self.clock)
+                         self.ptp.own_identity, tuple(self.ptp_warnings()[:8]), devices, self.clock,
+                         tuple(self.alerts.open_summaries()[:16]) if self.alerts else ())
 
     async def watch_clock(self) -> None:
         while True:
@@ -316,7 +320,13 @@ class Daemon:
             return {p.heartbeat.ptp_identity: p.heartbeat.name for p in self.peers.values()
                     if p.heartbeat.ptp_identity}
 
-        self.consoles = Consoles(client or NetaudioClient(), local, lambda: self.config.devices,
+        client = client or NetaudioClient()
+        if hasattr(client, "issues"):
+            def local_servers() -> set[str]:
+                return {d.server_name for d in self.consoles.devices.values()} if self.consoles else set()
+
+            self.alerts = Alerts(client.issues, local_servers, events_path=self.events_path)
+        self.consoles = Consoles(client, local, lambda: self.config.devices,
                                  clock_identity=clock_identity, own_identity=lambda: self.ptp.own_identity,
                                  member_identities=member_identities)
 
@@ -351,6 +361,15 @@ class Daemon:
         if self.systemd is None:
             return True
         return self.netaudio_for not in (None, ("unknown",))
+
+    async def watch_alerts(self) -> None:
+        while True:
+            await asyncio.sleep(3.0)
+            if self.alerts is not None and (self.systemd is None or self.netaudio_running):
+                try:
+                    await self.alerts.poll()
+                except Exception:
+                    log.exception("Couldn't check for alerts")
 
     async def watch_consoles(self) -> None:
         while True:
@@ -738,6 +757,7 @@ class Daemon:
                     "ptp_warnings": list(beat.ptp_warnings) if beat else [],
                     "dante_devices": list(beat.dante_devices) if beat else [],
                     "clock": beat.clock if beat else None,
+                    "alerts": list(beat.alerts) if beat else [],
                 }
             )
         others = [
@@ -758,6 +778,11 @@ class Daemon:
                 "leader": self.name_of(self.election.leader),
                 "group": None if group is None else {"id": group.id, "members": members},
                 "clock": self.clock,
+                "alerts": None if self.alerts is None else {
+                    "supported": self.alerts.supported,
+                    "open": self.alerts.open_summaries(),
+                    "recent": list(self.alerts.recent),
+                },
                 "dhcp_names": dhcp_lease_names(),
                 "trim_ppb": self.config.trim_ppb,
                 "ntp_hwtimestamp": (self.timing.request.ntp_hwtimestamp
@@ -1035,7 +1060,8 @@ async def serve(daemon: Daemon, host: str) -> None:
     daemon.update_dhcp_names()
     extras = await start_extras(daemon, host, public)
     jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election(),
-            daemon.tidy_ptp(), daemon.watch_consoles(), daemon.watch_clock(), daemon.watch_trim()]
+            daemon.tidy_ptp(), daemon.watch_consoles(), daemon.watch_clock(), daemon.watch_trim(),
+            daemon.watch_alerts()]
     if daemon.timing is not None:
         jobs.append(daemon.timing.run())
     tasks = [asyncio.create_task(job) for job in jobs]

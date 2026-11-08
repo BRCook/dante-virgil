@@ -58,6 +58,19 @@ h1 { margin: 0; font-size: 1.9rem; line-height: 1.15; font-weight: 700; letter-s
 }
 .warning.fault { border-left-color: var(--fault); background: color-mix(in srgb, var(--fault) 12%, var(--panel)); }
 
+/* Alerts: the loudest thing on the page */
+.alerts { max-width: 1100px; margin: 0 auto; padding: 0 1rem; }
+.alerts:empty { display: none; }
+.alert {
+  display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; align-items: baseline; margin: 0 0 0.6rem;
+  padding: 0.9rem 1.1rem; background: var(--fault); color: #fff; border-radius: var(--radius-control);
+}
+.alert.caution-alert { background: var(--amber); color: #1b1305; }
+.alert-label { font-size: 1.4rem; letter-spacing: 0.02em; }
+.alert-text { font-size: 1.05rem; font-weight: 600; }
+.alert-since { margin-left: auto; opacity: 0.85; }
+.events .event-time { color: var(--muted); }
+
 /* The timing chain */
 .chain-wrap { overflow-x: auto; padding: 1rem 0 1.5rem; }
 .chain { display: flex; align-items: stretch; min-width: min-content; }

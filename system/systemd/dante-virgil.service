@@ -17,6 +17,8 @@ RestartSec=2
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/etc/dante-virgil /run/dante-virgil
+# The record of alerts, kept across reboots.
+StateDirectory=dante-virgil
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

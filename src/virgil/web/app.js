@@ -515,6 +515,44 @@ function renderGroup() {
   replace("group", parts);
 }
 
+// Alerts: lost locks, mutes and audio problems, from every Virgil in the group.
+function clockTime(value) {
+  const moment = typeof value === "number" ? new Date(value * 1000) : new Date(value);
+  return Number.isNaN(moment.getTime()) ? "" : moment.toLocaleTimeString([], { hour12: false });
+}
+
+function collectAlerts() {
+  const all = ((status.alerts || {}).open || []).map((a) => ({ ...a, virgil: null }));
+  for (const m of (status.group || {}).members || []) {
+    for (const a of m.alerts || []) all.push({ ...a, virgil: m.name });
+  }
+  return all;
+}
+
+function renderAlerts(alerts) {
+  replace("alerts", alerts.map((a) => el("div", { class: a.severity === "error" ? "alert" : "alert caution-alert" },
+    el("strong", { class: "alert-label" }, a.label),
+    el("span", { class: "alert-text" },
+      `${a.device}${a.virgil ? ` (on ${a.virgil})` : ""}: ${a.title}${a.summary ? `. ${a.summary}` : ""}`),
+    a.since ? el("span", { class: "alert-since" }, `since ${clockTime(a.since)}`) : null)));
+}
+
+function renderEvents() {
+  const alerts = status.alerts;
+  if (!alerts) return replace("events", el("p", { class: "hint" }, "Alerts need netaudio running on this Virgil."));
+  if (alerts.supported === false) {
+    return replace("events", el("p", { class: "hint" }, "This Virgil's netaudio doesn't report issues; alerts need netaudio 2.0.0 or later."));
+  }
+  const events = alerts.recent || [];
+  if (!events.length) return replace("events", el("p", { class: "hint" }, "No alerts since Virgil started."));
+  replace("events", el("ul", { class: "plain events" }, events.map((e) => el("li", {},
+    el("span", { class: "event-time" }, clockTime(e.t)), " ",
+    el("strong", { class: e.event === "opened" && e.severity === "error" ? "stale" : "" },
+      e.event === "opened" ? e.label : `${e.label} resolved`),
+    ` ${e.device}: ${e.title}`,
+    e.lasted_s !== undefined ? el("span", { class: "hint" }, ` (lasted ${Math.round(e.lasted_s)} s)`) : null))));
+}
+
 // The page only changes what has actually changed, and nothing at all while
 // someone has text selected, so copying from it works.
 const shown = {};
@@ -543,6 +581,9 @@ function render() {
   const role = document.getElementById("role");
   role.textContent = describeState(status.state, status.leader);
   role.className = status.state === "leader" ? "role leader" : "role";
+  const alerts = collectAlerts();
+  if (changed("alerts", alerts)) renderAlerts(alerts);
+  if (changed("events", status.alerts)) renderEvents();
   const warnings = collectWarnings();
   if (changed("warnings", warnings)) {
     replace("warnings", warnings.map((w) => el("p", { class: w.fault ? "warning fault" : "warning" }, w.text)));

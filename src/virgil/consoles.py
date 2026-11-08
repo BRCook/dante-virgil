@@ -185,6 +185,9 @@ class NetaudioClient:
     async def diagnostics(self, server_name: str) -> Any:
         return await self._request("GET", f"/diagnostics/{quote(server_name, safe='')}?receiver_history=0")
 
+    async def issues(self) -> Any:
+        return await self._request("GET", "/issues?state=open&limit=200")
+
     async def set_ptpv2(self, server_name: str, enabled: bool) -> Any:
         return await self._request("POST", "/set-clock-configuration",
                                    {"device": server_name, "changes": {"ptpv2_enabled": enabled}})

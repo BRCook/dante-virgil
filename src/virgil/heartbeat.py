@@ -16,6 +16,7 @@ PTP_IDENTITY = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){7}$")
 MAX_WARNINGS = 8
 MAX_WARNING_LENGTH = 200
 MAX_DEVICES = 16
+MAX_ALERTS = 16
 MAX_DEVICES_BYTES = 16 * 1024
 
 
@@ -44,6 +45,8 @@ class Heartbeat:
     dante_devices: tuple[dict[str, Any], ...] = ()
     # What chrony and phc2sys are doing (see virgil.clocks).
     clock: dict[str, Any] | None = None
+    # Open alerts on this Virgil's local Dante devices (see virgil.alerts).
+    alerts: tuple[dict[str, Any], ...] = ()
 
     def encode(self) -> dict[str, Any]:
         return {
@@ -61,6 +64,7 @@ class Heartbeat:
             "ptp_warnings": list(self.ptp_warnings),
             "dante_devices": list(self.dante_devices),
             "clock": self.clock,
+            "alerts": list(self.alerts),
         }
 
     def view(self, heard_at: float) -> PeerView:
@@ -118,6 +122,10 @@ def decode(data: Any) -> Heartbeat:
         or len(json.dumps(clock)) > 2048
     ):
         raise HeartbeatError("bad clock")
+    alerts = data.get("alerts", [])
+    if (not isinstance(alerts, list) or len(alerts) > MAX_ALERTS
+            or not all(isinstance(a, dict) for a in alerts) or len(json.dumps(alerts)) > MAX_DEVICES_BYTES):
+        raise HeartbeatError("bad alerts")
     return Heartbeat(
         id=virgil_id,
         name=name,
@@ -133,4 +141,5 @@ def decode(data: Any) -> Heartbeat:
         ptp_warnings=tuple(warnings),
         dante_devices=tuple(devices),
         clock=clock,
+        alerts=tuple(alerts),
     )
