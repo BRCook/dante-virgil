@@ -21,6 +21,7 @@ def test_a_recording_from_start_to_archive(tmp_path):
         assert s.state()["active"] and s.state()["name"] == name == "virgil-20261109-140000-Box-A"
         s.note("pulled the radio")
         await asyncio.sleep(0.1)
+        assert s.state()["size"] > 0  # status, graphs and diagnostics have been written
         return await s.stop()
 
     archive = asyncio.run(scenario())

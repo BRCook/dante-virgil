@@ -72,9 +72,21 @@ class Session:
     def active(self) -> bool:
         return self.folder is not None
 
+    def size(self) -> int:
+        """How much the recording has written so far, before it's compressed."""
+        if self.folder is None:
+            return 0
+        total = 0
+        for path in self.folder.iterdir():
+            try:
+                total += path.stat().st_size
+            except OSError:
+                pass
+        return total
+
     def state(self) -> dict[str, Any]:
         return {"active": self.active, "name": self.folder.name if self.folder else None, "since": self.since,
-                "group": self.group, "notes": self.notes}
+                "group": self.group, "notes": self.notes, "size": self.size()}
 
     # Starting and stopping
 

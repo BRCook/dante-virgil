@@ -47,6 +47,8 @@ class Heartbeat:
     clock: dict[str, Any] | None = None
     # Open alerts on this Virgil's local Dante devices (see virgil.alerts).
     alerts: tuple[dict[str, Any], ...] = ()
+    # Whether this Virgil is recording, and how much it has written so far.
+    recording: dict[str, Any] | None = None
 
     def encode(self) -> dict[str, Any]:
         return {
@@ -65,6 +67,7 @@ class Heartbeat:
             "dante_devices": list(self.dante_devices),
             "clock": self.clock,
             "alerts": list(self.alerts),
+            "recording": self.recording,
         }
 
     def view(self, heard_at: float) -> PeerView:
@@ -126,6 +129,12 @@ def decode(data: Any) -> Heartbeat:
     if (not isinstance(alerts, list) or len(alerts) > MAX_ALERTS
             or not all(isinstance(a, dict) for a in alerts) or len(json.dumps(alerts)) > MAX_DEVICES_BYTES):
         raise HeartbeatError("bad alerts")
+    recording = data.get("recording")
+    if recording is not None and (
+        not isinstance(recording, dict) or len(recording) > 4
+        or not all(isinstance(v, (bool, int, float)) for v in recording.values())
+    ):
+        raise HeartbeatError("bad recording")
     return Heartbeat(
         id=virgil_id,
         name=name,
@@ -142,4 +151,5 @@ def decode(data: Any) -> Heartbeat:
         dante_devices=tuple(devices),
         clock=clock,
         alerts=tuple(alerts),
+        recording=recording,
     )
