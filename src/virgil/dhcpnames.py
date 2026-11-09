@@ -93,3 +93,32 @@ def apply(text: str, names: dict[str, str]) -> tuple[str, list[str]]:
         notes.append(f"{interface} isn't configured in this file, so its lease can't be named here")
     return "\n".join(out) + ("\n" if text.endswith("\n") else ""), notes
 
+
+
+BLOCK_START = "# Begin: set by Virgil"
+BLOCK_END = "# End: set by Virgil"
+
+
+def apply_dhcpcd(text: str, ptp: str | None, mgmt: str | None) -> str:
+    """Keep the PTP interface from becoming the default route, in dhcpcd.conf.
+
+    It faces a console, not the rest of the world. Virgil's lines sit between
+    two marker comments at the end of the file, so they can be replaced or
+    removed without touching anything else.
+    """
+    lines = text.splitlines()
+    if BLOCK_START in lines and BLOCK_END in lines[lines.index(BLOCK_START):]:
+        start = lines.index(BLOCK_START)
+        end = lines.index(BLOCK_END, start)
+        lines = lines[:start] + lines[end + 1:]
+        while lines and not lines[-1].strip():
+            lines.pop()
+    if ptp and ptp != mgmt:
+        if lines:
+            lines.append("")
+        lines += [BLOCK_START,
+                  "# The PTP interface faces a console, so it mustn't become the default route.",
+                  f"interface {ptp}",
+                  "nogateway",
+                  BLOCK_END]
+    return "\n".join(lines) + ("\n" if lines else "")

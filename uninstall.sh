@@ -44,6 +44,11 @@ if [[ -e /etc/network/interfaces ]] && grep -q '# Set by Virgil' /etc/network/in
     sed -i '/^[[:space:]]*# Set by Virgil$/{N;/\n[[:space:]]*hostname /d}' /etc/network/interfaces
 fi
 
+if [[ -e /etc/dhcpcd.conf ]] && grep -q '^# Begin: set by Virgil$' /etc/dhcpcd.conf; then
+    echo "Removing Virgil's lines from dhcpcd.conf"
+    sed -i '/^# Begin: set by Virgil$/,/^# End: set by Virgil$/d' /etc/dhcpcd.conf
+fi
+
 if [[ -e "$APPARMOR_LOCAL" ]]; then
     echo "Removing Virgil's AppArmor rule"
     sed -i -e '\|^# Added by Virgil$|d' -e '\|^/run/dante-virgil-generated/chrony\.conf r,$|d' "$APPARMOR_LOCAL"

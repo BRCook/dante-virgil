@@ -476,3 +476,12 @@ def test_events(monkeypatch, capsys):
     monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: {**STATUS, "alerts": {"supported": False}})
     assert cli.main(["events"]) == 0
     assert "2.0.0" in capsys.readouterr().out
+
+
+def test_a_members_console_says_whose_it_is(monkeypatch, capsys):
+    status = {**STATUS}
+    status["group"] = {**STATUS["group"], "members": [{**STATUS["group"]["members"][0], "name": "Box B",
+        "dante_devices": [{"name": "WingRack", "address": "192.168.20.246", "follows_this_virgil": True}]}]}
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
+    assert cli.main(["status"]) == 0
+    assert "WingRack at 192.168.20.246, following Box B" in capsys.readouterr().out

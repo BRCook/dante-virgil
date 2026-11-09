@@ -69,3 +69,26 @@ def test_static_and_missing_interfaces():
     assert "hostname box-ptp" not in text
     assert "enp1s0 doesn't use DHCP, so it has no lease to name" in notes
     assert "enp9s0 isn't configured in this file, so its lease can't be named here" in notes
+
+
+DHCPCD = """# A sample configuration for dhcpcd.
+hostname
+duid
+persistent
+option rapid_commit
+slaac private
+"""
+
+
+def test_nogateway_for_the_ptp_interface():
+    from virgil.dhcpnames import BLOCK_END, BLOCK_START, apply_dhcpcd
+
+    text = apply_dhcpcd(DHCPCD, "enp1s0", "enp5s0")
+    assert text.startswith(DHCPCD)
+    assert text.endswith(f"{BLOCK_START}\n# The PTP interface faces a console, so it mustn't become the default "
+                         f"route.\ninterface enp1s0\nnogateway\n{BLOCK_END}\n")
+    assert apply_dhcpcd(text, "enp1s0", "enp5s0") == text  # running again changes nothing
+    moved = apply_dhcpcd(text, "enp2s0", "enp5s0")
+    assert "interface enp2s0" in moved and "interface enp1s0" not in moved
+    assert apply_dhcpcd(text, "enp1s0", "enp1s0") == DHCPCD  # one interface for both: it needs its gateway
+    assert apply_dhcpcd("", "enp1s0", "enp5s0").startswith(BLOCK_START)

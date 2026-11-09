@@ -76,23 +76,29 @@ def netaudio_app(logged_in: Callable[[str | None], bool], upstream: str = NETAUD
         headers["X-Forwarded-Proto"] = "https"
         body = await request.read() if request.can_read_body else None
         try:
-            async with session.request(request.method, upstream + request.path_qs, headers=headers, data=body,
-                                       allow_redirects=False) as reply:
-                response = web.StreamResponse(status=reply.status, reason=reply.reason)
-                for key, value in reply.headers.items():
-                    if key.lower() not in HOP_BY_HOP:
-                        response.headers.add(key, value)
-                await response.prepare(request)
-                async for chunk in reply.content.iter_any():
-                    await response.write(chunk)
-                await response.write_eof()
-                return response
+            reply_context = session.request(request.method, upstream + request.path_qs, headers=headers, data=body,
+                                            allow_redirects=False)
+            reply = await reply_context.__aenter__()
         except (aiohttp.ClientConnectionError, TimeoutError) as error:
             log.warning("Couldn't reach netaudio's daemon for %s: %s", request.path, error)
             return web.Response(text="netaudio's daemon isn't running on this Virgil.", status=502)
-        except ConnectionResetError:
-            # The browser went away, such as by closing a live event stream.
-            return web.Response(status=499)
+        try:
+            response = web.StreamResponse(status=reply.status, reason=reply.reason)
+            for key, value in reply.headers.items():
+                if key.lower() not in HOP_BY_HOP:
+                    response.headers.add(key, value)
+            await response.prepare(request)
+            try:
+                async for chunk in reply.content.iter_any():
+                    await response.write(chunk)
+                await response.write_eof()
+            except (ConnectionResetError, aiohttp.ClientConnectionResetError):
+                pass  # The browser went away, such as by closing a live event stream. Nothing to report.
+            except (aiohttp.ClientPayloadError, aiohttp.ClientConnectionError) as error:
+                log.info("netaudio's daemon stopped mid-reply for %s: %s", request.path, error)
+            return response
+        finally:
+            await reply_context.__aexit__(None, None, None)
 
     app = web.Application(client_max_size=4 * 1024 * 1024)
     app.on_startup.append(start)

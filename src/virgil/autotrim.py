@@ -14,13 +14,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-INTERVAL = 30.0
+# Gentle on purpose: every step changes the rate the followers' chrony is
+# measuring, and a big or frequent change leaves the followers behind.
+INTERVAL = 60.0
 # Correct this fraction of the consoles' average offset each step.
 GAIN = 0.3
 # Leave the trim alone within this band, in ppb.
 DEADBAND = 200
 # The largest change in one step, in ppb.
-MAX_STEP = 500
+MAX_STEP = 100
 # The trim never goes beyond this, in ppb.
 MAX_TRIM = 100_000
 # Readings beyond this, in ppb, can't come from a locked console.
@@ -47,8 +49,10 @@ def next_trim(trim_ppb: int, offsets_ppb: Iterable[int]) -> int | None:
 # A pause ends by itself after this long, and starts afresh.
 RESUME_AFTER = 600.0
 
+# Steps remembered for judging whether the consoles respond.
+HISTORY = 16
 # If the trim has moved at least this far over recent steps (ppb)...
-UNRESPONSIVE_TRIM = 1500
+UNRESPONSIVE_TRIM = 1000
 # ...and the consoles have moved less than this fraction of it, they aren't responding.
 UNRESPONSIVE_FRACTION = 0.2
 
@@ -64,3 +68,17 @@ def unresponsive(history: list[tuple[int, float]]) -> bool:
     (first_trim, first_average), (last_trim, last_average) = history[0], history[-1]
     moved = abs(last_trim - first_trim)
     return moved >= UNRESPONSIVE_TRIM and abs(last_average - first_average) < UNRESPONSIVE_FRACTION * moved
+
+
+# A follower whose chrony jitters more than this (RMS, ns) is still catching
+# up, so auto-trim waits for it rather than move the target again.
+SETTLED_RMS_NS = 20_000
+
+
+def followers_settled(clocks: list[dict | None]) -> bool:
+    """Whether every follower's chrony is tracking the leader closely."""
+    for clock in clocks:
+        rms = (clock or {}).get("rms_offset_ns")
+        if not isinstance(rms, (int, float)) or abs(rms) > SETTLED_RMS_NS:
+            return False
+    return True

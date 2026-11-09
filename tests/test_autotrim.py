@@ -6,15 +6,16 @@ from virgil.autotrim import DEADBAND, MAX_STEP, MAX_TRIM, next_trim, unresponsiv
 def test_a_fast_leader_is_slowed_down():
     # Consoles at +4 ppm: the leader is faster than they'd like.
     assert next_trim(0, [4000]) == -MAX_STEP
-    assert next_trim(0, [1000]) == -300
+    assert next_trim(0, [300]) == -90
 
 
 def test_a_slow_leader_is_sped_up():
-    assert next_trim(1000, [-1000]) == 1300
+    assert next_trim(1000, [-1000]) == 1000 + MAX_STEP
+    assert next_trim(1000, [-300]) == 1090
 
 
 def test_the_average_of_every_console():
-    assert next_trim(0, [3000, -1000]) == -300
+    assert next_trim(0, [600, -100]) == -75
 
 
 def test_close_enough_is_left_alone():
@@ -50,5 +51,14 @@ def test_unresponsive():
     assert not unresponsive([])
     assert not unresponsive([(2000, 7350)])
     assert not unresponsive([(2000, 7350), (0, 5370)])  # the bench: 1:1
-    assert not unresponsive([(2000, 7350), (1000, 7300)])  # not far enough to judge yet
+    assert not unresponsive([(2000, 7350), (1500, 7300)])  # not far enough to judge yet
     assert unresponsive([(0, 5370), (-500, 5379), (-1000, 5394), (-1500, 5379)])  # tonight's runaway
+
+
+def test_followers_settled():
+    from virgil.autotrim import followers_settled
+
+    assert followers_settled([])  # no followers: nothing to wait for
+    assert followers_settled([{"rms_offset_ns": 6089}])
+    assert not followers_settled([{"rms_offset_ns": 6089}, {"rms_offset_ns": 45_000}])
+    assert not followers_settled([None])  # a follower whose clock isn't known yet

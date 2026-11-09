@@ -162,3 +162,17 @@ def test_live_filter_on_loopback():
     # On loopback, the packet is seen leaving as well as arriving; nothing else gets through.
     versions = [p.version for p in seen if p is not None]
     assert versions and set(versions) == {1} and len(versions) == len(seen)
+
+
+def test_an_explained_grandmaster_isnt_reported_twice():
+    state = PtpState(own_identity=OWN_GM)
+    state.observe(parse(frame("10.10.100.77", 320, v2(ANNOUNCE, grandmaster=FOREIGN_GM))), 1.0, set())
+    assert state.leaks({}) and state.leaks({}, explained={"10.10.100.77"}) == []
+
+
+def test_last_heard():
+    state = PtpState()
+    state.observe(parse(frame("10.10.100.253", 320, v2(ANNOUNCE, grandmaster=OWN_GM)), outgoing=True), 1.0, set())
+    assert state.last_heard is None  # our own doesn't count
+    state.observe(parse(frame(payload=V1)), 2.0, set())
+    assert state.last_heard == 2.0

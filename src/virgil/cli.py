@@ -360,14 +360,18 @@ def fetch_status(tls_dir: Path, port: int = groups.PUBLIC_PORT) -> dict:
         raise CliError("couldn't reach virgild. Is it running? (systemctl status dante-virgil)") from error
 
 
-def _describe_device(dante: dict | None, heard: dict | None) -> str:
-    """One line about a local Dante device, from netaudio's view if there is one."""
+def _describe_device(dante: dict | None, heard: dict | None, virgil: str = "this Virgil") -> str:
+    """One line about a Dante device, from netaudio's view if there is one.
+
+    virgil is the Virgil the device belongs to, so a member's console reads
+    "following Box B" rather than "following this Virgil".
+    """
     following = (dante or heard or {}).get("follows_this_virgil")
     where = (dante or heard or {}).get("address", "?")
     if dante is None:
-        return f"Dante device at {where}: {'following' if following else 'NOT following'} this Virgil"
+        return f"Dante device at {where}: {'following' if following else 'NOT following'} {virgil}"
     parts = [f"{dante['name']}" + (f" ({dante['model']})" if dante.get("model") else "") + f" at {where}"]
-    parts.append("following this Virgil" if following else "NOT following this Virgil")
+    parts.append(f"following {virgil}" if following else f"NOT following {virgil}")
     if dante.get("ptpv2") is not None:
         parts.append("PTPv2 " + ("on" if dante["ptpv2"] else "off"))
     if dante.get("aes67") is not None:
@@ -535,7 +539,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             for line in _describe_clock(member.get("clock"), names, leader):
                 print(f"    {line}")
             for device in member.get("dante_devices") or []:
-                print("    " + _describe_device(device, None))
+                print("    " + _describe_device(device, None, member["name"]))
             for warning in member.get("ptp_warnings") or []:
                 print(f"    WARNING from {member['name']}: {warning}")
             for device in member.get("dante_devices") or []:

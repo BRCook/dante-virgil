@@ -80,6 +80,8 @@ NETWORK_WAIT = 60.0
 LINK_LOCAL_GRACE = 30.0
 # Exiting with this has systemd start virgild again (Restart=on-failure).
 RESTART_EXIT = 75
+# Seconds without any PTP from outside this Virgil before it says so.
+PTP_QUIET_AFTER = 60.0
 NETAUDIO_UNIT = "dante-virgil-netaudio.service"
 DHCP_NAMES_UNIT = "dante-virgil-dhcpnames.service"
 DHCP_NAMES_REQUEST = Path("/run/dante-virgil/dhcp-names.json")
@@ -125,6 +127,7 @@ class Daemon:
     ptp: ptpwatch.PtpState = field(default_factory=ptpwatch.PtpState, init=False)
     ptp_watcher: ptpwatch.PtpWatcher | None = field(default=None, init=False)
     ptp_addresses: tuple[str, ...] = field(default=(), init=False)
+    ptp_watch_started: float = field(default=0.0, init=False)
     consoles: Consoles | None = field(default=None, init=False)
     # When the management interface's only addresses became link-local ones.
     link_local_since: float | None = field(default=None, init=False)
@@ -387,12 +390,25 @@ class Daemon:
 
     # PTP watching
 
-    def ptp_warnings(self) -> list[str]:
+    def ptp_warnings(self, now: float | None = None) -> list[str]:
+        now = time.monotonic() if now is None else now
         members = {}
         for peer in self.peers.values():
             if peer.heartbeat.ptp_identity:
                 members[peer.heartbeat.ptp_identity] = peer.heartbeat.name
-        return [w[:200] for w in self.ptp.leaks(members)]
+        explained = self.consoles.announcing_themselves() if self.consoles else set()
+        warnings = self.ptp.leaks(members, explained)
+        interface = self.config.ptp_interface
+        if interface and self.ptp_watcher is not None and self._ptp_link_up():
+            if not self.ptp_addresses:
+                warnings.append(f"{interface} has no IPv4 address, so ptp4l can't send PTP to the console. "
+                                "Check DHCP on the console's network")
+            else:
+                quiet = now - (self.ptp.last_heard if self.ptp.last_heard is not None else self.ptp_watch_started)
+                if quiet >= PTP_QUIET_AFTER:
+                    warnings.append(f"No PTP has been heard on {interface} for {quiet:.0f} s. If a console is "
+                                    "connected, check the switch's multicast settings")
+        return [w[:200] for w in warnings]
 
     def _ptp_link_up(self) -> bool | None:
         if self.config.ptp_interface is None:
@@ -418,6 +434,7 @@ class Daemon:
             log.warning("Can't watch PTP on %s: %s", interface, error)
             return
         self.ptp_watcher = watcher
+        self.ptp_watch_started = time.monotonic()
 
     async def tidy_ptp(self) -> None:
         while True:
@@ -556,11 +573,15 @@ class Daemon:
         request = self.timing.request
         if request is None or request.trim_ppb != self.config.trim_ppb:
             return  # The last trim hasn't been applied yet.
+        followers = [p.heartbeat.clock for i, p in self.peers.items() if i in self.member_ids()
+                     and now - p.heard_at <= self.election.timing.visible and p.heartbeat.state is State.FOLLOWER]
+        if not autotrim.followers_settled(followers):
+            return  # A follower is still catching up; don't move the target again yet.
         offsets = autotrim.plausible(self.console_offsets(now))
         if not offsets:
             return
         average = sum(offsets) / len(offsets)
-        self.trim_history = (self.trim_history + [(self.config.trim_ppb, average)])[-4:]
+        self.trim_history = (self.trim_history + [(self.config.trim_ppb, average)])[-autotrim.HISTORY:]
         if autotrim.unresponsive(self.trim_history):
             first_trim, first_average = self.trim_history[0]
             self.trim_paused = (
