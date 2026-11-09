@@ -7,7 +7,7 @@
 const CHARTS = [
   { id: "offset", title: "Clock offset from the leader", kind: "time", signed: true },
   { id: "phc", title: "PHC offset from system clock", kind: "time", signed: true },
-  { id: "latency", title: "Receive latency", kind: "time" },
+  { id: "latency", title: "Receive latency", kind: "time", wide: true },
   { id: "late", title: "Late packets", kind: "rate" },
   { id: "console", title: "Console clocks", kind: "ppm", signed: true },
   { id: "trim", title: "Trim", kind: "ppm", fit: true },
@@ -176,7 +176,9 @@ function renderGraphs() {
     });
     canvas.addEventListener("pointerleave", () => { delete hover[chart.id]; drawChart(canvas, chart, series); fillLegend(); });
     fillLegend();
-    const card = el("figure", { class: "graph-card" },
+    // A chart with many lines gets a row to itself, with its legend in columns.
+    const wide = chart.wide || series.length > 4;
+    const card = el("figure", { class: wide ? "graph-card wide" : "graph-card" },
       el("figcaption", {}, chart.title, el("span", { class: "graph-unit" }, `, ${unitLabel(chart.kind)}`)), canvas, legend);
     requestAnimationFrame(() => drawChart(canvas, chart, series));
     return card;
