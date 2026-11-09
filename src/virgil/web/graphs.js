@@ -95,6 +95,8 @@ function drawChart(canvas, chart, series) {
   g.textBaseline = "top";
   for (let i = 0; i <= 4; i++) {
     const t = -graphWindow + (graphWindow * i) / 4;
+    // The last label ends at the edge rather than straddling it, so it's never cut off.
+    g.textAlign = i === 4 ? "right" : "center";
     g.fillText(agoLabel(t), x(t), top + plotH + 6);
   }
   g.save();

@@ -888,32 +888,48 @@ def test_netaudios_ui_follows_the_management_addresses(tmp_path, monkeypatch):
     assert second == {"127.0.0.1": True, "127.0.0.2": False, "127.0.0.3": True}
 
 
-def test_graphs_sample_every_virgil_and_console(tmp_path):
-    from virgil.heartbeat import Heartbeat
-    from virgil.daemon import Peer
+def test_graphs_record_this_virgils_own_figures(tmp_path):
+    from virgil.consoles import DanteDevice
 
     paths, identities, configs = make_pair(tmp_path)
-    a = Daemon(paths["A"], identities["A"])
-    a.election.resume(State.LEADER, None, 0.0)
-    a.clock = {"source": "PHC0", "system_offset_ns": 44, "phc_trim_ppm": -5.35}
-    device = {"name": "WingRack", "follows_this_virgil": True, "clock_offset_ppb": -849,
-              "latency_ns": 2_708_333.3, "latency_average_ns": 1_400_000.0, "latency_setting_ns": 5_000_000,
-              "late_packets": 100}
-    beat = Heartbeat(configs["B"].id, "Virgil B", "0.1.0", State.FOLLOWER, 1, configs["A"].id, False, None,
-                     dante_devices=(device,), clock={"system_offset_ns": 54, "phc_offset_ns": 2220})
-    a.peers[configs["B"].id] = Peer(beat, time.monotonic())
-    a.sample_graphs(1000.0)
-    a.peers[configs["B"].id] = Peer(beat.__class__(**{**beat.__dict__, "dante_devices": ({**device, "late_packets": 130},)}),
-                                    time.monotonic())
-    a.sample_graphs(1002.0)
-    keys = set(a.graphs.series)
-    assert {"trim/Virgil A", "offset/Virgil B", "phc/Virgil B", "console/Virgil B/WingRack",
-            "latency/Virgil B/WingRack", "average/Virgil B/WingRack", "limit/Virgil B/WingRack",
-            "late/Virgil B/WingRack"} <= keys
-    assert a.graphs.series["average/Virgil B/WingRack"].label == "WingRack (Virgil B) average"
-    assert list(a.graphs.series["late/Virgil B/WingRack"].points) == [(1002.0, 15.0)]  # 30 late in 2 s
-    assert a.graphs.series["console/Virgil B/WingRack"].points[-1][1] == -0.849
+    b = Daemon(paths["B"], identities["B"])
+    b.election.resume(State.FOLLOWER, configs["A"].id, 0.0)
+    b.clock = {"system_offset_ns": 54, "phc_offset_ns": 2220}
 
+    class Consoles:
+        late = 100
+
+        def summaries(self):
+            return [{"name": "WingRack", "clock_offset_ppb": -849, "latency_setting_ns": 5_000_000,
+                     "latency_ns": 2_708_333.3, "latency_average_ns": 1_400_000.0, "late_packets": self.late}]
+
+    consoles = Consoles()
+    consoles.polls = 1
+    b.consoles = consoles
+    b.sample_graphs(1000.0)
+    b.sample_graphs(1001.0)  # nothing new read: nothing recorded again
+    assert len(b.graphs.series["offset/Virgil B"].points) == 1
+    assert len(b.graphs.series["console/Virgil B/WingRack"].points) == 1
+    consoles.late, consoles.polls = 130, 2
+    b.clock = dict(b.clock)
+    b.sample_graphs(1002.0)
+    keys = set(b.graphs.series)
+    assert {"offset/Virgil B", "phc/Virgil B", "console/Virgil B/WingRack", "limit/Virgil B/WingRack",
+            "latency/Virgil B/WingRack", "average/Virgil B/WingRack", "late/Virgil B/WingRack"} <= keys
+    assert list(b.graphs.series["late/Virgil B/WingRack"].points) == [(1002.0, 15.0)]  # 30 late in 2 s
+    assert b.graphs.series["console/Virgil B/WingRack"].points[-1][1] == -0.849
+
+    # netaudio's own history takes over the latency lines, at its times.
+    device = DanteDevice("WingRack.local.", "WingRack", "192.168.20.246", None, None, True, False, -849)
+    monotonic_now = time.monotonic()
+    b.on_latency_history(device, [(monotonic_now - 3, 2_000_000.0, 1_500_000.0),
+                                  (monotonic_now - 2, 5_600_000.0, 5_100_000.0)])
+    points = list(b.graphs.series["latency/Virgil B/WingRack"].points)
+    assert points[-1][1] == 5_600_000.0 and abs(points[-1][0] - (time.time() - 2)) < 0.5
+    recent = lambda: [p for p in b.graphs.series["latency/Virgil B/WingRack"].points if p[0] > time.time() - 60]
+    before = len(recent())
+    b.sample_graphs(time.time())
+    assert len(recent()) == before  # no repeats from the fallback once netaudio's history arrives
 
 def test_pings_become_round_trip_jitter_and_loss(tmp_path):
     paths, identities, configs = make_pair(tmp_path)
@@ -921,9 +937,10 @@ def test_pings_become_round_trip_jitter_and_loss(tmp_path):
     a.member_name_at = lambda address: "Virgil B"
     for rtt in (1_000_000, 1_200_000, None, 1_100_000):
         a.on_ping("10.0.0.2", rtt)
-    assert len(a.graphs.series["rtt/Virgil B"].points) == 3
-    assert [v for _, v in a.graphs.series["loss/Virgil B"].points] == [0.0, 0.0, 100.0, 0.0]
-    assert a.graphs.series["jitter/Virgil B"].points[-1][1] > 0
+    assert len(a.graphs.series["rtt/Virgil A/Virgil B"].points) == 3
+    assert a.graphs.series["rtt/Virgil A/Virgil B"].label == "Virgil A to Virgil B"
+    assert [v for _, v in a.graphs.series["loss/Virgil A/Virgil B"].points] == [0.0, 0.0, 100.0, 0.0]
+    assert a.graphs.series["jitter/Virgil A/Virgil B"].points[-1][1] > 0
 
 
 def test_the_graphs_api(tmp_path):
@@ -947,3 +964,32 @@ def test_the_graphs_api(tmp_path):
 
     good, bad = asyncio.run(scenario())
     assert good["window"] == 60 and good["series"][0]["label"] == "Virgil B" and bad == 400
+
+
+def test_the_page_gets_every_members_graphs(tmp_path):
+    """Virgil A's page shows Virgil B's figures, fetched from B over the group connection."""
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        b = Daemon(paths["B"], identities["B"])
+        runners = await start(a) + await start(b)
+        introduce(a, b)
+        introduce(b, a)
+        from virgil.daemon import Peer
+
+        a.peers[configs["B"].id] = Peer(b.heartbeat(), time.monotonic())  # A has heard from B
+        now = time.time()
+        a.graphs.add("trim/Virgil A", "trim", "Virgil A", "ppm", now - 5, -5.35)
+        b.graphs.add("offset/Virgil B", "offset", "Virgil B", "ns", now - 5, 54)
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"https://127.0.0.1:{a.public_port}/api/v1/graphs?window=60"
+                async with session.get(url, ssl=False) as reply:
+                    return await reply.json()
+        finally:
+            for runner in runners:
+                await runner.cleanup()
+
+    merged = asyncio.run(scenario())
+    assert {s["key"] for s in merged["series"]} == {"trim/Virgil A", "offset/Virgil B"}
