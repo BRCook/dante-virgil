@@ -886,3 +886,61 @@ def test_netaudios_ui_follows_the_management_addresses(tmp_path, monkeypatch):
     first, second = asyncio.run(scenario())
     assert first == {"127.0.0.1": True, "127.0.0.2": True, "127.0.0.3": False}
     assert second == {"127.0.0.1": True, "127.0.0.2": False, "127.0.0.3": True}
+
+
+def test_graphs_sample_every_virgil_and_console(tmp_path):
+    from virgil.heartbeat import Heartbeat
+    from virgil.daemon import Peer
+
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    a.election.resume(State.LEADER, None, 0.0)
+    a.clock = {"source": "PHC0", "system_offset_ns": 44, "phc_trim_ppm": -5.35}
+    device = {"name": "WingRack", "follows_this_virgil": True, "clock_offset_ppb": -849,
+              "latency_ns": 2_708_333.3, "latency_setting_ns": 5_000_000, "late_packets": 100}
+    beat = Heartbeat(configs["B"].id, "Virgil B", "0.1.0", State.FOLLOWER, 1, configs["A"].id, False, None,
+                     dante_devices=(device,), clock={"system_offset_ns": 54, "phc_offset_ns": 2220})
+    a.peers[configs["B"].id] = Peer(beat, time.monotonic())
+    a.sample_graphs(1000.0)
+    a.peers[configs["B"].id] = Peer(beat.__class__(**{**beat.__dict__, "dante_devices": ({**device, "late_packets": 130},)}),
+                                    time.monotonic())
+    a.sample_graphs(1002.0)
+    keys = set(a.graphs.series)
+    assert {"trim/Virgil A", "offset/Virgil B", "phc/Virgil B", "console/Virgil B/WingRack",
+            "latency/Virgil B/WingRack", "limit/Virgil B/WingRack", "late/Virgil B/WingRack"} <= keys
+    assert list(a.graphs.series["late/Virgil B/WingRack"].points) == [(1002.0, 15.0)]  # 30 late in 2 s
+    assert a.graphs.series["console/Virgil B/WingRack"].points[-1][1] == -0.849
+
+
+def test_pings_become_round_trip_jitter_and_loss(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    a.member_name_at = lambda address: "Virgil B"
+    for rtt in (1_000_000, 1_200_000, None, 1_100_000):
+        a.on_ping("10.0.0.2", rtt)
+    assert len(a.graphs.series["rtt/Virgil B"].points) == 3
+    assert [v for _, v in a.graphs.series["loss/Virgil B"].points] == [0.0, 0.0, 100.0, 0.0]
+    assert a.graphs.series["jitter/Virgil B"].points[-1][1] > 0
+
+
+def test_the_graphs_api(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        a.graphs.add("offset/Virgil B", "offset", "Virgil B", "ns", time.time() - 5, 54)
+        runners = await start(a)
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"https://127.0.0.1:{a.public_port}/api/v1/graphs?window=60"
+                async with session.get(url, ssl=False) as reply:
+                    good = await reply.json()
+                async with session.get(f"https://127.0.0.1:{a.public_port}/api/v1/graphs?window=lots", ssl=False) as reply:
+                    bad = reply.status
+            return good, bad
+        finally:
+            for runner in runners:
+                await runner.cleanup()
+
+    good, bad = asyncio.run(scenario())
+    assert good["window"] == 60 and good["series"][0]["label"] == "Virgil B" and bad == 400

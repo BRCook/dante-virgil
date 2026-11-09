@@ -30,7 +30,8 @@ log = logging.getLogger("virgild.consoles")
 
 NETAUDIO_URL = "http://127.0.0.1:4780"
 POLL_INTERVAL = 10.0
-DIAGNOSTICS_INTERVAL = 60.0
+# Often enough for the latency graphs; the compact form keeps each reply small.
+DIAGNOSTICS_INTERVAL = 5.0
 # The least time between attempts to change one setting on one device.
 CHANGE_INTERVAL = 30.0
 # How long a device with PTPv2 on gets to start following this Virgil, or to
@@ -67,6 +68,11 @@ class DanteDevice:
     servo: str | None = None
     # The device's own PTPv2 identity: a device whose grandmaster is itself has made itself one.
     identity: str | None = None
+    # Receive figures, from netaudio's diagnostics: the worst flow's latency, the late
+    # packets counted across all flows, and the latency the device is set to.
+    latency_ns: float | None = None
+    late_packets: int | None = None
+    latency_setting_ns: int | None = None
     follows_this_virgil: bool = False
     warnings: list[str] = field(default_factory=list)
 
@@ -82,6 +88,9 @@ class DanteDevice:
             "follows_this_virgil": self.follows_this_virgil,
             "grandmaster": self.grandmaster,
             "servo": self.servo,
+            "latency_ns": self.latency_ns,
+            "late_packets": self.late_packets,
+            "latency_setting_ns": self.latency_setting_ns,
             "warnings": list(self.warnings),
         }
 
@@ -134,6 +143,27 @@ def _bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def receive_figures(diagnostics: Any) -> tuple[float | None, int | None]:
+    """The worst current latency across a device's receive flows (ns), and their late packets in total."""
+    receiver = diagnostics.get("receiver") if isinstance(diagnostics, dict) else None
+    paths = receiver.get("paths") if isinstance(receiver, dict) else None
+    worst, late, seen = None, 0, False
+    for path in paths if isinstance(paths, list) else []:
+        if not isinstance(path, dict):
+            continue
+        latency = path.get("latency") if isinstance(path.get("latency"), dict) else {}
+        current = latency.get("current") if isinstance(latency.get("current"), dict) else {}
+        value = current.get("value")
+        if latency.get("fresh") and isinstance(value, (int, float)) and value > 0:
+            worst = value if worst is None else max(worst, value)
+        packets = path.get("late_packets") if isinstance(path.get("late_packets"), dict) else {}
+        count = (packets.get("current") or {}).get("value") if isinstance(packets.get("current"), dict) else None
+        if isinstance(count, (int, float)):
+            late += int(count)
+            seen = True
+    return worst, late if seen else None
+
+
 def parse_devices(data: Any) -> list[DanteDevice]:
     """Read netaudio's /devices response, skipping anything without a usable address."""
     if not isinstance(data, dict):
@@ -162,6 +192,8 @@ def parse_devices(data: Any) -> list[DanteDevice]:
                 grandmaster=clock_identity(clock_status.get("ptpv2_grandmaster_identity")),
                 servo=str(clock_status["servo_state"]) if isinstance(clock_status.get("servo_state"), str) else None,
                 identity=clock_identity(clock_status.get("ptpv2_device_identity")),
+                latency_setting_ns=(record.get("active_latency_ns")
+                                    if isinstance(record.get("active_latency_ns"), int) else None),
             )
         )
     return devices
@@ -186,7 +218,8 @@ class NetaudioClient:
         return await self._request("GET", "/devices")
 
     async def diagnostics(self, server_name: str) -> Any:
-        return await self._request("GET", f"/diagnostics/{quote(server_name, safe='')}?receiver_history=0")
+        # Without the clock and the flows' histories: only what's current, which is small.
+        return await self._request("GET", f"/diagnostics/{quote(server_name, safe='')}?clock=0&receiver_history=0")
 
     async def issues(self) -> Any:
         return await self._request("GET", "/issues?state=open&limit=200")
@@ -266,6 +299,8 @@ class Consoles:
                     self.diagnostics[device.address] = await self.client.diagnostics(device.server_name)
                 except (aiohttp.ClientError, TimeoutError, OSError, ValueError):
                     self.diagnostics.pop(device.address, None)
+        for device in current.values():
+            device.latency_ns, device.late_packets = receive_figures(self.diagnostics.get(device.address))
         for address in list(self.diagnostics):
             if address not in current:
                 del self.diagnostics[address]

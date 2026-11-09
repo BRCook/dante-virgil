@@ -31,6 +31,8 @@ from virgil import __version__
 from virgil import config as config_file
 from virgil import autotrim, clocks, discovery, ptpwatch, roles, tls
 from virgil.alerts import EVENTS_PATH, Alerts
+from virgil.graphs import KEEP_SECONDS, WORST, Recorder, jitter
+from virgil.pinger import Pinger
 from virgil.consoles import POLL_INTERVAL, Consoles, NetaudioClient
 from virgil.control import CONTROL_SOCKET, HANDOVER_PATH, LEAD_PATH
 from virgil.config import Config
@@ -50,7 +52,7 @@ from virgil.webextra import HTTP_PORT, HTTPS_PORT, NETAUDIO_PROXY_PORT, netaudio
 log = logging.getLogger("virgild")
 
 WEB_DIR = Path(__file__).parent / "web"
-STATIC_FILES = {"style.css", "app.js"}
+STATIC_FILES = {"style.css", "app.js", "graphs.js"}
 # The page may only load its own files, and nothing may frame it.
 CONTENT_SECURITY_POLICY = (
     "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; "
@@ -141,6 +143,10 @@ class Daemon:
     netaudio_ui_context: ssl.SSLContext | None = field(default=None, init=False)
     netaudio_ui_sites: dict = field(default_factory=dict, init=False)
     alerts: Alerts | None = field(default=None, init=False)
+    graphs: Recorder = field(default_factory=Recorder, init=False)
+    # The link to each member, from pings: address to (last round trip, jitter), and late-packet counts.
+    link: dict = field(default_factory=dict, init=False)
+    late_counts: dict = field(default_factory=dict, init=False)
     events_path: Path = field(default=EVENTS_PATH, init=False)
     # The interfaces whose DHCP lease names were last set, so they're only set again on a change.
     dhcp_names_for: tuple | None = field(default=None, init=False)
@@ -292,6 +298,87 @@ class Daemon:
                          self.ptp.own_identity, tuple(self.ptp_warnings()[:8]), devices, self.clock,
                          tuple(self.alerts.open_summaries()[:16]) if self.alerts else ())
 
+    # Graphs
+
+    def on_ping(self, address: str, rtt_ns: float | None) -> None:
+        name = self.member_name_at(address)
+        now = time.time()
+        # Each ping counts as 0% or 100% lost; averaged over a stretch, that's the loss rate.
+        self.graphs.add(f"loss/{name}", "loss", name, "percent", now, 100.0 if rtt_ns is None else 0.0)
+        if rtt_ns is None:
+            return
+        last, smoothed = self.link.get(address, (None, None))
+        smoothed = jitter(smoothed, rtt_ns, last)
+        self.link[address] = (rtt_ns, smoothed)
+        self.graphs.add(f"rtt/{name}", "rtt", name, "ns", now, rtt_ns, WORST)
+        self.graphs.add(f"jitter/{name}", "jitter", name, "ns", now, smoothed, WORST)
+
+    def member_name_at(self, address: str) -> str:
+        for virgil_id in self.member_ids():
+            if address in self.addresses_for(virgil_id):
+                member = self.config.group.members.get(virgil_id)
+                return member.name if member else address
+        return address
+
+    def ping_targets(self) -> set[str]:
+        """One management address for each member heard from."""
+        targets = set()
+        for virgil_id in self.member_ids():
+            addresses = self.addresses_for(virgil_id)
+            if addresses:
+                targets.add(addresses[0])
+        return targets
+
+    def sample_graphs(self, now: float) -> None:
+        """One second's worth: every Virgil's clocks, and every console's figures."""
+        virgils = [(self.config.name, self.election.state, self.clock, self.consoles.summaries() if self.consoles else [])]
+        for virgil_id in self.member_ids():
+            peer = self.peers.get(virgil_id)
+            if peer is not None and time.monotonic() - peer.heard_at <= self.election.timing.visible:
+                beat = peer.heartbeat
+                virgils.append((beat.name, beat.state, beat.clock, list(beat.dante_devices)))
+        add = self.graphs.add
+        for name, state, clock, devices in virgils:
+            clock = clock or {}
+            if state in (State.FOLLOWER, State.SYNC):
+                add(f"offset/{name}", "offset", name, "ns", now, clock.get("system_offset_ns"))
+                add(f"phc/{name}", "phc", name, "ns", now, clock.get("phc_offset_ns"))
+            elif state is State.LEADER and clock.get("phc_trim_ppm") is not None:
+                add(f"trim/{name}", "trim", name, "ppm", now, clock["phc_trim_ppm"])
+            for device in devices:
+                label = f"{device.get('name')} ({name})"
+                key = f"{name}/{device.get('name')}"
+                offset = device.get("clock_offset_ppb")
+                add(f"console/{key}", "console", label, "ppm", now, offset / 1000 if isinstance(offset, int) else None)
+                add(f"latency/{key}", "latency", label, "ns", now, device.get("latency_ns"), WORST)
+                add(f"limit/{key}", "latency", f"{label} setting", "ns", now, device.get("latency_setting_ns"))
+                late = device.get("late_packets")
+                if isinstance(late, int):
+                    before = self.late_counts.get(key)
+                    self.late_counts[key] = (late, now)
+                    if before is not None and late >= before[0] and now > before[1]:
+                        add(f"late/{key}", "late", label, "per_s", now, (late - before[0]) / (now - before[1]), WORST)
+        self.graphs.forget_before(now - KEEP_SECONDS)
+
+    async def watch_graphs(self, pinger: Pinger | None = None) -> None:
+        if pinger is not None:
+            asyncio.ensure_future(pinger.run())
+        while True:
+            await asyncio.sleep(1.0)
+            try:
+                if pinger is not None:
+                    pinger.targets = self.ping_targets()
+                self.sample_graphs(time.time())
+            except Exception:
+                log.exception("Couldn't sample the graphs")
+
+    async def graphs_api(self, request: web.Request) -> web.Response:
+        try:
+            window = min(max(float(request.query.get("window", 300)), 10), KEEP_SECONDS)
+        except ValueError:
+            raise web.HTTPBadRequest(text="window must be a number of seconds") from None
+        return web.json_response({"window": window, "series": self.graphs.window(window, time.time())})
+
     async def watch_clock(self) -> None:
         while True:
             try:
@@ -299,7 +386,7 @@ class Daemon:
                 self.clock = await clocks.read_clock(follower, None if follower else self.config.trim_ppb) or None
             except Exception:
                 log.exception("Couldn't read the clocks")
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(2.0)
 
     # Local Dante devices, through netaudio
 
@@ -900,6 +987,7 @@ class Daemon:
         app.router.add_get("/", self.page)
         app.router.add_get("/static/{name}", self.static_file)
         app.router.add_get("/api/v1/status", self.status)
+        app.router.add_get("/api/v1/graphs", self.graphs_api)
         app.router.add_post(JOIN_PATH, self.join)
         self.web = WebApi(self)
         self.web.routes(app)
@@ -1136,7 +1224,7 @@ async def serve(daemon: Daemon, host: str) -> None:
     extras = await start_extras(daemon, host, public)
     jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election(),
             daemon.tidy_ptp(), daemon.watch_consoles(), daemon.watch_clock(), daemon.watch_trim(),
-            daemon.watch_alerts()]
+            daemon.watch_alerts(), daemon.watch_graphs(Pinger(daemon.on_ping))]
     if daemon.timing is not None:
         jobs.append(daemon.timing.run())
     tasks = [asyncio.create_task(job) for job in jobs]
