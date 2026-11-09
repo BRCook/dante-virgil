@@ -65,6 +65,8 @@ class DanteDevice:
     # The device's own view of its clock: the PTPv2 grandmaster it follows, and its servo.
     grandmaster: str | None = None
     servo: str | None = None
+    # The device's own PTPv2 identity: a device whose grandmaster is itself has made itself one.
+    identity: str | None = None
     follows_this_virgil: bool = False
     warnings: list[str] = field(default_factory=list)
 
@@ -159,6 +161,7 @@ def parse_devices(data: Any) -> list[DanteDevice]:
                 aes67_configured=_bool(record.get("aes67_configured")),
                 grandmaster=clock_identity(clock_status.get("ptpv2_grandmaster_identity")),
                 servo=str(clock_status["servo_state"]) if isinstance(clock_status.get("servo_state"), str) else None,
+                identity=clock_identity(clock_status.get("ptpv2_device_identity")),
             )
         )
     return devices
@@ -306,6 +309,10 @@ class Consoles:
             return []
         if not device.follows_this_virgil:
             own = self.own_identity()
+            if device.grandmaster is not None and device.grandmaster == device.identity:
+                return [f"{device.name} isn't hearing this Virgil's grandmaster, and has made itself one. "
+                        "Check the switch's multicast settings (IGMP snooping, a querier, and any rule "
+                        "blocking 224.0.1.129), and that its PTP port can reach this Virgil"]
             if device.grandmaster is not None and own is not None and device.grandmaster != own:
                 other = self.member_identities().get(device.grandmaster)
                 source = f"{other}'s grandmaster" if other else f"another grandmaster ({device.grandmaster})"
@@ -314,6 +321,10 @@ class Consoles:
         if device.servo is not None and device.servo != "synchronized":
             return [f"{device.name}'s clock isn't synchronised yet (its servo is {device.servo})"]
         return []
+
+    def announcing_themselves(self) -> set[str]:
+        """Addresses of local devices that have made themselves the grandmaster."""
+        return {d.address for d in self.devices.values() if d.grandmaster and d.grandmaster == d.identity}
 
     def summaries(self) -> list[dict[str, Any]]:
         return [d.summary() for d in sorted(self.devices.values(), key=lambda d: d.address)]

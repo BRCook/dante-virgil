@@ -146,11 +146,34 @@ def trim(generated: Path = GENERATED_DIR, run: Runner = _run) -> int:
 
 DHCP_NAMES_REQUEST = Path("/run/dante-virgil/dhcp-names.json")
 INTERFACES_FILE = Path("/etc/network/interfaces")
+DHCPCD_CONF = Path("/etc/dhcpcd.conf")
+
+
+def _backup_once(path: Path) -> None:
+    import shutil
+
+    backup = path.with_name(path.name + ".virgil-backup")
+    if path.exists() and not backup.exists():
+        shutil.copy2(path, backup)
+
+
+def drop_ptp_default_route(ptp: str, run=subprocess.run) -> None:
+    """Remove a default route through the PTP interface now, if another one exists for everything else."""
+    try:
+        result = run(["ip", "-j", "-4", "route", "show", "default"], capture_output=True, text=True)
+        routes = json.loads(result.stdout or "[]")
+    except (OSError, ValueError):
+        return
+    through_ptp = [r for r in routes if r.get("dev") == ptp]
+    elsewhere = [r for r in routes if r.get("dev") != ptp]
+    if through_ptp and elsewhere:
+        run(["ip", "-4", "route", "del", "default", "dev", ptp])
+        print(f"Removed the default route through {ptp}; {elsewhere[0].get('dev')} still has one")
 
 
 def dhcpnames(request_path: Path = DHCP_NAMES_REQUEST, interfaces_file: Path = INTERFACES_FILE,
-              hostname: str | None = None) -> int:
-    """Name each chosen interface's DHCP lease, in ifupdown's interfaces file."""
+              hostname: str | None = None, dhcpcd_conf: Path = DHCPCD_CONF, run=subprocess.run) -> int:
+    """Name each chosen interface's DHCP lease, and keep the PTP interface from becoming the default route."""
     import re
     import shutil
     import socket
@@ -183,6 +206,15 @@ def dhcpnames(request_path: Path = DHCP_NAMES_REQUEST, interfaces_file: Path = I
             shutil.copy2(interfaces_file, backup)
         atomic_write(interfaces_file, new.encode())
         print("Updated the interfaces file; the names apply the next time each interface comes up")
+
+    old_conf = dhcpcd_conf.read_text() if dhcpcd_conf.exists() else ""
+    new_conf = names_module.apply_dhcpcd(old_conf, wanted["ptp_interface"], wanted["mgmt_interface"])
+    if new_conf != old_conf:
+        _backup_once(dhcpcd_conf)
+        atomic_write(dhcpcd_conf, new_conf.encode())
+        print("Updated dhcpcd.conf: the PTP interface won't be given a default route from now on")
+    if wanted["ptp_interface"] and wanted["ptp_interface"] != wanted["mgmt_interface"]:
+        drop_ptp_default_route(wanted["ptp_interface"], run)
     return 0
 
 

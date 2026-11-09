@@ -73,6 +73,9 @@ def ptp4l_conf(setup: TimingSetup, tuning: Tuning = DEFAULT_TUNING) -> str:
         "tx_timestamp_timeout    50",
         "# Answer unicast Delay Requests with unicast Delay Responses; multicast ones stay multicast.",
         "hybrid_e2e              1",
+        "# Mark PTP as CS7, as Dante does, so switches with QoS give it the same priority.",
+        "dscp_event              56",
+        "dscp_general            56",
     ]
     if not setup.hardware:
         lines.append("time_stamping           software")

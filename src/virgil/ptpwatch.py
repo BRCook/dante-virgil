@@ -124,6 +124,8 @@ class PtpState:
     """What PTP watching has learned, kept up to date by observe()."""
 
     own_identity: str | None = None
+    # When PTP was last heard from anything other than this Virgil.
+    last_heard: float | None = None
     devices: dict[str, LocalDevice] = field(default_factory=dict)
     # Grandmasters other than this Virgil's, by identity, with when each was last heard.
     foreign: dict[str, tuple[str, float]] = field(default_factory=dict)
@@ -135,6 +137,7 @@ class PtpState:
                     log.info("This Virgil's grandmaster identity is %s", packet.grandmaster)
                 self.own_identity = packet.grandmaster
             return
+        self.last_heard = now
         if packet.message_type == ANNOUNCE and packet.grandmaster:
             if packet.grandmaster != self.own_identity:
                 if packet.grandmaster not in self.foreign:
@@ -159,10 +162,16 @@ class PtpState:
         for identity in [i for i, (_, seen) in self.foreign.items() if now - seen > FORGET_AFTER]:
             del self.foreign[identity]
 
-    def leaks(self, member_identities: dict[str, str]) -> list[str]:
-        """Warnings about grandmasters heard on the PTP interface. member_identities maps identity to name."""
+    def leaks(self, member_identities: dict[str, str], explained: set[str] = frozenset()) -> list[str]:
+        """Warnings about grandmasters heard on the PTP interface.
+
+        member_identities maps identity to name. explained holds the addresses
+        of local devices whose own warning already says why they're announcing.
+        """
         warnings = []
         for identity, (source, _) in sorted(self.foreign.items()):
+            if source in explained:
+                continue
             member = member_identities.get(identity)
             if member is not None:
                 warnings.append(f"PTP from {member} is crossing the link (heard from {source})")

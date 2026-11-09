@@ -263,3 +263,24 @@ def test_a_console_still_settling():
 def test_without_our_own_identity_the_delay_requests_decide():
     summary = _run({**WING, "clock_status": REAL_CLOCK}, own=None, local_follows=True)
     assert summary["follows_this_virgil"] is True
+
+
+def test_a_console_that_made_itself_the_grandmaster():
+    """As in the diagnostics: its grandmaster is its own identity."""
+    record = {**WING, "clock_status": {**REAL_CLOCK, "ptpv2_grandmaster_identity": "001dc1fffe8d5d66",
+                                       "ptpv2_device_identity": "001dc1fffe8d5d66", "servo_state": "none"}}
+    fake = FakeNetaudio({"WingCompact.local.": record})
+
+    async def scenario(client):
+        now = [100.0]
+        consoles = Consoles(client, lambda: {"10.10.100.50": True}, lambda: {}, clock=lambda: now[0],
+                            own_identity=lambda: BOX_A)
+        await consoles.poll()
+        now[0] += 25
+        await consoles.poll()
+        return consoles
+
+    consoles = asyncio.run(_with_fake(fake, scenario))
+    (warning,) = consoles.summaries()[0]["warnings"]
+    assert warning.startswith("Wing-Compact isn't hearing this Virgil's grandmaster, and has made itself one")
+    assert consoles.announcing_themselves() == {"10.10.100.50"}

@@ -206,3 +206,41 @@ def test_dhcpnames(tmp_path):
     request.write_text(json.dumps({"ptp_interface": "enp1s0; reboot", "mgmt_interface": None}))
     assert dhcpnames(request, interfaces, hostname="x") == 1
     assert dhcpnames(request, tmp_path / "missing", hostname="x") == 0  # no ifupdown: nothing to do
+
+
+def test_dhcpnames_also_handles_the_default_route(tmp_path):
+    import subprocess as sp
+
+    from tests.test_dhcpnames import BOX, DHCPCD
+    from virgil.rootctl import dhcpnames
+
+    (tmp_path / "interfaces").write_text(BOX)
+    (tmp_path / "dhcpcd.conf").write_text(DHCPCD)
+    request = tmp_path / "dhcp-names.json"
+    request.write_text(json.dumps({"ptp_interface": "enp1s0", "mgmt_interface": "enp5s0"}))
+    ran = []
+
+    def run(args, **kwargs):
+        ran.append(args)
+        routes = [{"dst": "default", "dev": "enp1s0"}, {"dst": "default", "dev": "enp5s0"}]
+        return sp.CompletedProcess(args, 0, json.dumps(routes), "")
+
+    assert dhcpnames(request, tmp_path / "interfaces", "box", tmp_path / "dhcpcd.conf", run) == 0
+    assert "interface enp1s0\nnogateway" in (tmp_path / "dhcpcd.conf").read_text()
+    assert (tmp_path / "dhcpcd.conf.virgil-backup").read_text() == DHCPCD
+    assert ["ip", "-4", "route", "del", "default", "dev", "enp1s0"] in ran
+
+
+def test_the_only_default_route_is_left_alone(tmp_path):
+    import subprocess as sp
+
+    from virgil.rootctl import drop_ptp_default_route
+
+    ran = []
+
+    def run(args, **kwargs):
+        ran.append(args)
+        return sp.CompletedProcess(args, 0, json.dumps([{"dst": "default", "dev": "enp1s0"}]), "")
+
+    drop_ptp_default_route("enp1s0", run)
+    assert not any("del" in a for a in ran)

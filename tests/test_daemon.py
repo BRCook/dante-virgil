@@ -579,7 +579,8 @@ def _leading_with_consoles(tmp_path, offsets, auto_trim=True):
     a.timing = Timing()
     beat = Heartbeat(configs["B"].id, "Virgil B", "0.1.0", State.FOLLOWER, 1, configs["A"].id, False, None,
                      dante_devices=tuple({"name": f"Wing {i}", "follows_this_virgil": True, "clock_offset_ppb": o}
-                                         for i, o in enumerate(offsets)))
+                                         for i, o in enumerate(offsets)),
+                     clock={"rms_offset_ns": 6089})
     from virgil.daemon import Peer
 
     a.peers[configs["B"].id] = Peer(beat, 100.0)
@@ -589,8 +590,8 @@ def _leading_with_consoles(tmp_path, offsets, auto_trim=True):
 def test_auto_trim_slows_a_fast_leader(tmp_path):
     a, path, timing = _leading_with_consoles(tmp_path, [4750])
     a.trim_once(101.0)
-    assert a.config.trim_ppb == 100  # 600 - 500, the most in one step
-    assert config_file.load(path).trim_ppb == 100
+    assert a.config.trim_ppb == 500  # 600 - 100, the most in one step
+    assert config_file.load(path).trim_ppb == 500
     assert timing.pokes == 1
     assert a.last_trim["from_ppb"] == 600 and a.last_trim["consoles_ppb"] == 4750
 
@@ -626,10 +627,10 @@ def test_auto_trim_waits_for_each_step_to_take_effect(tmp_path):
     a, path, timing = _leading_with_consoles(tmp_path, [4750])
     timing.failing = True  # as when phc_ctl was refusing negative trims
     a.trim_once(101.0)
-    assert a.config.trim_ppb == 100
-    a.trim_once(131.0)
+    assert a.config.trim_ppb == 500
     a.trim_once(161.0)
-    assert a.config.trim_ppb == 100  # no further steps until the first is applied
+    a.trim_once(221.0)
+    assert a.config.trim_ppb == 500  # no further steps until the first is applied
 
 
 def test_auto_trim_pauses_when_the_consoles_dont_respond(tmp_path, caplog):
@@ -640,19 +641,19 @@ def test_auto_trim_pauses_when_the_consoles_dont_respond(tmp_path, caplog):
         peer.heard_at = t - 0.5  # B keeps heartbeating
         a.trim_once(t)
 
-    for step in range(5):
-        step_at(101.0 + 30 * step)  # the consoles never move
+    for step in range(12):
+        step_at(101.0 + 60 * step)  # the consoles never move
     assert a.trim_paused and "consoles only" in a.trim_paused
     paused_at = a.config.trim_ppb
-    step_at(400.0)
+    step_at(900.0)
     assert a.config.trim_ppb == paused_at
     assert "Auto-trim paused" in caplog.text
     # Turning it off and on again resumes it.
     a.config.auto_trim = False
-    step_at(430.0)
+    step_at(960.0)
     a.config.auto_trim = True
-    step_at(460.0)
-    assert a.trim_paused is None and a.config.trim_ppb == paused_at - 500
+    step_at(1020.0)
+    assert a.trim_paused is None and a.config.trim_ppb == paused_at - 100
 
 
 def test_a_requested_restart(tmp_path):
@@ -735,8 +736,8 @@ def _paused(tmp_path):
             peer.heartbeat = replace(peer.heartbeat, dante_devices=tuple(devices))
         a.trim_once(t)
 
-    for step in range(5):
-        step_at(101.0 + 30 * step)
+    for step in range(12):
+        step_at(101.0 + 60 * step)
     assert a.trim_paused
     return a, step_at
 
@@ -747,7 +748,7 @@ def test_a_pause_ends_by_itself(tmp_path):
     step_at(paused_at + 300)
     assert a.trim_paused and a.config.trim_ppb == trim  # still paused after 5 minutes
     step_at(paused_at + 601)
-    assert a.trim_paused is None and a.config.trim_ppb == trim - 500  # resumed, and stepping again
+    assert a.trim_paused is None and a.config.trim_ppb == trim - 100  # resumed, and stepping again
 
 
 def test_a_pause_ends_when_the_consoles_change(tmp_path):
@@ -798,3 +799,47 @@ def test_alerts_reach_heartbeats_and_status(tmp_path):
     asyncio.run(a.alerts.poll())
     (alert,) = a.heartbeat().alerts
     assert alert["label"] == "AUDIO MUTED" and alert["device"] == "Wing"
+
+
+def _watching(tmp_path, monkeypatch, link_up=True, addresses=("192.168.20.212",)):
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    a.config.ptp_interface = "enp1s0"
+    a.ptp_watcher = object()
+    a.ptp_watch_started = 1000.0
+    a.ptp_addresses = tuple(addresses)
+    monkeypatch.setattr(a, "_ptp_link_up", lambda: link_up)
+    return a
+
+
+def test_no_ptp_heard(tmp_path, monkeypatch):
+    a = _watching(tmp_path, monkeypatch)
+    assert a.ptp_warnings(now=1030.0) == []
+    (warning,) = a.ptp_warnings(now=1075.0)
+    assert warning.startswith("No PTP has been heard on enp1s0 for 75 s") and "multicast" in warning
+    a.ptp.last_heard = 1070.0
+    assert a.ptp_warnings(now=1075.0) == []
+
+
+def test_ptp4l_without_an_address(tmp_path, monkeypatch):
+    a = _watching(tmp_path, monkeypatch, addresses=())
+    (warning,) = a.ptp_warnings(now=1001.0)
+    assert "enp1s0 has no IPv4 address, so ptp4l can't send PTP" in warning
+
+
+def test_nothing_plugged_in_needs_no_warning(tmp_path, monkeypatch):
+    a = _watching(tmp_path, monkeypatch, link_up=False, addresses=())
+    assert a.ptp_warnings(now=5000.0) == []
+
+
+def test_auto_trim_waits_for_an_unsettled_follower(tmp_path):
+    from dataclasses import replace
+
+    a, path, timing = _leading_with_consoles(tmp_path, [4750])
+    (peer,) = a.peers.values()
+    peer.heartbeat = replace(peer.heartbeat, clock={"rms_offset_ns": 45_000})
+    a.trim_once(101.0)
+    assert a.config.trim_ppb == 600  # still catching up: wait
+    peer.heartbeat = replace(peer.heartbeat, clock={"rms_offset_ns": 6_000})
+    a.trim_once(101.5)
+    assert a.config.trim_ppb == 500

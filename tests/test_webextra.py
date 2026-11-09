@@ -118,3 +118,26 @@ def test_netaudio_not_running():
 
     status, text = asyncio.run(scenario())
     assert status == 502 and "isn't running" in text
+
+
+def test_a_browser_closing_a_live_stream_is_not_an_error(caplog):
+    """Closing netaudio's event stream mid-way, as its page does, mustn't be logged as netaudio being unreachable."""
+    import logging
+
+    fake = FakeNetaudio()
+
+    async def scenario():
+        upstream_runner, upstream = await _serve(fake.app())
+        proxy_runner, proxy = await _serve(netaudio_app(lambda token: True, upstream=upstream))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{proxy}/events") as reply:
+                    await reply.content.readany()  # read a little, then hang up
+            await asyncio.sleep(0.3)
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    caplog.set_level(logging.INFO)
+    asyncio.run(scenario())
+    assert "Couldn't reach netaudio" not in caplog.text
