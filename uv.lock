@@ -191,8 +191,8 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
-    { name = "netaudio", version = "2.0.3", source = { url = "https://github.com/BRCook/netaudio/releases/download/v2.0.3/netaudio-2.0.3-py3-none-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
-    { name = "netaudio", version = "2.0.3", source = { url = "https://github.com/BRCook/netaudio/releases/download/v2.0.3/netaudio-2.0.3-py3-none-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
+    { name = "netaudio", version = "2.0.5", source = { url = "https://github.com/BRCook/netaudio/releases/download/v2.0.5/netaudio-2.0.5-py3-none-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
+    { name = "netaudio", version = "2.0.5", source = { url = "https://github.com/BRCook/netaudio/releases/download/v2.0.5/netaudio-2.0.5-py3-none-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "tomli-w" },
     { name = "zeroconf" },
 ]
@@ -205,9 +205,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9" },
-    { name = "netaudio", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = "==2.0.3" },
-    { name = "netaudio", marker = "platform_machine == 'aarch64'", url = "https://github.com/BRCook/netaudio/releases/download/v2.0.3/netaudio-2.0.3-py3-none-manylinux_2_28_aarch64.whl" },
-    { name = "netaudio", marker = "platform_machine == 'x86_64'", url = "https://github.com/BRCook/netaudio/releases/download/v2.0.3/netaudio-2.0.3-py3-none-manylinux_2_28_x86_64.whl" },
+    { name = "netaudio", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = "==2.0.5" },
+    { name = "netaudio", marker = "platform_machine == 'aarch64'", url = "https://github.com/BRCook/netaudio/releases/download/v2.0.5/netaudio-2.0.5-py3-none-manylinux_2_28_aarch64.whl" },
+    { name = "netaudio", marker = "platform_machine == 'x86_64'", url = "https://github.com/BRCook/netaudio/releases/download/v2.0.5/netaudio-2.0.5-py3-none-manylinux_2_28_x86_64.whl" },
     { name = "tomli-w", specifier = ">=1.0" },
     { name = "zeroconf", specifier = ">=0.131" },
 ]
@@ -365,8 +365,8 @@ wheels = [
 
 [[package]]
 name = "netaudio"
-version = "2.0.3"
-source = { url = "https://github.com/BRCook/netaudio/releases/download/v2.0.3/netaudio-2.0.3-py3-none-manylinux_2_28_aarch64.whl" }
+version = "2.0.5"
+source = { url = "https://github.com/BRCook/netaudio/releases/download/v2.0.5/netaudio-2.0.5-py3-none-manylinux_2_28_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
@@ -386,7 +386,7 @@ dependencies = [
     { name = "zeroconf" },
 ]
 wheels = [
-    { url = "https://github.com/BRCook/netaudio/releases/download/v2.0.3/netaudio-2.0.3-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:db673e08bd020aeb68a3b40e704fbf9dc06615a6daeed62392b68e1930ae6bb4" },
+    { url = "https://github.com/BRCook/netaudio/releases/download/v2.0.5/netaudio-2.0.5-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:8662405265bb20a38559867b449670965da8d01da7f81c961dbdcd97cd9dbc0f" },
 ]
 
 [package.metadata]
@@ -415,8 +415,8 @@ provides-extras = ["capture", "dbus", "redis"]
 
 [[package]]
 name = "netaudio"
-version = "2.0.3"
-source = { url = "https://github.com/BRCook/netaudio/releases/download/v2.0.3/netaudio-2.0.3-py3-none-manylinux_2_28_x86_64.whl" }
+version = "2.0.5"
+source = { url = "https://github.com/BRCook/netaudio/releases/download/v2.0.5/netaudio-2.0.5-py3-none-manylinux_2_28_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -436,7 +436,7 @@ dependencies = [
     { name = "zeroconf" },
 ]
 wheels = [
-    { url = "https://github.com/BRCook/netaudio/releases/download/v2.0.3/netaudio-2.0.3-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:55cba0d8740ac4f142f3cdfd65c762cd709a69e2ad21006ceeb1fe50b33ecffe" },
+    { url = "https://github.com/BRCook/netaudio/releases/download/v2.0.5/netaudio-2.0.5-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:11c889fc0bcf71cde88f7e6c79cd340f14d708673f27e48d10e48d5a2bfb89d7" },
 ]
 
 [package.metadata]
