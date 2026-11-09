@@ -309,7 +309,9 @@ class Daemon:
         return Heartbeat(self.config.id, self.config.name, __version__, e.state, e.coin, e.leader,
                          e.lost_leader, e.handover_to, self.observing, e.established,
                          self.ptp.own_identity, tuple(self.ptp_warnings()[:8]), devices, self.clock,
-                         tuple(self.alerts.open_summaries()[:16]) if self.alerts else ())
+                         tuple(self.alerts.open_summaries()[:16]) if self.alerts else (),
+                         {"active": True, "size": self.recording.size()}
+                         if self.recording is not None and self.recording.active else None)
 
     # Graphs
 
@@ -1081,6 +1083,7 @@ class Daemon:
                     "dante_devices": list(beat.dante_devices) if beat else [],
                     "clock": beat.clock if beat else None,
                     "alerts": list(beat.alerts) if beat else [],
+                    "recording": beat.recording if beat else None,
                 }
             )
         others = [

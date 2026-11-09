@@ -92,3 +92,12 @@ def test_alerts_round_trip():
     assert decode(beat.encode()).alerts == beat.alerts
     with pytest.raises(HeartbeatError):
         decode({**BEAT.encode(), "alerts": ["x"] * 3})
+
+
+def test_recording_round_trip():
+    from dataclasses import replace
+
+    beat = replace(BEAT, recording={"active": True, "size": 12_400_000})
+    assert decode(beat.encode()).recording == beat.recording
+    with pytest.raises(HeartbeatError):
+        decode({**BEAT.encode(), "recording": {"active": "yes please"}})

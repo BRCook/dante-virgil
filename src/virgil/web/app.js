@@ -612,12 +612,20 @@ function download(url) {
   link.remove();
 }
 
-const megabytes = (bytes) => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)} MB`;
+const megabytes = (bytes) => `${(bytes / 1048576).toFixed(bytes < 104857600 ? 1 : 0)} MB`;
 
 function elapsed(since) {
   const seconds = Math.max(0, Math.round(Date.now() / 1000 - since));
   const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
   return h ? `${h} h ${m} min` : m ? `${m} min ${s} s` : `${s} s`;
+}
+
+// How much each Virgil taking part has written so far: this one, then its members.
+function recordingSizes(rec) {
+  const others = ((status.group || {}).members || []).filter((m) => m.recording && m.recording.active)
+    .map((m) => `${megabytes(m.recording.size || 0)} on ${m.name}`);
+  return [`${megabytes(rec.size || 0)} so far`, ...others].join(", ")
+    + " (before compression)";
 }
 
 function renderRecording() {
@@ -638,6 +646,7 @@ function renderRecording() {
   } else if (!rec.here) {
     parts.push(el("p", {}, el("strong", {}, `Recording since ${clockTime(rec.since)}`),
       ` (${elapsed(rec.since)}), started from another Virgil's page. Stop it there to get the file.`));
+    parts.push(el("p", { class: "hint" }, `${megabytes(rec.size || 0)} so far on this Virgil (before compression)`));
   } else {
     const note = draft("note", "input", { type: "text", "aria-label": "Note", placeholder: "What just happened?",
       maxlength: "500", disabled: !can, class: "note-field" });
@@ -649,6 +658,7 @@ function renderRecording() {
     note.addEventListener("keydown", (event) => { if (event.key === "Enter") addNote(); });
     parts.push(el("p", {}, el("strong", { class: "stale" }, "● "), el("strong", {}, `Recording since ${clockTime(rec.since)}`),
       ` (${elapsed(rec.since)})`, rec.notes ? `, ${rec.notes} ${rec.notes === 1 ? "note" : "notes"}` : ""));
+    parts.push(el("p", { class: "hint" }, recordingSizes(rec)));
     parts.push(el("div", { class: "row" }, note, el("button", { disabled: !can, onclick: addNote }, "Add note")));
     parts.push(el("div", { class: "row" }, el("button", { class: "primary", disabled: !can, onclick: async () => {
       notice("Stopping, and gathering the recordings…");
