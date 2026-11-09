@@ -245,9 +245,57 @@ class WebApi:
         return web.json_response({"message": f"{choice.note} {message}" if choice.note else message,
                                   "restarting": True})
 
+    # Recordings
+
+    async def start_recording(self, request: web.Request, body: dict) -> web.Response:
+        if self.daemon.recording.active:
+            return _error("already recording", 409)
+        return web.json_response(await self.daemon.start_recording(group=body.get("group", True) is not False))
+
+    async def stop_recording(self, request: web.Request, body: dict) -> web.Response:
+        result = await self.daemon.stop_recording()
+        if result["archive"] is None:
+            return _error("not recording", 409)
+        return web.json_response({**result, "download": f"/api/v1/recordings/{result['archive']}"})
+
+    async def recording_note(self, request: web.Request, body: dict) -> web.Response:
+        text = str(body.get("text", "")).strip()
+        if not text or len(text) > 500:
+            return _error("a note needs some text (at most 500 characters)", 400)
+        try:
+            return web.json_response({"at": self.daemon.recording.note(text)})
+        except RuntimeError:
+            return _error("not recording", 409)
+
+    async def delete_recordings(self, request: web.Request, body: dict) -> web.Response:
+        names = [r["name"] for r in self.daemon.recording.recordings()] if body.get("all") else [body.get("name", "")]
+        for name in names:
+            try:
+                self.daemon.recording.delete(str(name))
+            except FileNotFoundError:
+                return _error(f"no recording called {name}", 404)
+        return web.json_response({"deleted": len(names)})
+
+    async def list_recordings(self, request: web.Request) -> web.Response:
+        if not self.logged_in(request):
+            return _error("log in to see recordings", 401)
+        return web.json_response({"recordings": self.daemon.recording.recordings()})
+
+    async def download_recording(self, request: web.Request) -> web.StreamResponse:
+        if not self.logged_in(request):
+            return _error("log in to download recordings", 401)
+        name = request.match_info["name"]
+        try:
+            path = self.daemon.recording.path(name)
+        except FileNotFoundError:
+            return _error("no such recording", 404)
+        return web.FileResponse(path, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
     def routes(self, app: web.Application) -> None:
         app.router.add_get("/api/v1/session", self.session)
         app.router.add_get("/api/v1/interfaces", self.interfaces)
+        app.router.add_get("/api/v1/recordings", self.list_recordings)
+        app.router.add_get("/api/v1/recordings/{name}", self.download_recording)
         app.router.add_post("/api/v1/login", self.login)
         app.router.add_post("/api/v1/logout", self.logout)
         for path, handler in (
@@ -261,5 +309,9 @@ class WebApi:
             ("/api/v1/group/invite", self.invite),
             ("/api/v1/group/join", self.join),
             ("/api/v1/interfaces", self.choose_interfaces),
+            ("/api/v1/recording/start", self.start_recording),
+            ("/api/v1/recording/stop", self.stop_recording),
+            ("/api/v1/recording/note", self.recording_note),
+            ("/api/v1/recordings/delete", self.delete_recordings),
         ):
             app.router.add_post(path, self.guarded(handler))

@@ -33,6 +33,7 @@ from virgil import autotrim, clocks, discovery, ptpwatch, roles, tls
 from virgil.alerts import EVENTS_PATH, Alerts
 from virgil.graphs import KEEP_SECONDS, WORST, Recorder, jitter
 from virgil.pinger import Pinger
+from virgil.recording import RECORDINGS, Session, stamp_now
 from virgil.consoles import POLL_INTERVAL, Consoles, NetaudioClient
 from virgil.control import CONTROL_SOCKET, HANDOVER_PATH, LEAD_PATH
 from virgil.config import Config
@@ -85,6 +86,8 @@ RESTART_EXIT = 75
 # Seconds without any PTP from outside this Virgil before it says so.
 PTP_QUIET_AFTER = 60.0
 GRAPHS_PATH = "/group/v1/graphs"
+RECORDING_PATH = "/group/v1/recording"
+RECORDINGS_PATH = "/group/v1/recordings"
 NETAUDIO_UNIT = "dante-virgil-netaudio.service"
 DHCP_NAMES_UNIT = "dante-virgil-dhcpnames.service"
 DHCP_NAMES_REQUEST = Path("/run/dante-virgil/dhcp-names.json")
@@ -149,6 +152,11 @@ class Daemon:
     link: dict = field(default_factory=dict, init=False)
     late_counts: dict = field(default_factory=dict, init=False)
     _has_history: dict = field(default_factory=dict, init=False)
+    recording: Session | None = field(default=None, init=False)
+    recordings_root: Path = field(default=RECORDINGS, init=False)
+    # The members this Virgil started recording, as the one coordinating a group recording.
+    recording_members: list = field(default_factory=list, init=False)
+    recording_here: bool = field(default=False, init=False)
     _graphed: dict = field(default_factory=lambda: {"clock": None, "polls": None}, init=False)
     # Members' graphs, fetched for the page: member ID to (when, series).
     _member_graphs: dict = field(default_factory=dict, init=False)
@@ -407,6 +415,120 @@ class Daemon:
         for member_series in results:
             series += member_series
         return web.json_response({"window": window, "series": series})
+
+    # Recording a whole group: the Virgil whose page was used coordinates; members follow its lead.
+
+    async def _member_call(self, virgil_id: str, method: str, path: str, body: dict | None = None,
+                           timeout: float = 10.0, as_bytes: bool = False):
+        """A request to a member over the group connection. None if it doesn't answer."""
+        addresses = self.addresses_for(virgil_id)
+        if not addresses:
+            return None
+        advert = self.adverts.get(virgil_id)
+        port = advert.group_port if advert else self.group_port
+        context = tls.group_client_context(self.identity, self.member_certs())
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+                async with session.request(method, f"https://{addresses[0]}:{port}{path}", json=body,
+                                           ssl=context) as reply:
+                    if reply.status != 200:
+                        return None
+                    return await reply.read() if as_bytes else await reply.json()
+        except (aiohttp.ClientError, TimeoutError, OSError, ValueError):
+            return None
+
+    def _heard_members(self) -> list[str]:
+        now = time.monotonic()
+        return [i for i in self.member_ids()
+                if i in self.peers and now - self.peers[i].heard_at <= self.election.timing.visible]
+
+    async def start_recording(self, group: bool = True) -> dict:
+        stamp = stamp_now()
+        name = await self.recording.start(stamp, group=group)
+        self.recording_here = True
+        self.recording_members = []
+        if group:
+            for virgil_id in self._heard_members():
+                reply = await self._member_call(virgil_id, "POST", RECORDING_PATH, {"action": "start", "stamp": stamp})
+                if reply is not None:
+                    self.recording_members.append(virgil_id)
+        names = [self.config.group.members[i].name for i in self.recording_members
+                 if self.config.group and i in self.config.group.members]
+        return {"name": name, "members": names}
+
+    async def stop_recording(self) -> dict:
+        """Stop here and on the members this Virgil started, and bundle everything into one file."""
+        own = await self.recording.stop()
+        self.recording_here = False
+        if own is None:
+            return {"archive": None}
+        archives = [self.recordings_root / own]
+        for virgil_id in self.recording_members:
+            reply = await self._member_call(virgil_id, "POST", RECORDING_PATH, {"action": "stop"}, timeout=60)
+            if not reply or not reply.get("archive"):
+                continue
+            data = await self._member_call(virgil_id, "GET", f"{RECORDINGS_PATH}/{reply['archive']}",
+                                           timeout=120, as_bytes=True)
+            if data is None:
+                continue
+            path = self.recordings_root / reply["archive"]
+            path.write_bytes(data)
+            archives.append(path)
+            await self._member_call(virgil_id, "POST", f"{RECORDINGS_PATH}/delete", {"name": reply["archive"]})
+        self.recording_members = []
+        if len(archives) == 1:
+            return {"archive": own}
+        bundle = self.recordings_root / own.replace(".tar.gz", "").replace(
+            f"-{self.config.name}", "").rstrip("-")
+        bundle = bundle.with_name(bundle.name + "-group.tar")
+
+        def pack() -> None:
+            import tarfile
+
+            with tarfile.open(bundle, "w") as tar:
+                for archive in archives:
+                    tar.add(archive, arcname=archive.name)
+            for archive in archives:
+                archive.unlink(missing_ok=True)
+
+        await asyncio.to_thread(pack)
+        return {"archive": bundle.name}
+
+    async def group_recording(self, request: web.Request) -> web.Response:
+        """A member, coordinating a group recording, starts or stops this Virgil's part of it."""
+        sender = self._member_for_certificate(request)
+        if sender is None or sender == self.config.id:
+            raise web.HTTPForbidden()
+        try:
+            body = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        if body.get("action") == "start":
+            if self.recording.active:
+                return web.json_response({"error": "already recording"}, status=409)
+            return web.json_response({"name": await self.recording.start(body.get("stamp"), group=True)})
+        if body.get("action") == "stop":
+            return web.json_response({"archive": await self.recording.stop()})
+        raise web.HTTPBadRequest()
+
+    async def group_recording_file(self, request: web.Request) -> web.StreamResponse:
+        sender = self._member_for_certificate(request)
+        if sender is None or sender == self.config.id:
+            raise web.HTTPForbidden()
+        try:
+            return web.FileResponse(self.recording.path(request.match_info["name"]))
+        except FileNotFoundError:
+            raise web.HTTPNotFound() from None
+
+    async def group_recording_delete(self, request: web.Request) -> web.Response:
+        sender = self._member_for_certificate(request)
+        if sender is None or sender == self.config.id:
+            raise web.HTTPForbidden()
+        try:
+            self.recording.delete((await request.json()).get("name", ""))
+        except (FileNotFoundError, ValueError, AttributeError):
+            raise web.HTTPNotFound() from None
+        return web.json_response({"deleted": True})
 
     async def group_graphs(self, request: web.Request) -> web.Response:
         """This Virgil's own graphs, for a member's page."""
@@ -936,6 +1058,9 @@ class Daemon:
     # Public port
 
     async def status(self, request: web.Request) -> web.Response:
+        return web.json_response(self.status_data())
+
+    def status_data(self) -> dict:
         now = time.monotonic()
         group = self.config.group
         members = []
@@ -963,7 +1088,7 @@ class Daemon:
             for a in self.adverts.values()
             if a.id not in self.member_ids()
         ]
-        return web.json_response(
+        return (
             {
                 "product": "Virgil",
                 "version": __version__,
@@ -1014,7 +1139,11 @@ class Daemon:
                 "device_settings": {
                     mac: {"native_ptpv2": d.native_ptpv2, "aes67": d.aes67} for mac, d in self.config.devices.items()
                 },
-                "diagnostics": self.consoles.diagnostics if self.consoles else {},
+                "recording": None if self.recording is None else {
+                    **self.recording.state(),
+                    # Whether this Virgil is coordinating it; a member's page says where to stop it.
+                    "here": self.recording_here,
+                },
                 "other_virgils": others,
             }
         )
@@ -1052,6 +1181,9 @@ class Daemon:
         app.router.add_post(JOIN_PATH, self.join)
         self.web = WebApi(self)
         self.web.routes(app)
+        self.recording = Session(
+            self.config.name, self.status_data, lambda window: self.graphs.window(window, time.time()),
+            lambda: dict(self.consoles.diagnostics) if self.consoles else {}, root=self.recordings_root)
         return app
 
     # For the web UI
@@ -1168,6 +1300,9 @@ class Daemon:
         app.router.add_post(HEARTBEAT_PATH, self.receive_heartbeat)
         app.router.add_post(HANDOVER_PATH, self.receive_handover)
         app.router.add_get(GRAPHS_PATH, self.group_graphs)
+        app.router.add_post(RECORDING_PATH, self.group_recording)
+        app.router.add_get(RECORDINGS_PATH + "/{name}", self.group_recording_file)
+        app.router.add_post(RECORDINGS_PATH + "/delete", self.group_recording_delete)
         return app
 
     # Local control
