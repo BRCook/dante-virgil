@@ -147,6 +147,7 @@ def trim(generated: Path = GENERATED_DIR, run: Runner = _run) -> int:
 DHCP_NAMES_REQUEST = Path("/run/dante-virgil/dhcp-names.json")
 INTERFACES_FILE = Path("/etc/network/interfaces")
 DHCPCD_CONF = Path("/etc/dhcpcd.conf")
+SYSTEM_RUN = subprocess.run
 
 
 def _backup_once(path: Path) -> None:
@@ -157,8 +158,9 @@ def _backup_once(path: Path) -> None:
         shutil.copy2(path, backup)
 
 
-def drop_ptp_default_route(ptp: str, run=subprocess.run) -> None:
+def drop_ptp_default_route(ptp: str, run=None) -> None:
     """Remove a default route through the PTP interface now, if another one exists for everything else."""
+    run = run or SYSTEM_RUN
     try:
         result = run(["ip", "-j", "-4", "route", "show", "default"], capture_output=True, text=True)
         routes = json.loads(result.stdout or "[]")
@@ -171,9 +173,17 @@ def drop_ptp_default_route(ptp: str, run=subprocess.run) -> None:
         print(f"Removed the default route through {ptp}; {elsewhere[0].get('dev')} still has one")
 
 
-def dhcpnames(request_path: Path = DHCP_NAMES_REQUEST, interfaces_file: Path = INTERFACES_FILE,
-              hostname: str | None = None, dhcpcd_conf: Path = DHCPCD_CONF, run=subprocess.run) -> int:
-    """Name each chosen interface's DHCP lease, and keep the PTP interface from becoming the default route."""
+def dhcpnames(request_path: Path | None = None, interfaces_file: Path | None = None,
+              hostname: str | None = None, dhcpcd_conf: Path | None = None, run=None) -> int:
+    """Name each chosen interface's DHCP lease, and keep the PTP interface from becoming the default route.
+
+    The real paths and command runner are looked up when called, not when
+    defined, so tests can redirect them all in one place.
+    """
+    request_path = request_path or DHCP_NAMES_REQUEST
+    interfaces_file = interfaces_file or INTERFACES_FILE
+    dhcpcd_conf = dhcpcd_conf or DHCPCD_CONF
+    run = run or SYSTEM_RUN
     import re
     import shutil
     import socket
