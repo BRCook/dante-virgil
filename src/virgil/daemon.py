@@ -84,6 +84,7 @@ LINK_LOCAL_GRACE = 30.0
 RESTART_EXIT = 75
 # Seconds without any PTP from outside this Virgil before it says so.
 PTP_QUIET_AFTER = 60.0
+GRAPHS_PATH = "/group/v1/graphs"
 NETAUDIO_UNIT = "dante-virgil-netaudio.service"
 DHCP_NAMES_UNIT = "dante-virgil-dhcpnames.service"
 DHCP_NAMES_REQUEST = Path("/run/dante-virgil/dhcp-names.json")
@@ -147,6 +148,10 @@ class Daemon:
     # The link to each member, from pings: address to (last round trip, jitter), and late-packet counts.
     link: dict = field(default_factory=dict, init=False)
     late_counts: dict = field(default_factory=dict, init=False)
+    _has_history: dict = field(default_factory=dict, init=False)
+    _graphed: dict = field(default_factory=lambda: {"clock": None, "polls": None}, init=False)
+    # Members' graphs, fetched for the page: member ID to (when, series).
+    _member_graphs: dict = field(default_factory=dict, init=False)
     events_path: Path = field(default=EVENTS_PATH, init=False)
     # The interfaces whose DHCP lease names were last set, so they're only set again on a change.
     dhcp_names_for: tuple | None = field(default=None, init=False)
@@ -304,14 +309,15 @@ class Daemon:
         name = self.member_name_at(address)
         now = time.time()
         # Each ping counts as 0% or 100% lost; averaged over a stretch, that's the loss rate.
-        self.graphs.add(f"loss/{name}", "loss", name, "percent", now, 100.0 if rtt_ns is None else 0.0)
+        label, key = f"{self.config.name} to {name}", f"{self.config.name}/{name}"
+        self.graphs.add(f"loss/{key}", "loss", label, "percent", now, 100.0 if rtt_ns is None else 0.0)
         if rtt_ns is None:
             return
         last, smoothed = self.link.get(address, (None, None))
         smoothed = jitter(smoothed, rtt_ns, last)
         self.link[address] = (rtt_ns, smoothed)
-        self.graphs.add(f"rtt/{name}", "rtt", name, "ns", now, rtt_ns, WORST)
-        self.graphs.add(f"jitter/{name}", "jitter", name, "ns", now, smoothed, WORST)
+        self.graphs.add(f"rtt/{key}", "rtt", label, "ns", now, rtt_ns, WORST)
+        self.graphs.add(f"jitter/{key}", "jitter", label, "ns", now, smoothed, WORST)
 
     def member_name_at(self, address: str) -> str:
         for virgil_id in self.member_ids():
@@ -330,36 +336,49 @@ class Daemon:
         return targets
 
     def sample_graphs(self, now: float) -> None:
-        """One second's worth: every Virgil's clocks, and every console's figures."""
-        virgils = [(self.config.name, self.election.state, self.clock, self.consoles.summaries() if self.consoles else [])]
-        for virgil_id in self.member_ids():
-            peer = self.peers.get(virgil_id)
-            if peer is not None and time.monotonic() - peer.heard_at <= self.election.timing.visible:
-                beat = peer.heartbeat
-                virgils.append((beat.name, beat.state, beat.clock, list(beat.dante_devices)))
+        """One second's worth of this Virgil's own figures. Members graph their own, and the page merges them."""
+        name, state, clock = self.config.name, self.election.state, self.clock or {}
         add = self.graphs.add
-        for name, state, clock, devices in virgils:
-            clock = clock or {}
-            if state in (State.FOLLOWER, State.SYNC):
-                add(f"offset/{name}", "offset", name, "ns", now, clock.get("system_offset_ns"))
-                add(f"phc/{name}", "phc", name, "ns", now, clock.get("phc_offset_ns"))
-            elif state is State.LEADER and clock.get("phc_trim_ppm") is not None:
-                add(f"trim/{name}", "trim", name, "ppm", now, clock["phc_trim_ppm"])
-            for device in devices:
-                label = f"{device.get('name')} ({name})"
-                key = f"{name}/{device.get('name')}"
-                offset = device.get("clock_offset_ppb")
-                add(f"console/{key}", "console", label, "ppm", now, offset / 1000 if isinstance(offset, int) else None)
+        # Each reading is recorded once, when it's new, rather than repeated every second as a step.
+        new_clock = self.clock is not None and self.clock is not self._graphed["clock"]
+        self._graphed["clock"] = self.clock
+        polls = getattr(self.consoles, "polls", None)
+        new_consoles = polls is None or polls != self._graphed["polls"]
+        self._graphed["polls"] = polls
+        if new_clock and state in (State.FOLLOWER, State.SYNC):
+            add(f"offset/{name}", "offset", name, "ns", now, clock.get("system_offset_ns"))
+            add(f"phc/{name}", "phc", name, "ns", now, clock.get("phc_offset_ns"))
+        elif new_clock and state is State.LEADER and clock.get("phc_trim_ppm") is not None:
+            add(f"trim/{name}", "trim", name, "ppm", now, clock["phc_trim_ppm"])
+        for device in self.consoles.summaries() if self.consoles and new_consoles else []:
+            label, key = self._console_label(device.get("name"))
+            offset = device.get("clock_offset_ppb")
+            add(f"console/{key}", "console", label, "ppm", now, offset / 1000 if isinstance(offset, int) else None)
+            add(f"limit/{key}", "latency", f"{label} setting", "ns", now, device.get("latency_setting_ns"))
+            if not self._has_history.get(key):
+                # No history from netaudio: fall back to the latest figures.
                 add(f"latency/{key}", "latency", f"{label} worst", "ns", now, device.get("latency_ns"), WORST)
                 add(f"average/{key}", "latency", f"{label} average", "ns", now, device.get("latency_average_ns"))
-                add(f"limit/{key}", "latency", f"{label} setting", "ns", now, device.get("latency_setting_ns"))
-                late = device.get("late_packets")
-                if isinstance(late, int):
-                    before = self.late_counts.get(key)
+            late = device.get("late_packets")
+            if isinstance(late, int):
+                before = self.late_counts.get(key)
+                if before is None or late != before[0]:
                     self.late_counts[key] = (late, now)
-                    if before is not None and late >= before[0] and now > before[1]:
-                        add(f"late/{key}", "late", label, "per_s", now, (late - before[0]) / (now - before[1]), WORST)
+                if before is not None and late >= before[0] and now > before[1]:
+                    add(f"late/{key}", "late", label, "per_s", now, (late - before[0]) / (now - before[1]), WORST)
         self.graphs.forget_before(now - KEEP_SECONDS)
+
+    def _console_label(self, device_name: str | None) -> tuple[str, str]:
+        return f"{device_name} ({self.config.name})", f"{self.config.name}/{device_name}"
+
+    def on_latency_history(self, device, points) -> None:
+        """netaudio's own latency history for a console, at its own resolution and times."""
+        label, key = self._console_label(device.name)
+        self._has_history[key] = True
+        offset = time.time() - time.monotonic()  # netaudio's times are on the same monotonic clock
+        for t, worst, average in points:
+            self.graphs.add(f"latency/{key}", "latency", f"{label} worst", "ns", t + offset, worst, WORST)
+            self.graphs.add(f"average/{key}", "latency", f"{label} average", "ns", t + offset, average)
 
     async def watch_graphs(self, pinger: Pinger | None = None) -> None:
         if pinger is not None:
@@ -373,12 +392,52 @@ class Daemon:
             except Exception:
                 log.exception("Couldn't sample the graphs")
 
-    async def graphs_api(self, request: web.Request) -> web.Response:
+    @staticmethod
+    def _window(request: web.Request) -> float:
         try:
-            window = min(max(float(request.query.get("window", 300)), 10), KEEP_SECONDS)
+            return min(max(float(request.query.get("window", 300)), 10), KEEP_SECONDS)
         except ValueError:
             raise web.HTTPBadRequest(text="window must be a number of seconds") from None
-        return web.json_response({"window": window, "series": self.graphs.window(window, time.time())})
+
+    async def graphs_api(self, request: web.Request) -> web.Response:
+        """This Virgil's graphs, and every member's, merged for the page."""
+        window = self._window(request)
+        series = self.graphs.window(window, time.time())
+        results = await asyncio.gather(*(self._member_series(i, window) for i in self.member_ids()))
+        for member_series in results:
+            series += member_series
+        return web.json_response({"window": window, "series": series})
+
+    async def group_graphs(self, request: web.Request) -> web.Response:
+        """This Virgil's own graphs, for a member's page."""
+        sender = self._member_for_certificate(request)
+        if sender is None or sender == self.config.id:
+            raise web.HTTPForbidden()
+        return web.json_response({"series": self.graphs.window(self._window(request), time.time())})
+
+    async def _member_series(self, virgil_id: str, window: float) -> list:
+        """A member's own graphs, at most a second or so old. Members that don't answer are left out."""
+        cached = self._member_graphs.get(virgil_id)
+        if cached and time.monotonic() - cached[0] < 1.5 and cached[1] == window:
+            return cached[2]
+        addresses = self.addresses_for(virgil_id)
+        peer = self.peers.get(virgil_id)
+        if not addresses or peer is None or time.monotonic() - peer.heard_at > self.election.timing.visible:
+            return []
+        advert = self.adverts.get(virgil_id)
+        port = advert.group_port if advert else self.group_port
+        url = f"https://{addresses[0]}:{port}{GRAPHS_PATH}?window={window}"
+        context = tls.group_client_context(self.identity, self.member_certs())
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=1.5)) as session:
+                async with session.get(url, ssl=context) as reply:
+                    if reply.status != 200:
+                        return []
+                    series = (await reply.json()).get("series") or []
+        except (aiohttp.ClientError, TimeoutError, OSError, ValueError):
+            return []
+        self._member_graphs[virgil_id] = (time.monotonic(), window, series)
+        return series
 
     async def watch_clock(self) -> None:
         while True:
@@ -422,6 +481,7 @@ class Daemon:
 
             self.alerts = Alerts(client.issues, local_servers, events_path=self.events_path)
         self.consoles = Consoles(client, local, lambda: self.config.devices,
+                                 on_latency_history=self.on_latency_history,
                                  clock_identity=clock_identity, own_identity=lambda: self.ptp.own_identity,
                                  member_identities=member_identities)
 
@@ -1107,6 +1167,7 @@ class Daemon:
         app.router.add_get("/group/v1/ping", self.ping)
         app.router.add_post(HEARTBEAT_PATH, self.receive_heartbeat)
         app.router.add_post(HANDOVER_PATH, self.receive_handover)
+        app.router.add_get(GRAPHS_PATH, self.group_graphs)
         return app
 
     # Local control

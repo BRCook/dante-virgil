@@ -299,3 +299,17 @@ def test_receive_figures_from_real_diagnostics():
     worst, average, late = receive_figures(diagnostics)
     assert worst == 2_708_333.3 and average == (2_708_333.3 + 1_291_666.7) / 2 and late == 32_559
     assert receive_figures({}) == (None, None, None)
+
+
+def test_latency_history_from_points():
+    """The shape of netaudio's ?history=points: [monotonic time, latency] for each flow."""
+    from virgil.consoles import latency_history
+
+    def flow(points):
+        return {"latency": {"fresh": True, "points": points}}
+
+    diagnostics = {"receiver": {"paths": [flow([[100.0, 2_000_000], [101.0, 5_600_000]]),
+                                          flow([[100.0, 1_000_000], [101.0, 0]]),  # not receiving at 101
+                                          {"latency": {"fresh": True}}]}}  # a flow with no points at all
+    assert latency_history(diagnostics) == [(100.0, 2_000_000, 1_500_000), (101.0, 5_600_000, 5_600_000)]
+    assert latency_history({}) == []

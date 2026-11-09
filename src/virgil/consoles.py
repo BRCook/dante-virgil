@@ -29,7 +29,7 @@ from virgil.config import DeviceSettings
 log = logging.getLogger("virgild.consoles")
 
 NETAUDIO_URL = "http://127.0.0.1:4780"
-POLL_INTERVAL = 10.0
+POLL_INTERVAL = 5.0
 # Often enough for the latency graphs; the compact form keeps each reply small.
 DIAGNOSTICS_INTERVAL = 5.0
 # The least time between attempts to change one setting on one device.
@@ -168,6 +168,24 @@ def receive_figures(diagnostics: Any) -> tuple[float | None, float | None, int |
     return worst, average, late if seen else None
 
 
+def latency_history(diagnostics: Any) -> list[tuple[float, float, float]]:
+    """Each moment in a device's latency history: (netaudio's monotonic time, worst, average) across its flows.
+
+    netaudio observes all of a device's flows together, so their points share
+    times. Flows reading zero aren't receiving, and are left out of the average.
+    """
+    receiver = diagnostics.get("receiver") if isinstance(diagnostics, dict) else None
+    paths = receiver.get("paths") if isinstance(receiver, dict) else None
+    moments: dict[float, list[float]] = {}
+    for path in paths if isinstance(paths, list) else []:
+        latency = path.get("latency") if isinstance(path, dict) and isinstance(path.get("latency"), dict) else {}
+        for point in latency.get("points") or []:
+            if (isinstance(point, list) and len(point) == 2 and all(isinstance(v, (int, float)) for v in point)
+                    and point[1] > 0):
+                moments.setdefault(round(point[0], 1), []).append(float(point[1]))
+    return [(t, max(values), sum(values) / len(values)) for t, values in sorted(moments.items())]
+
+
 def parse_devices(data: Any) -> list[DanteDevice]:
     """Read netaudio's /devices response, skipping anything without a usable address."""
     if not isinstance(data, dict):
@@ -222,8 +240,8 @@ class NetaudioClient:
         return await self._request("GET", "/devices")
 
     async def diagnostics(self, server_name: str) -> Any:
-        # Without the clock and the flows' histories: only what's current, which is small.
-        return await self._request("GET", f"/diagnostics/{quote(server_name, safe='')}?clock=0&receiver_history=0")
+        # Without the clock, and each flow's latency history as compact [time, value] points.
+        return await self._request("GET", f"/diagnostics/{quote(server_name, safe='')}?clock=0&history=points")
 
     async def issues(self) -> Any:
         return await self._request("GET", "/issues?state=open&limit=200")
@@ -250,6 +268,11 @@ class Consoles:
     # This Virgil's own grandmaster identity, and the other members' (identity to name).
     own_identity: Callable[[], str | None] = lambda: None
     member_identities: Callable[[], dict[str, str]] = dict
+    # Given each device's new latency history, (monotonic time, worst, average), for the graphs.
+    on_latency_history: Callable[[DanteDevice, list[tuple[float, float, float]]], None] = lambda device, points: None
+    _history_seen: dict[str, float] = field(default_factory=dict)
+    # Counts successful polls, so the graphs record each reading once.
+    polls: int = 0
     devices: dict[str, DanteDevice] = field(default_factory=dict)
     diagnostics: dict[str, Any] = field(default_factory=dict)
     reachable: bool | None = None
@@ -271,6 +294,7 @@ class Consoles:
         if self.reachable is not True:
             log.info("Connected to netaudio's daemon")
         self.reachable = True
+        self.polls += 1
 
         now = self.clock()
         local = self.local()
@@ -304,8 +328,17 @@ class Consoles:
                 except (aiohttp.ClientError, TimeoutError, OSError, ValueError):
                     self.diagnostics.pop(device.address, None)
         for device in current.values():
-            device.latency_ns, device.latency_average_ns, device.late_packets = receive_figures(
-                self.diagnostics.get(device.address))
+            diagnostics = self.diagnostics.get(device.address)
+            device.latency_ns, device.latency_average_ns, device.late_packets = receive_figures(diagnostics)
+            history = latency_history(diagnostics)
+            if history:
+                # The latest point is the current figure; and only points not handed over before go to the graphs.
+                device.latency_ns, device.latency_average_ns = history[-1][1], history[-1][2]
+                seen = self._history_seen.get(device.address, float("-inf"))
+                fresh = [point for point in history if point[0] > seen]
+                if fresh:
+                    self._history_seen[device.address] = fresh[-1][0]
+                    self.on_latency_history(device, fresh)
         for address in list(self.diagnostics):
             if address not in current:
                 del self.diagnostics[address]
