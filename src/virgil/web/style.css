@@ -69,6 +69,8 @@ h1 { margin: 0; font-size: 1.9rem; line-height: 1.15; font-weight: 700; letter-s
 .alert-label { font-size: 1.4rem; letter-spacing: 0.02em; }
 .alert-text { font-size: 1.05rem; font-weight: 600; }
 .alert-since { margin-left: auto; opacity: 0.85; }
+.alert-more { margin: -0.2rem 0 0.8rem; }
+.alert-more a { color: var(--fault); font-weight: 600; }
 .events .event-time { color: var(--muted); }
 
 /* The timing chain */

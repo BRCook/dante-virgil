@@ -109,3 +109,31 @@ def test_the_record_is_rotated(tmp_path, monkeypatch):
         now[0] += 1
     assert (tmp_path / "events.jsonl.1").exists()
     assert (tmp_path / "events.jsonl").stat().st_size < 1000
+
+
+LAST_SEEN = 1794085509.0  # 2026-11-07T21:05:09Z, the last_seen in issue()
+
+
+def test_an_old_issue_isnt_an_alert(tmp_path):
+    """netaudio can keep an issue open long after anyone could see it, such as last night's."""
+    feed = Feed()
+    alerts, now = watcher(tmp_path, feed)
+    now[0] = LAST_SEEN + 12 * 3600  # half a day later
+    feed.page = page(issue("clock_synchronization"))
+    asyncio.run(alerts.poll())
+    assert alerts.open_summaries() == []
+
+
+def test_an_alert_that_stops_being_seen_goes_quiet(tmp_path, caplog):
+    feed = Feed()
+    alerts, now = watcher(tmp_path, feed)
+    caplog.set_level(logging.INFO)
+    now[0] = LAST_SEEN + 10
+    feed.page = page(issue("clock_muted"))
+    asyncio.run(alerts.poll())
+    assert len(alerts.open) == 1
+    now[0] = LAST_SEEN + 200  # still "open" to netaudio, but not seen for over 2 minutes
+    asyncio.run(alerts.poll())
+    assert alerts.open == {}
+    assert "Went quiet after" in caplog.text
+    assert [e["event"] for e in alerts.recent] == ["went quiet", "opened"]
