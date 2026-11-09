@@ -233,14 +233,15 @@ def test_stop_and_start(virgil):
 def test_the_page_and_its_files(virgil):
     async def scenario(daemon, session, base):
         results = {}
-        for path in ("/", "/static/app.js", "/static/style.css", "/static/../daemon.py", "/static/secret"):
+        for path in ("/", "/static/app.js", "/static/graphs.js", "/static/style.css", "/static/../daemon.py",
+                     "/static/secret"):
             async with session.get(f"{base}{path}") as reply:
                 results[path] = (reply.status, reply.headers.get("Content-Security-Policy", ""),
                                  reply.headers.get("X-Content-Type-Options"))
         return results
 
     results = run(virgil, scenario)
-    for path in ("/", "/static/app.js", "/static/style.css"):
+    for path in ("/", "/static/app.js", "/static/graphs.js", "/static/style.css"):
         status, policy, nosniff = results[path]
         assert status == 200 and "default-src 'none'" in policy and "frame-ancestors 'none'" in policy
         assert nosniff == "nosniff"
@@ -269,9 +270,10 @@ def test_the_page_never_builds_html_from_strings():
 
     import virgil
 
-    script = (Path(virgil.__file__).parent / "web" / "app.js").read_text()
-    for risky in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
-        assert risky not in script
+    for name in ("app.js", "graphs.js"):
+        script = (Path(virgil.__file__).parent / "web" / name).read_text()
+        for risky in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
+            assert risky not in script, f"{risky} in {name}"
 
 
 def test_choosing_interfaces(virgil, monkeypatch):
