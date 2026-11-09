@@ -993,3 +993,40 @@ def test_the_page_gets_every_members_graphs(tmp_path):
 
     merged = asyncio.run(scenario())
     assert {s["key"] for s in merged["series"]} == {"trim/Virgil A", "offset/Virgil B"}
+
+
+def test_a_group_recording_comes_back_as_one_file(tmp_path):
+    """Started on A's page: B records too, and stopping on A bundles both into one file."""
+    import tarfile
+
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        b = Daemon(paths["B"], identities["B"])
+        a.recordings_root, b.recordings_root = tmp_path / "rec-a", tmp_path / "rec-b"
+        runners = await start(a) + await start(b)
+        a.recording.units = b.recording.units = None  # no journal in tests
+        introduce(a, b)
+        introduce(b, a)
+        from virgil.daemon import Peer
+
+        a.peers[configs["B"].id] = Peer(b.heartbeat(), time.monotonic())
+        try:
+            started = await a.start_recording(group=True)
+            assert b.recording.active and started["members"] == ["Virgil B"]
+            await asyncio.sleep(0.1)
+            stopped = await a.stop_recording()
+            return stopped, a, b
+        finally:
+            for runner in runners:
+                await runner.cleanup()
+
+    stopped, a, b = asyncio.run(scenario())
+    bundle = tmp_path / "rec-a" / stopped["archive"]
+    assert bundle.name.endswith("-group.tar")
+    with tarfile.open(bundle) as tar:
+        inner = sorted(tar.getnames())
+    assert len(inner) == 2 and inner[0].endswith("-Virgil-A.tar.gz") and inner[1].endswith("-Virgil-B.tar.gz")
+    assert not b.recording.active and b.recording.recordings() == []  # B's copy was fetched, then tidied away
+    assert [r["name"] for r in a.recording.recordings()] == [bundle.name]

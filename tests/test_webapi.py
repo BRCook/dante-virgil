@@ -353,3 +353,39 @@ def test_choosing_an_interface_ifupdown_wont_bring_up(virgil, monkeypatch):
     assert asked[0] == 409 and asked[1]["needs"] == "stanza" and asked[1]["interfaces"] == ["enp1s0"]
     assert "isn't set up to come up" in asked[1]["message"]
     assert done[0] == 200 and added == [["enp1s0"]] and restarts == [True]
+
+
+def test_recording_from_the_page(virgil, tmp_path):
+    async def scenario(daemon, session, base):
+        daemon.recordings_root = tmp_path / "recordings"
+        daemon.recording.root = daemon.recordings_root
+        daemon.recording.units = None
+        async with session.get(f"{base}/api/v1/recordings") as reply:
+            anonymous_list = reply.status
+        await _login(session, base)
+
+        async def post(path, body=None):
+            async with session.post(f"{base}{path}", json=body or {}, headers=HEADERS) as reply:
+                return reply.status, await reply.json()
+
+        started = await post("/api/v1/recording/start", {"group": False})
+        again = await post("/api/v1/recording/start")
+        noted = await post("/api/v1/recording/note", {"text": "baseline start"})
+        async with session.get(f"{base}/api/v1/status") as reply:
+            recording_state = (await reply.json())["recording"]
+        await asyncio.sleep(0.1)
+        stopped = await post("/api/v1/recording/stop")
+        async with session.get(f"{base}{stopped[1]['download']}") as reply:
+            download = reply.status, reply.headers.get("Content-Disposition", ""), len(await reply.read())
+        async with session.get(f"{base}/api/v1/recordings") as reply:
+            listed = (await reply.json())["recordings"]
+        deleted = await post("/api/v1/recordings/delete", {"all": True})
+        return anonymous_list, started, again, noted, recording_state, stopped, download, listed, deleted
+
+    anonymous, started, again, noted, state, stopped, download, listed, deleted = run(virgil, scenario)
+    assert anonymous == 401
+    assert started[0] == 200 and again[0] == 409 and noted[0] == 200
+    assert state["active"] is True
+    assert download[0] == 200 and "attachment" in download[1] and download[2] > 0
+    assert [r["name"] for r in listed] == [stopped[1]["archive"]]
+    assert deleted == (200, {"deleted": 1})

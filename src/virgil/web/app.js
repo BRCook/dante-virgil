@@ -595,6 +595,87 @@ function renderEvents() {
     e.lasted_s !== undefined ? el("span", { class: "hint" }, ` (lasted ${Math.round(e.lasted_s)} s)`) : null))));
 }
 
+// Recording: everything from a test session, from this Virgil and the group, as one file.
+let recordings = [];
+async function loadRecordings() {
+  if (!session.logged_in) { recordings = []; return; }
+  try {
+    const reply = await fetch("/api/v1/recordings", { credentials: "same-origin", cache: "no-store" });
+    recordings = reply.ok ? (await reply.json()).recordings : [];
+  } catch { recordings = []; }
+}
+
+function download(url) {
+  const link = el("a", { href: url, download: "" });
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+const megabytes = (bytes) => `${(bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0)} MB`;
+
+function elapsed(since) {
+  const seconds = Math.max(0, Math.round(Date.now() / 1000 - since));
+  const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
+  return h ? `${h} h ${m} min` : m ? `${m} min ${s} s` : `${s} s`;
+}
+
+function renderRecording() {
+  const can = session.logged_in;
+  const rec = status.recording;
+  if (!rec) return replace("recording", el("p", { class: "hint" }, "Recording isn't available."));
+  const parts = [];
+  if (!rec.active) {
+    const group = el("input", { type: "checkbox", checked: true, disabled: !can });
+    parts.push(el("div", { class: "row" },
+      el("button", { class: "primary", disabled: !can, onclick: async () => {
+        await act("/api/v1/recording/start", { group: group.checked }, "Recording");
+      } }, "Start recording"),
+      el("label", { class: "check" }, group, "Record the other Virgils in the group too")));
+    parts.push(el("p", { class: "hint" }, can
+      ? "Records status every 2 seconds, the graphs, each console's diagnostics, the timing services' logs and your notes. Stopping downloads it all as one file."
+      : "Log in to record."));
+  } else if (!rec.here) {
+    parts.push(el("p", {}, el("strong", {}, `Recording since ${clockTime(rec.since)}`),
+      ` (${elapsed(rec.since)}), started from another Virgil's page. Stop it there to get the file.`));
+  } else {
+    const note = draft("note", "input", { type: "text", "aria-label": "Note", placeholder: "What just happened?",
+      maxlength: "500", disabled: !can, class: "note-field" });
+    const addNote = async () => {
+      if (!note.value.trim()) return;
+      const data = await act("/api/v1/recording/note", { text: note.value.trim() }, "Noted");
+      if (data) { delete drafts.note; note.value = ""; }
+    };
+    note.addEventListener("keydown", (event) => { if (event.key === "Enter") addNote(); });
+    parts.push(el("p", {}, el("strong", { class: "stale" }, "● "), el("strong", {}, `Recording since ${clockTime(rec.since)}`),
+      ` (${elapsed(rec.since)})`, rec.notes ? `, ${rec.notes} ${rec.notes === 1 ? "note" : "notes"}` : ""));
+    parts.push(el("div", { class: "row" }, note, el("button", { disabled: !can, onclick: addNote }, "Add note")));
+    parts.push(el("div", { class: "row" }, el("button", { class: "primary", disabled: !can, onclick: async () => {
+      notice("Stopping, and gathering the recordings…");
+      const data = await act("/api/v1/recording/stop", {}, "Recording saved");
+      if (data && data.download) { download(data.download); await loadRecordings(); renderRecording(); }
+    } }, "Stop and download")));
+  }
+  if (can && recordings.length) {
+    parts.push(el("h3", {}, "Saved recordings"));
+    parts.push(el("ul", { class: "plain recordings" }, recordings.map((r) => el("li", {},
+      el("span", {}, r.name),
+      el("span", { class: "hint" }, `${megabytes(r.size)}, ${new Date(r.modified * 1000).toLocaleString([], { hour12: false })}`),
+      el("a", { class: "button", href: `/api/v1/recordings/${encodeURIComponent(r.name)}`, download: "" }, "Download"),
+      el("button", { onclick: async () => {
+        if (!confirm(`Delete ${r.name}?`)) return;
+        if (await act("/api/v1/recordings/delete", { name: r.name }, "Deleted")) { await loadRecordings(); renderRecording(); }
+      } }, "Delete")))));
+    if (recordings.length > 1) {
+      parts.push(el("div", { class: "row" }, el("button", { onclick: async () => {
+        if (!confirm(`Delete all ${recordings.length} recordings?`)) return;
+        if (await act("/api/v1/recordings/delete", { all: true }, "Deleted")) { await loadRecordings(); renderRecording(); }
+      } }, "Delete all")));
+    }
+  }
+  replace("recording", parts);
+}
+
 // The page only changes what has actually changed, and nothing at all while
 // someone has text selected, so copying from it works.
 const shown = {};
@@ -623,6 +704,8 @@ function render() {
   const role = document.getElementById("role");
   role.textContent = describeState(status.state, status.leader);
   role.className = status.state === "leader" ? "role leader" : "role";
+  const badge = document.getElementById("recording-badge");
+  badge.hidden = !(status.recording && status.recording.active);
   const alerts = collectAlerts();
   if (changed("alerts", alerts)) renderAlerts(alerts);
   if (changed("events", status.alerts)) renderEvents();
@@ -639,6 +722,8 @@ function render() {
   if (!typing) {
     if (changed("this", [own, session, interfaces, unit])) renderThisVirgil();
     if (changed("group", [group && group.id, members, status.other_virgils, session, lastInvite])) renderGroup();
+    // The recording's elapsed time ticks along, so it's redrawn with each refresh.
+    if (changed("recording", [status.recording, session, recordings, Math.floor(Date.now() / 10000)])) renderRecording();
   }
 }
 
@@ -659,6 +744,7 @@ async function loadSession() {
   } catch {
     session = { logged_in: false, password_set: false };
   }
+  await loadRecordings();
   render();
 }
 
