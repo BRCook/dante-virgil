@@ -192,6 +192,26 @@ def test_ntp_hardware_timestamps_only_on_hardware(tmp_path):
     assert "hwtimestamp" not in (generated / "chrony.conf").read_text()
 
 
+def no_commands(args, **kwargs):
+    import subprocess as sp
+
+    return sp.CompletedProcess(args, 0, "[]", "")
+
+
+@pytest.fixture(autouse=True)
+def nothing_real(monkeypatch, tmp_path):
+    """No virgil-root test may touch the real system, even one that forgets an argument."""
+    import virgil.rootctl as rootctl
+
+    def refuse(args, **kwargs):
+        raise AssertionError(f"a test tried to run a real command: {args}")
+
+    monkeypatch.setattr(rootctl, "SYSTEM_RUN", refuse)
+    monkeypatch.setattr(rootctl, "DHCPCD_CONF", tmp_path / "guard" / "dhcpcd.conf")
+    monkeypatch.setattr(rootctl, "INTERFACES_FILE", tmp_path / "guard" / "interfaces")
+    monkeypatch.setattr(rootctl, "DHCP_NAMES_REQUEST", tmp_path / "guard" / "dhcp-names.json")
+
+
 def test_dhcpnames(tmp_path):
     from tests.test_dhcpnames import BOX
     from virgil.rootctl import dhcpnames
@@ -200,12 +220,13 @@ def test_dhcpnames(tmp_path):
     interfaces.write_text(BOX)
     request = tmp_path / "dhcp-names.json"
     request.write_text(json.dumps({"ptp_interface": "enp1s0", "mgmt_interface": "enp5s0"}))
-    assert dhcpnames(request, interfaces, hostname="debian-server-1") == 0
+    conf = tmp_path / "dhcpcd.conf"
+    assert dhcpnames(request, interfaces, "debian-server-1", conf, no_commands) == 0
     assert "hostname debian-server-1-ptp" in interfaces.read_text()
     assert (tmp_path / "interfaces.virgil-backup").read_text() == BOX
     request.write_text(json.dumps({"ptp_interface": "enp1s0; reboot", "mgmt_interface": None}))
-    assert dhcpnames(request, interfaces, hostname="x") == 1
-    assert dhcpnames(request, tmp_path / "missing", hostname="x") == 0  # no ifupdown: nothing to do
+    assert dhcpnames(request, interfaces, "x", conf, no_commands) == 1
+    assert dhcpnames(request, tmp_path / "missing", "x", conf, no_commands) == 0  # no ifupdown: nothing to do
 
 
 def test_dhcpnames_also_handles_the_default_route(tmp_path):
