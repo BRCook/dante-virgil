@@ -284,3 +284,18 @@ def test_a_console_that_made_itself_the_grandmaster():
     (warning,) = consoles.summaries()[0]["warnings"]
     assert warning.startswith("Wing-Compact isn't hearing this Virgil's grandmaster, and has made itself one")
     assert consoles.announcing_themselves() == {"10.10.100.50"}
+
+
+def test_receive_figures_from_real_diagnostics():
+    """The shape of netaudio 2.0's diagnostics, as the WingCompact gave them."""
+    from virgil.consoles import receive_figures
+
+    def path(latency, late, fresh=True):
+        return {"latency": {"fresh": fresh, "current": {"value": latency, "value_unit": "nanoseconds"}},
+                "late_packets": {"fresh": True, "current": {"value": late, "value_unit": "count"}}}
+
+    diagnostics = {"receiver": {"paths": [path(2_708_333.3, 32_554), path(1_291_666.7, 0), path(0.0, 0),
+                                          path(9_000_000, 5, fresh=False)]}}
+    worst, average, late = receive_figures(diagnostics)
+    assert worst == 2_708_333.3 and average == (2_708_333.3 + 1_291_666.7) / 2 and late == 32_559
+    assert receive_figures({}) == (None, None, None)

@@ -7,7 +7,7 @@
 const CHARTS = [
   { id: "offset", title: "Clock offset from the leader", kind: "time", signed: true },
   { id: "phc", title: "PHC offset from system clock", kind: "time", signed: true },
-  { id: "latency", title: "Receive latency (worst flow)", kind: "time" },
+  { id: "latency", title: "Receive latency", kind: "time" },
   { id: "late", title: "Late packets", kind: "rate" },
   { id: "console", title: "Console clocks", kind: "ppm", signed: true },
   { id: "trim", title: "Trim", kind: "ppm", fit: true },
@@ -101,8 +101,8 @@ function drawChart(canvas, chart, series) {
   g.beginPath(); g.rect(left, top, plotW, plotH); g.clip();
   series.forEach((s) => {
     g.strokeStyle = s.colour;
-    g.lineWidth = s.setting ? 1.2 : 1.6;
-    g.setLineDash(s.setting ? [5, 4] : []);
+    g.lineWidth = s.style === "line" ? 1.6 : 1.3;
+    g.setLineDash({ setting: [6, 4], average: [1.5, 3], line: [] }[s.style]);
     g.beginPath();
     s.points.forEach(([t, v], i) => (i ? g.lineTo(x(t), y(scaled(chart.kind, v))) : g.moveTo(x(t), y(scaled(chart.kind, v)))));
     g.stroke();
@@ -132,8 +132,11 @@ function renderGraphs() {
   const byChart = {};
   graphData.series.forEach((s) => (byChart[s.chart] = byChart[s.chart] || []).push(s));
   // Each series keeps its colour by name across charts and refreshes.
-  const names = [...new Set(graphData.series.map((s) => s.label.replace(/ setting$/, "")))].sort();
-  const colourOf = (label) => SERIES_COLOURS[names.indexOf(label.replace(/ setting$/, "")) % SERIES_COLOURS.length];
+  // A console's worst, average and setting lines share its colour, and differ in style.
+  const base = (label) => label.replace(/ (setting|worst|average)$/, "");
+  const names = [...new Set(graphData.series.map((s) => base(s.label)))].sort();
+  const colourOf = (label) => SERIES_COLOURS[names.indexOf(base(label)) % SERIES_COLOURS.length];
+  const styleOf = (key) => (key.startsWith("limit/") ? "setting" : key.startsWith("average/") ? "average" : "line");
 
   const controls = el("div", { class: "row graph-windows", role: "group", "aria-label": "Graph window" },
     WINDOWS.map(([seconds, label]) => el("button", {
@@ -149,7 +152,10 @@ function renderGraphs() {
     return replace("graphs", controls, el("p", { class: "hint" }, "Nothing to graph yet: figures appear within a few seconds."));
   }
   const cards = shown.map((chart) => {
-    const series = byChart[chart.id].map((s) => ({ ...s, colour: colourOf(s.label), setting: s.key.startsWith("limit/") }));
+    // Grouped by console: its worst, then its average, then its setting.
+    const styleRank = { line: 0, average: 1, setting: 2 };
+    const series = byChart[chart.id].map((s) => ({ ...s, colour: colourOf(s.label), style: styleOf(s.key) }))
+      .sort((x, y) => base(x.label).localeCompare(base(y.label)) || styleRank[x.style] - styleRank[y.style]);
     const canvas = el("canvas", { class: "graph", role: "img", "aria-label": chart.title });
     const legend = el("ul", { class: "legend" });
     const fillLegend = () => {
@@ -157,7 +163,7 @@ function renderGraphs() {
       const when = at === undefined ? [] : [el("li", { class: "legend-when" }, `at ${agoLabel(at)}`)];
       legend.replaceChildren(...when, ...series.map((s) => {
         const value = at === undefined ? (s.points.length ? s.points[s.points.length - 1][1] : null) : valueAt(s.points, at);
-        return el("li", {}, el("span", { class: `swatch${s.setting ? " dashed" : ""}`, style: `--swatch:${s.colour}` }),
+        return el("li", {}, el("span", { class: `swatch ${s.style}`, style: `--swatch:${s.colour}` }),
           `${s.label} `, el("span", { class: "legend-value" }, formatValue(chart.kind, value)));
       }));
     };

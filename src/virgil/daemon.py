@@ -350,7 +350,8 @@ class Daemon:
                 key = f"{name}/{device.get('name')}"
                 offset = device.get("clock_offset_ppb")
                 add(f"console/{key}", "console", label, "ppm", now, offset / 1000 if isinstance(offset, int) else None)
-                add(f"latency/{key}", "latency", label, "ns", now, device.get("latency_ns"), WORST)
+                add(f"latency/{key}", "latency", f"{label} worst", "ns", now, device.get("latency_ns"), WORST)
+                add(f"average/{key}", "latency", f"{label} average", "ns", now, device.get("latency_average_ns"))
                 add(f"limit/{key}", "latency", f"{label} setting", "ns", now, device.get("latency_setting_ns"))
                 late = device.get("late_packets")
                 if isinstance(late, int):
