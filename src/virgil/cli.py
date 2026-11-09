@@ -57,6 +57,7 @@ def _interface_json(interface: Interface) -> dict:
         "mac": interface.mac,
         "driver": interface.driver,
         "physical": interface.physical,
+        "nic": interface.hardware_name or (profile.description if profile else None),
         "link_up": interface.link_up,
         "timestamping": interface.mode.value,
         "phc": ts.phc_device if ts else None,
@@ -78,13 +79,14 @@ def cmd_interfaces(args: argparse.Namespace) -> int:
         print(json.dumps([_interface_json(i) for i in interfaces], indent=2))
         return 0
 
-    rows = [("NAME", "DRIVER", "LINK", "TIMESTAMPING", "PHC", "PROFILE")]
+    rows = [("NAME", "NIC", "DRIVER", "LINK", "TIMESTAMPING", "PHC", "PROFILE")]
     for i in interfaces:
         ts = i.timestamping
         profile = i.profile
         rows.append(
             (
                 i.name,
+                i.hardware_name or (profile.description if profile else "-"),
                 i.driver or "-",
                 "up" if i.link_up else "down",
                 i.mode.value if i.physical else "virtual",
@@ -176,9 +178,33 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         setattr(config, key, value.lower() == "true")
     config_file.save(config, args.config)
     print(f"Set {key}")
+    if key in ("ptp_interface", "mgmt_interface"):
+        _offer_stanza(value, config, args.yes)
     if key in RESTART_KEYS:
         print("Restart virgild for this to take effect: sudo systemctl restart dante-virgil")
     return 0
+
+
+def _offer_stanza(interface: str, config, assume_yes: bool) -> None:
+    """If ifupdown won't bring the interface up, offer to set it up to, through virgil-root."""
+    from virgil.setup import configured
+
+    known = configured()
+    if known is None or interface in known:
+        return
+    print(f"{interface} isn't set up to come up in /etc/network/interfaces, so it won't have an address "
+          "after a reboot.")
+    if not confirm("Add a standard DHCP setup for it, and bring it up now?", default=True, assume_yes=assume_yes):
+        return
+    from virgil.files import atomic_write
+
+    request = {"ptp_interface": config.ptp_interface, "mgmt_interface": config.mgmt_interface, "add": [interface]}
+    try:
+        atomic_write(Path("/run/dante-virgil/dhcp-names.json"), json.dumps(request).encode(), mode=0o640)
+        Systemd().start("dante-virgil-dhcpnames.service")
+    except (OSError, ServiceError) as error:
+        raise CliError(f"couldn't set {interface} up: {error}") from error
+    print(f"Set {interface} up to come up with DHCP.")
 
 
 # Settings virgild only reads when it starts.

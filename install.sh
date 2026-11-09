@@ -55,6 +55,13 @@ if (( ${#missing[@]} )); then
 else
     say "The Debian packages Virgil needs are already installed"
 fi
+# The PCI ID database names NICs properly. It's a nicety, so an offline Virgil carries on without it.
+if ! dpkg-query -W -f='${Status}' pci.ids 2>/dev/null | grep -q "install ok installed"; then
+    say "Installing the PCI ID database, for NIC names"
+    if ! apt-get install -y --no-install-recommends pci.ids; then
+        echo "Couldn't install pci.ids (offline?). Virgil will use its own NIC names until it's installed."
+    fi
+fi
 
 say "Creating the $SERVICE_USER user"
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then

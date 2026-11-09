@@ -278,8 +278,11 @@ def test_choosing_interfaces(virgil, monkeypatch):
     import virgil.setup as setup_module
     from tests.test_setup import INTERFACES
 
+    import virgil.webapi as webapi_module
+
     monkeypatch.setattr(setup_module, "get_interface", INTERFACES.get)
     monkeypatch.setattr(setup_module, "list_interfaces", lambda: list(INTERFACES.values()))
+    monkeypatch.setattr(webapi_module, "configured", lambda: None)  # not an ifupdown machine
 
     async def scenario(daemon, session, base):
         restarts = []
@@ -320,3 +323,31 @@ def test_choosing_interfaces_needs_a_login(virgil):
             return reply.status
 
     assert run(virgil, scenario) == 401
+
+
+def test_choosing_an_interface_ifupdown_wont_bring_up(virgil, monkeypatch):
+    import virgil.setup as setup_module
+    import virgil.webapi as webapi_module
+    from tests.test_setup import INTERFACES
+
+    monkeypatch.setattr(setup_module, "get_interface", INTERFACES.get)
+    monkeypatch.setattr(webapi_module, "configured", lambda: {"lo", "enp5s0"})  # Box B: no enp1s0 stanza
+
+    async def scenario(daemon, session, base):
+        added, restarts = [], []
+        daemon.update_dhcp_names = lambda add=None, force=False: added.append(add)
+        daemon.request_restart = lambda: restarts.append(True)
+        await _login(session, base)
+
+        async def choose(**body):
+            async with session.post(f"{base}/api/v1/interfaces", json=body, headers=HEADERS) as reply:
+                return reply.status, await reply.json()
+
+        asked = await choose(ptp_interface="enp1s0", mgmt_interface="enp5s0")
+        done = await choose(ptp_interface="enp1s0", mgmt_interface="enp5s0", add_stanzas=True)
+        return asked, done, added, restarts
+
+    asked, done, added, restarts = run(virgil, scenario)
+    assert asked[0] == 409 and asked[1]["needs"] == "stanza" and asked[1]["interfaces"] == ["enp1s0"]
+    assert "isn't set up to come up" in asked[1]["message"]
+    assert done[0] == 200 and added == [["enp1s0"]] and restarts == [True]

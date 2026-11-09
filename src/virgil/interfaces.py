@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from virgil.nicnames import nic_name
 from virgil.nic_profiles import NicProfile, profile_for
 
 SYSFS_NET = Path("/sys/class/net")
@@ -125,6 +126,8 @@ class Interface:
     physical: bool
     link_up: bool
     timestamping: TimestampingInfo | None
+    # The NIC's real name, such as "Intel I226-V", from the PCI ID database.
+    hardware_name: str | None = None
 
     @property
     def mode(self) -> Timestamping:
@@ -163,6 +166,7 @@ def _interface(
         physical=device.exists(),
         link_up=_read(entry / "operstate") == "up",
         timestamping=timestamping(entry.name),
+        hardware_name=nic_name(entry.name, entry.parent) if device.exists() else None,
     )
 
 

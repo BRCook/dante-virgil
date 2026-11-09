@@ -22,7 +22,7 @@ from virgil import joining
 from virgil.config import DeviceSettings
 from virgil.consoles import normalise_mac
 from virgil.group import GroupError, InviteToken
-from virgil.setup import SetupError, check_mgmt_interface, check_ptp_interface, describe_interfaces
+from virgil.setup import SetupError, check_mgmt_interface, check_ptp_interface, configured, describe_interfaces
 from virgil.webauth import COOKIE, SESSION_LIFETIME, Attempts, Sessions, check_password
 
 if TYPE_CHECKING:
@@ -221,10 +221,24 @@ class WebApi:
         if choice.needs:
             # Someone has to agree to this first; the page asks, then sends it again.
             return web.json_response({"needs": choice.needs, "message": choice.message}, status=409)
+        known = configured()
+        missing = [] if known is None else sorted({choice.name, mgmt} - known)
+        add_stanzas = body.get("add_stanzas")
+        if missing and add_stanzas is None:
+            names = " and ".join(missing)
+            return web.json_response({"needs": "stanza", "interfaces": missing, "message": (
+                f"{names} {'isn' if len(missing) == 1 else 'aren'}'t set up to come up in /etc/network/interfaces, "
+                "so it won't have an address after a reboot. Add a standard DHCP setup for "
+                f"{'it' if len(missing) == 1 else 'them'}?")}, status=409)
         if (choice.name, choice.nic_profile, mgmt) == (config.ptp_interface, config.nic_profile, config.mgmt_interface):
+            if missing and add_stanzas:
+                self.daemon.update_dhcp_names(add=missing, force=True)
+                return web.json_response({"message": f"Setting up {' and '.join(missing)} to come up"})
             return web.json_response({"message": "Nothing changed"})
         config.ptp_interface, config.nic_profile, config.mgmt_interface = choice.name, choice.nic_profile, mgmt
         self.daemon.save()
+        if missing and add_stanzas:
+            self.daemon.update_dhcp_names(add=missing)
         log.info("Interfaces changed from the web UI (PTP %s, management %s); restarting", choice.name, mgmt)
         self.daemon.request_restart()
         message = "Saved. Virgil is restarting to use them."

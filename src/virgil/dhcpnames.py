@@ -122,3 +122,44 @@ def apply_dhcpcd(text: str, ptp: str | None, mgmt: str | None) -> str:
                   "nogateway",
                   BLOCK_END]
     return "\n".join(lines) + ("\n" if lines else "")
+
+
+ADDED_MARKER = "# Added by Virgil, so this interface comes up"
+
+
+def configured_interfaces(texts: list[str]) -> set[str]:
+    """Interfaces with an iface stanza, in an interfaces file and the files it sources."""
+    names = set()
+    for text in texts:
+        for line in text.splitlines():
+            match = _IFACE.match(line)
+            if match:
+                names.add(match.group(1))
+    return names
+
+
+def add_stanza(text: str, interface: str) -> str:
+    """A plain DHCP stanza for an interface the file doesn't configure."""
+    lines = text.rstrip("\n").splitlines()
+    if lines:
+        lines.append("")
+    lines += [ADDED_MARKER, f"allow-hotplug {interface}", f"iface {interface} inet dhcp"]
+    return "\n".join(lines) + "\n"
+
+
+def interfaces_texts(path) -> list[str] | None:
+    """The interfaces file and everything in interfaces.d, or None if ifupdown isn't in use."""
+    from pathlib import Path
+
+    path = Path(path)
+    try:
+        texts = [path.read_text()]
+    except OSError:
+        return None
+    folder = path.parent / "interfaces.d"
+    for extra in sorted(folder.glob("*")) if folder.is_dir() else []:
+        try:
+            texts.append(extra.read_text())
+        except OSError:
+            pass
+    return texts

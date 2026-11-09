@@ -92,3 +92,14 @@ def test_nogateway_for_the_ptp_interface():
     assert "interface enp2s0" in moved and "interface enp1s0" not in moved
     assert apply_dhcpcd(text, "enp1s0", "enp1s0") == DHCPCD  # one interface for both: it needs its gateway
     assert apply_dhcpcd("", "enp1s0", "enp5s0").startswith(BLOCK_START)
+
+
+def test_configured_interfaces_and_adding_a_stanza():
+    from virgil.dhcpnames import ADDED_MARKER, add_stanza, configured_interfaces
+
+    box_b = BOX.split("allow-hotplug enp1s0")[0].rstrip() + "\n"  # Box B had no enp1s0 stanza
+    assert configured_interfaces([box_b]) == {"lo", "enp5s0"}
+    assert configured_interfaces([box_b, "iface enp2s0 inet dhcp\n"]) == {"lo", "enp5s0", "enp2s0"}
+    added = add_stanza(box_b, "enp1s0")
+    assert added.endswith(f"\n\n{ADDED_MARKER}\nallow-hotplug enp1s0\niface enp1s0 inet dhcp\n")
+    assert configured_interfaces([added]) == {"lo", "enp5s0", "enp1s0"}
