@@ -158,6 +158,10 @@ function collectWarnings() {
   for (const d of status.dante_devices || []) for (const w of d.warnings || []) warnings.push({ text: w });
   const auto = status.auto_trim || {};
   if (auto.paused) warnings.push({ text: `Auto-trim paused: ${auto.paused}. It resumes within 10 minutes.` });
+  const na = status.netaudio;
+  if (na && na.interface && ptp.interface && na.interface !== ptp.interface) {
+    warnings.push({ text: `netaudio is running on ${na.interface} until ${ptp.interface} has an address, so it can't see the consoles` });
+  }
   if (status.netaudio && status.netaudio.running && status.netaudio.reachable === false) {
     warnings.push({ text: "Can't reach netaudio's daemon, so consoles aren't being monitored" });
   }
@@ -262,7 +266,10 @@ function renderThisVirgil() {
   const actions = el("div", { class: "row" });
   const netaudio = status.netaudio;
   if (netaudio && netaudio.ui_port) {
-    actions.append(el("a", { class: "button", href: `https://${location.hostname}:${netaudio.ui_port}/`,
+    // netaudio's UI only listens on the management interface, so link to that address.
+    const mgmt = status.addresses || [];
+    const host = mgmt.includes(location.hostname) || !mgmt.length ? location.hostname : mgmt[0];
+    actions.append(el("a", { class: "button", href: `https://${host}:${netaudio.ui_port}/`,
       target: "_blank", rel: "noopener noreferrer",
       title: can ? "netaudio, on this Virgil" : "Log in first: netaudio can change the consoles' settings" },
       "Open netaudio"));
@@ -373,7 +380,7 @@ async function loadInterfaces() {
 function interfaceLabel(i) {
   // The name, the NIC type where Virgil knows it, and the driver.
   if (!i.physical) return `${i.name} (virtual)`;
-  const facts = [i.profile ? i.profile.description : null, i.driver].filter(Boolean);
+  const facts = [i.nic || (i.profile ? i.profile.description : null), i.driver].filter(Boolean);
   return facts.length ? `${i.name} (${facts.join(", ")})` : i.name;
 }
 
@@ -387,6 +394,8 @@ function interfaceFacts(i, forPtp) {
       : el("span", { class: "caution" }, "Software timestamping only"));
   }
   if (!i.link_up) facts.push(el("span", { class: "caution" }, "No link"));
+  if (i.configured === false) facts.push(el("span", { class: "caution", title: "Not in /etc/network/interfaces" },
+    "Not set up to come up"));
   const lease = (status && status.dhcp_names || {})[forPtp ? "ptp" : "mgmt"];
   if (lease) facts.push(el("span", { title: "The name this interface gives the DHCP server" }, `DHCP name ${lease}`));
   return facts;
@@ -433,7 +442,7 @@ async function saveInterfaces(ptp, mgmt) {
     return;
   }
   const body = { ptp_interface: ptp, mgmt_interface: mgmt };
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 4; attempt++) {
     const reply = await fetch("/api/v1/interfaces", {
       method: "POST", credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-Virgil-Request": "1" }, body: JSON.stringify(body),
@@ -446,6 +455,10 @@ async function saveInterfaces(ptp, mgmt) {
     }
     if (reply.status === 409 && data.needs === "profile") {
       body.accept_profile = confirm(data.message);
+      continue;
+    }
+    if (reply.status === 409 && data.needs === "stanza") {
+      body.add_stanzas = confirm(data.message);
       continue;
     }
     if (!reply.ok) return notice(data.error || `refused (${reply.status})`, true);

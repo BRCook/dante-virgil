@@ -398,15 +398,15 @@ def test_a_link_local_address_counts_once_dhcp_has_had_its_chance(tmp_path, monk
     assert a.addresses == ("10.10.100.251",) and a.networks == ("10.10.100.0/24",)
 
 
-def test_netaudio_runs_only_while_the_ptp_interface_has_an_address(tmp_path, monkeypatch):
+def test_netaudio_follows_the_ptp_interface_and_falls_back_to_management(tmp_path, monkeypatch):
     import virgil.daemon as daemon_module
 
     paths, identities, configs = make_pair(tmp_path)
     config = config_file.load(paths["B"])
-    config.ptp_interface = "enp1s0"
+    config.ptp_interface, config.mgmt_interface = "enp1s0", "enp5s0"
     config_file.save(config, paths["B"])
     b = Daemon(paths["B"], identities["B"])
-    addresses = {"enp1s0": []}
+    addresses = {"enp1s0": [], "enp5s0": []}
     _fake_interfaces(monkeypatch, addresses)
     monkeypatch.setattr(daemon_module, "NETAUDIO_ENV", tmp_path / "netaudio.env")
 
@@ -414,26 +414,26 @@ def test_netaudio_runs_only_while_the_ptp_interface_has_an_address(tmp_path, mon
         calls = []
 
         def restart(self, unit, block=True):
-            self.calls.append(("restart", unit))
+            self.calls.append(("restart", (tmp_path / "netaudio.env").read_text().strip()))
 
         def stop(self, unit):
-            self.calls.append(("stop", unit))
+            self.calls.append(("stop", None))
 
     systemd = Systemd()
     b.systemd = systemd
     b.check_ptp_interface()
-    # Nothing plugged in: stopped, in case an older virgild left it retrying.
-    assert systemd.calls == [("stop", "dante-virgil-netaudio.service")]
+    assert systemd.calls == [("stop", None)]  # no addresses anywhere yet
+    addresses["enp5s0"] = ["192.168.30.15/24"]
     b.check_ptp_interface()
-    assert len(systemd.calls) == 1
+    assert systemd.calls[-1] == ("restart", "NETAUDIO_INTERFACE=enp5s0")  # its UI still works
+    assert b.netaudio_interface == "enp5s0"
     addresses["enp1s0"] = ["169.254.40.2/16"]  # a link-local Dante network counts at once
     b.check_ptp_interface()
     b.check_ptp_interface()
-    assert systemd.calls[1:] == [("restart", "dante-virgil-netaudio.service")]
-    assert (tmp_path / "netaudio.env").read_text() == "NETAUDIO_INTERFACE=enp1s0\n"
+    assert systemd.calls[-1] == ("restart", "NETAUDIO_INTERFACE=enp1s0") and len(systemd.calls) == 3
     addresses["enp1s0"] = []
     b.check_ptp_interface()
-    assert systemd.calls[-1] == ("stop", "dante-virgil-netaudio.service")
+    assert systemd.calls[-1] == ("restart", "NETAUDIO_INTERFACE=enp5s0")
 
 
 def test_netaudio_stopped_on_purpose_isnt_a_problem(tmp_path):
@@ -708,7 +708,7 @@ def test_dhcp_names_are_set_on_start_and_on_change(tmp_path):
     a.update_dhcp_names(Systemd(), request)
     a.update_dhcp_names(Systemd(), request)  # nothing changed
     assert started == ["dante-virgil-dhcpnames.service"]
-    assert json.loads(request.read_text()) == {"ptp_interface": "enp1s0", "mgmt_interface": "enp5s0"}
+    assert json.loads(request.read_text()) == {"ptp_interface": "enp1s0", "mgmt_interface": "enp5s0", "add": []}
     a.config.mgmt_interface = "enp2s0"
     a.update_dhcp_names(Systemd(), request)
     assert len(started) == 2
@@ -843,3 +843,46 @@ def test_auto_trim_waits_for_an_unsettled_follower(tmp_path):
     peer.heartbeat = replace(peer.heartbeat, clock={"rms_offset_ns": 6_000})
     a.trim_once(101.5)
     assert a.config.trim_ppb == 500
+
+
+def test_netaudios_ui_follows_the_management_addresses(tmp_path, monkeypatch):
+    """Only management addresses and loopback; never the PTP interface's."""
+    import socket
+
+    import virgil.daemon as daemon_module
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    monkeypatch.setattr(daemon_module, "NETAUDIO_PROXY_PORT", port)
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+
+    def reachable(address):
+        with socket.socket() as s:
+            s.settimeout(1)
+            return s.connect_ex((address, port)) == 0
+
+    async def scenario():
+        async def page(request):
+            return web.Response(text="netaudio")
+
+        app = web.Application()
+        app.router.add_get("/", page)
+        runner = web.AppRunner(app, access_log=None)
+        await runner.setup()
+        a.netaudio_ui = runner
+        try:
+            a.addresses = ("127.0.0.2",)  # the management interface
+            await a.bind_netaudio_ui()
+            first = {addr: reachable(addr) for addr in ("127.0.0.1", "127.0.0.2", "127.0.0.3")}
+            a.addresses = ("127.0.0.3",)  # it moved
+            await a.bind_netaudio_ui()
+            second = {addr: reachable(addr) for addr in ("127.0.0.1", "127.0.0.2", "127.0.0.3")}
+            return first, second
+        finally:
+            await runner.cleanup()
+
+    first, second = asyncio.run(scenario())
+    assert first == {"127.0.0.1": True, "127.0.0.2": True, "127.0.0.3": False}
+    assert second == {"127.0.0.1": True, "127.0.0.2": False, "127.0.0.3": True}

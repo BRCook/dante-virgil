@@ -74,18 +74,35 @@ def check_mgmt_interface(name: str, lookup: Callable[[str], Interface | None] | 
     return name
 
 
-def describe_interfaces(interfaces: list[Interface] | None = None) -> list[dict[str, Any]]:
+INTERFACES_FILE = "/etc/network/interfaces"
+
+
+def configured(interfaces_file: str = INTERFACES_FILE) -> set[str] | None:
+    """Interfaces ifupdown is set up to bring up, or None if ifupdown isn't in use."""
+    from virgil.dhcpnames import configured_interfaces, interfaces_texts
+
+    texts = interfaces_texts(interfaces_file)
+    return None if texts is None else configured_interfaces(texts)
+
+
+def describe_interfaces(interfaces: list[Interface] | None = None,
+                        set_up: set[str] | None | bool = True) -> list[dict[str, Any]]:
     """Every interface, as the web UI shows them."""
+    known = configured() if set_up is True else set_up
     result = []
     for interface in interfaces if interfaces is not None else list_interfaces():
         profile = interface.profile
         result.append({
             "name": interface.name,
+            # The real name first; the NIC profile's for NICs the database doesn't know yet.
+            "nic": interface.hardware_name or (profile.description if profile else None),
             "driver": interface.driver,
             "link_up": interface.link_up,
             "physical": interface.physical,
             "timestamping": interface.mode.value if interface.physical else "virtual",
             "ptp_capable": interface.ptp_capable,
+            # False when ifupdown won't bring it up; None when ifupdown isn't in use.
+            "configured": None if known is None else interface.name in known,
             "profile": None if profile is None else {
                 "description": profile.description,
                 "status": profile.status.value,

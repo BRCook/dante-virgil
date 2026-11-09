@@ -244,3 +244,29 @@ def test_the_only_default_route_is_left_alone(tmp_path):
 
     drop_ptp_default_route("enp1s0", run)
     assert not any("del" in a for a in ran)
+
+
+def test_dhcpnames_adds_a_missing_stanza_and_brings_it_up(tmp_path):
+    import subprocess as sp
+
+    from tests.test_dhcpnames import BOX
+    from virgil.rootctl import dhcpnames
+
+    box_b = BOX.split("allow-hotplug enp1s0")[0].rstrip() + "\n"
+    (tmp_path / "interfaces").write_text(box_b)
+    request = tmp_path / "dhcp-names.json"
+    request.write_text(json.dumps({"ptp_interface": "enp1s0", "mgmt_interface": "enp5s0", "add": ["enp1s0"]}))
+    ran = []
+
+    def run(args, **kwargs):
+        ran.append(args)
+        return sp.CompletedProcess(args, 0, "[]", "")
+
+    assert dhcpnames(request, tmp_path / "interfaces", "debian-server-2", tmp_path / "dhcpcd.conf", run) == 0
+    text = (tmp_path / "interfaces").read_text()
+    assert "iface enp1s0 inet dhcp\n    # Set by Virgil\n    hostname debian-server-2-ptp" in text
+    assert ["ifup", "enp1s0"] in ran
+    # Asked again: already there, so nothing more is added or brought up.
+    ran.clear()
+    assert dhcpnames(request, tmp_path / "interfaces", "debian-server-2", tmp_path / "dhcpcd.conf", run) == 0
+    assert (tmp_path / "interfaces").read_text().count("iface enp1s0") == 1 and ["ifup", "enp1s0"] not in ran

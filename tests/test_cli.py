@@ -1,5 +1,7 @@
 import shutil
 
+import json
+
 import pytest
 
 from virgil import cli, tls
@@ -10,6 +12,14 @@ from virgil.interfaces import Interface, TimestampingInfo
 
 HARDWARE = ifc.TX_HARDWARE | ifc.RX_HARDWARE | ifc.RAW_HARDWARE | ifc.TX_SOFTWARE | ifc.RX_SOFTWARE | ifc.SOFTWARE
 SOFTWARE = ifc.TX_SOFTWARE | ifc.RX_SOFTWARE | ifc.SOFTWARE
+
+@pytest.fixture(autouse=True)
+def not_an_ifupdown_machine(monkeypatch):
+    """Tests never depend on the machine's own /etc/network/interfaces."""
+    import virgil.setup as setup_module
+
+    monkeypatch.setattr(setup_module, "configured", lambda *a: None)
+
 
 INTERFACES = {
     "enp1s0": Interface("enp1s0", "aa", "igc", True, True, TimestampingInfo(HARDWARE, 0, 3, 3)),
@@ -485,3 +495,19 @@ def test_a_members_console_says_whose_it_is(monkeypatch, capsys):
     monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
     assert cli.main(["status"]) == 0
     assert "WingRack at 192.168.20.246, following Box B" in capsys.readouterr().out
+
+
+def test_config_set_offers_a_missing_stanza(config_path, monkeypatch, capsys, tmp_path):
+    import virgil.setup as setup_module
+
+    monkeypatch.setattr(cli, "get_interface", INTERFACES.get)
+    monkeypatch.setattr(setup_module, "configured", lambda *a: {"lo", "enp5s0"})
+    started = []
+    monkeypatch.setattr(cli, "Systemd", lambda: type("S", (), {"start": lambda self, unit, block=True: started.append(unit)})())
+    written = []
+    import virgil.files as files_module
+
+    monkeypatch.setattr(files_module, "atomic_write", lambda path, data, mode=0o640: written.append(json.loads(data)))
+    assert _set(config_path, "mgmt_interface", "enp1s0", "--yes") == 0
+    assert "isn't set up to come up" in capsys.readouterr().out
+    assert written[-1]["add"] == ["enp1s0"] and started == ["dante-virgil-dhcpnames.service"]

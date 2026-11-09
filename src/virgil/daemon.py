@@ -136,6 +136,10 @@ class Daemon:
     netaudio_for: tuple[str, ...] | None = field(default=("unknown",), init=False)
     systemd: roles.Systemd | None = field(default=None, init=False)
     clock: dict | None = field(default=None, init=False)
+    # netaudio's UI: its app, and where it's listening (address to site).
+    netaudio_ui: web.AppRunner | None = field(default=None, init=False)
+    netaudio_ui_context: ssl.SSLContext | None = field(default=None, init=False)
+    netaudio_ui_sites: dict = field(default_factory=dict, init=False)
     alerts: Alerts | None = field(default=None, init=False)
     events_path: Path = field(default=EVENTS_PATH, init=False)
     # The interfaces whose DHCP lease names were last set, so they're only set again on a change.
@@ -334,7 +338,12 @@ class Daemon:
                                  member_identities=member_identities)
 
     def check_ptp_interface(self) -> None:
-        """Follow the PTP interface's addresses, and run netaudio's daemon only while it has one."""
+        """Follow the PTP interface's addresses, and keep netaudio's daemon on the right interface.
+
+        netaudio needs an address. It runs on the PTP interface, where the
+        consoles are, whenever that has one; otherwise on the management
+        interface, so its UI still works for looking around the network.
+        """
         interface = self.config.ptp_interface
         if interface is None:
             return
@@ -342,17 +351,29 @@ class Daemon:
         self.ptp_addresses = tuple(ipv4_addresses(interface, link_local=True))
         if self.systemd is None:
             return
-        wanted = self.ptp_addresses or None
+        wanted: tuple | None = None
+        if self.ptp_addresses:
+            wanted = (interface, self.ptp_addresses)
+        else:
+            mgmt = self.config.mgmt_interface
+            mgmt_addresses = tuple(ipv4_addresses(mgmt, link_local=True)) if mgmt and mgmt != interface else ()
+            if mgmt_addresses:
+                wanted = (mgmt, mgmt_addresses)
         if wanted == self.netaudio_for:
             return
         try:
             if wanted is None:
-                log.info("%s has no IPv4 address, so netaudio's daemon is stopped until it does", interface)
+                log.info("Neither %s nor the management interface has an IPv4 address, so netaudio's daemon is "
+                         "stopped until one does", interface)
                 self.systemd.stop(NETAUDIO_UNIT)
             else:
-                NETAUDIO_ENV.write_text(f"NETAUDIO_INTERFACE={interface}\n")
+                NETAUDIO_ENV.write_text(f"NETAUDIO_INTERFACE={wanted[0]}\n")
                 self.systemd.restart(NETAUDIO_UNIT)
-                log.info("Started netaudio's daemon on %s", interface)
+                if wanted[0] == interface:
+                    log.info("Started netaudio's daemon on %s", interface)
+                else:
+                    log.info("%s has no IPv4 address, so netaudio's daemon is on %s until it does",
+                             interface, wanted[0])
         except (OSError, roles.ServiceError) as error:
             log.warning("Couldn't control netaudio's daemon: %s", error)
             return
@@ -364,6 +385,13 @@ class Daemon:
         if self.systemd is None:
             return True
         return self.netaudio_for not in (None, ("unknown",))
+
+    @property
+    def netaudio_interface(self) -> str | None:
+        """The interface netaudio's daemon is running on, if Virgil runs it."""
+        if self.systemd is None or self.netaudio_for in (None, ("unknown",)):
+            return None
+        return self.netaudio_for[0]
 
     async def watch_alerts(self) -> None:
         while True:
@@ -735,6 +763,7 @@ class Daemon:
                 await self.discovery.stop()
                 self.discovery = None
             self.addresses = addresses
+            await self.bind_netaudio_ui()
             if addresses:
                 log.info("%s is at %s", interface, ", ".join(addresses))
                 self.discovery = discovery.Discovery(self.on_advert)
@@ -831,6 +860,7 @@ class Daemon:
                     "running": self.netaudio_running,
                     "reachable": self.consoles.reachable,
                     "ui_port": NETAUDIO_PROXY_PORT if self.systemd is not None else None,
+                    "interface": self.netaudio_interface,
                 },
                 "dante_devices": self.consoles.summaries() if self.consoles else [],
                 "device_settings": {
@@ -895,21 +925,47 @@ class Daemon:
         if self.discovery is not None:
             asyncio.ensure_future(self._update_advert())
 
-    def update_dhcp_names(self, systemd: roles.Systemd | None = None, path: Path = DHCP_NAMES_REQUEST) -> None:
-        """Ask virgil-root to name each chosen interface's DHCP lease, if the interfaces have changed."""
+    def update_dhcp_names(self, systemd: roles.Systemd | None = None, path: Path = DHCP_NAMES_REQUEST,
+                          add: list[str] | None = None, force: bool = False) -> None:
+        """Ask virgil-root to set up each chosen interface's DHCP lease, if the interfaces have changed.
+
+        add names interfaces that ifupdown doesn't configure yet, which
+        someone has agreed virgil-root should set up to come up.
+        """
         if not self.manage_timing:
             return
         wanted = (self.config.ptp_interface, self.config.mgmt_interface)
-        if wanted == self.dhcp_names_for:
+        if wanted == self.dhcp_names_for and not add and not force:
             return
+        request = {"ptp_interface": wanted[0], "mgmt_interface": wanted[1], "add": list(add or [])}
         try:
-            atomic_write(path, json.dumps({"ptp_interface": wanted[0], "mgmt_interface": wanted[1]}).encode(),
-                         mode=0o640)
+            atomic_write(path, json.dumps(request).encode(), mode=0o640)
             (systemd or roles.Systemd()).start(DHCP_NAMES_UNIT, block=False)
         except (OSError, roles.ServiceError) as error:
             log.warning("Couldn't update the DHCP lease names: %s", error)
             return
         self.dhcp_names_for = wanted
+
+    async def bind_netaudio_ui(self) -> None:
+        """Listen for netaudio's UI on the management addresses and loopback only, following them as they change.
+
+        Loopback stays so an SSH tunnel still works; the PTP interface never
+        gets it, since the consoles' network has no business with it.
+        """
+        if self.netaudio_ui is None:
+            return
+        wanted = {"127.0.0.1", *self.addresses}
+        for address in list(self.netaudio_ui_sites):
+            if address not in wanted:
+                await self.netaudio_ui_sites.pop(address).stop()
+        for address in sorted(wanted - set(self.netaudio_ui_sites)):
+            site = web.TCPSite(self.netaudio_ui, address, NETAUDIO_PROXY_PORT, ssl_context=self.netaudio_ui_context)
+            try:
+                await site.start()
+            except OSError as error:
+                log.warning("Couldn't serve netaudio's UI on %s:%d: %s", address, NETAUDIO_PROXY_PORT, error)
+                continue
+            self.netaudio_ui_sites[address] = site
 
     def request_restart(self, delay: float = 1.0) -> None:
         """Restart virgild shortly, once the current reply has gone out.
@@ -1050,10 +1106,8 @@ async def start_extras(daemon: Daemon, host: str, public: web.AppRunner) -> list
         netaudio = web.AppRunner(netaudio_app(logged_in), access_log=None)
         await netaudio.setup()
         runners.append(netaudio)
-        try:
-            await web.TCPSite(netaudio, host, NETAUDIO_PROXY_PORT, ssl_context=context).start()
-        except OSError as error:
-            log.warning("Couldn't serve netaudio's UI on port %d: %s", NETAUDIO_PROXY_PORT, error)
+        daemon.netaudio_ui, daemon.netaudio_ui_context = netaudio, context
+        await daemon.bind_netaudio_ui()
     return runners
 
 

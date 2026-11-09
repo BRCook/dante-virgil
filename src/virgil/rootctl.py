@@ -187,6 +187,11 @@ def dhcpnames(request_path: Path = DHCP_NAMES_REQUEST, interfaces_file: Path = I
         data = json.loads(read_small_file(request_path, 4096))
     except FileNotFoundError:
         data = {}
+    adding = data.get("add") or []
+    if not isinstance(adding, list) or not all(isinstance(a, str) and re.match(r"^[A-Za-z0-9_.:-]{1,15}$", a)
+                                                for a in adding):
+        print("virgil-root: add must be a list of interface names", file=sys.stderr)
+        return 1
     wanted = {}
     for key in ("ptp_interface", "mgmt_interface"):
         value = data.get(key)
@@ -197,7 +202,13 @@ def dhcpnames(request_path: Path = DHCP_NAMES_REQUEST, interfaces_file: Path = I
     names = names_module.wanted_names(hostname or socket.gethostname(), wanted["ptp_interface"],
                                       wanted["mgmt_interface"])
     old = interfaces_file.read_text()
-    new, notes = names_module.apply(old, names)
+    new = old
+    configured = names_module.configured_interfaces(names_module.interfaces_texts(interfaces_file) or [old])
+    added = [a for a in adding if a not in configured and a in (wanted["ptp_interface"], wanted["mgmt_interface"])]
+    for interface in added:
+        new = names_module.add_stanza(new, interface)
+        print(f"Added a DHCP stanza for {interface}, so it comes up")
+    new, notes = names_module.apply(new, names)
     for note in notes:
         print(note)
     if new != old:
@@ -215,6 +226,12 @@ def dhcpnames(request_path: Path = DHCP_NAMES_REQUEST, interfaces_file: Path = I
         print("Updated dhcpcd.conf: the PTP interface won't be given a default route from now on")
     if wanted["ptp_interface"] and wanted["ptp_interface"] != wanted["mgmt_interface"]:
         drop_ptp_default_route(wanted["ptp_interface"], run)
+    for interface in added:
+        # Bring it up now. A down interface carries nothing yet, so there's nothing to interrupt.
+        try:
+            run(["ifup", interface], timeout=90)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            print(f"Couldn't bring {interface} up: {error}", file=sys.stderr)
     return 0
 
 
