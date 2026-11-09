@@ -14,6 +14,7 @@ import collections
 import json
 import logging
 import time
+from datetime import datetime
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,10 @@ import aiohttp
 log = logging.getLogger("virgild.alerts")
 
 EVENTS_PATH = Path("/var/lib/dante-virgil/events.jsonl")
+# An issue netaudio hasn't seen for this long isn't current, whatever its state says:
+# netaudio keeps an issue open until it sees it clear, which it never will if the
+# device or flow has gone away.
+FRESH_FOR = 120.0
 MAX_EVENTS_BYTES = 1024 * 1024
 RECENT = 50
 
@@ -48,6 +53,7 @@ class Alert:
     title: str
     summary: str
     since: str  # when netaudio first saw it
+    last_seen: float | None = None  # when netaudio last saw it, as Unix time
 
     def summary_dict(self) -> dict[str, Any]:
         return {"id": self.id, "kind": self.kind, "severity": self.severity, "label": self.label,
@@ -56,6 +62,15 @@ class Alert:
     def line(self) -> str:
         detail = f" ({self.summary})" if self.summary else ""
         return f"{self.label}: {self.device}: {self.title}{detail}"
+
+
+def _unix(value: Any) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def parse_issues(data: Any) -> list[Alert]:
@@ -80,6 +95,7 @@ def parse_issues(data: Any) -> list[Alert]:
             title=title,
             summary=str(issue.get("summary") or ""),
             since=str(issue.get("first_seen") or ""),
+            last_seen=_unix(issue.get("last_seen")),
         ))
     return alerts
 
@@ -111,7 +127,11 @@ class Alerts:
         self.supported = True
         local = self._local()
         now = self._clock()
-        current = {a.id: a for a in parse_issues(data) if a.server_name in local and a.severity != "info"}
+        current = {
+            a.id: a for a in parse_issues(data)
+            if a.server_name in local and a.severity != "info"
+            and (a.last_seen is None or now - a.last_seen <= FRESH_FOR)
+        }
         for alert_id, alert in current.items():
             if alert_id not in self.open:
                 self._opened_at[alert_id] = now
@@ -122,8 +142,13 @@ class Alerts:
             if alert_id not in current:
                 alert = self.open[alert_id]
                 lasted = now - self._opened_at.pop(alert_id, now)
-                log.info("Resolved after %.0f s: %s", lasted, alert.line())
-                self._record("resolved", alert, now, lasted)
+                if alert_id in {a.id for a in parse_issues(data)}:
+                    # netaudio still calls it open, but hasn't seen it for a while.
+                    log.info("Went quiet after %.0f s: %s", lasted, alert.line())
+                    self._record("went quiet", alert, now, lasted)
+                else:
+                    log.info("Resolved after %.0f s: %s", lasted, alert.line())
+                    self._record("resolved", alert, now, lasted)
         self.open = current
 
     def _record(self, what: str, alert: Alert, now: float, lasted: float | None = None) -> None:

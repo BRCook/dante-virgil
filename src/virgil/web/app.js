@@ -542,12 +542,41 @@ function collectAlerts() {
   return all;
 }
 
+// One bar per console, however many alerts it has, and at most a few bars:
+// the banner has to stay a glance, not a page.
+const MOST_BARS = 3;
+// The cause before its effects: a lost lock is why audio mutes.
+const ORDER = ["LOCK LOST", "AUDIO MUTED", "LATE PACKETS", "RECEIVE PROBLEM", "SUBSCRIPTION FAILED"];
+const rank = (label) => (ORDER.includes(label) ? ORDER.indexOf(label) : ORDER.length);
+
 function renderAlerts(alerts) {
-  replace("alerts", alerts.map((a) => el("div", { class: a.severity === "error" ? "alert" : "alert caution-alert" },
-    el("strong", { class: "alert-label" }, a.label),
-    el("span", { class: "alert-text" },
-      `${a.device}${a.virgil ? ` (on ${a.virgil})` : ""}: ${a.title}${a.summary ? `. ${a.summary}` : ""}`),
-    a.since ? el("span", { class: "alert-since" }, `since ${clockTime(a.since)}`) : null)));
+  const byDevice = new Map();
+  for (const a of alerts) {
+    const key = `${a.virgil || ""}/${a.device}`;
+    if (!byDevice.has(key)) byDevice.set(key, []);
+    byDevice.get(key).push(a);
+  }
+  const groups = [...byDevice.values()].sort((x, y) =>
+    (y.some((a) => a.severity === "error") - x.some((a) => a.severity === "error")));
+  const bars = groups.slice(0, MOST_BARS).map((group) => {
+    const first = group[0];
+    const severe = group.some((a) => a.severity === "error");
+    const labels = [...new Set(group.map((a) => a.label))].sort((x, y) => rank(x) - rank(y)).join(", ");
+    const earliest = group.map((a) => a.since).filter(Boolean).sort()[0];
+    const detail = group.length === 1
+      ? `${first.title}${first.summary ? `. ${first.summary}` : ""}`
+      : group.map((a) => a.title).join("; ");
+    return el("div", { class: severe ? "alert" : "alert caution-alert" },
+      el("strong", { class: "alert-label" }, labels),
+      el("span", { class: "alert-text" }, `${first.device}${first.virgil ? ` (on ${first.virgil})` : ""}: ${detail}`),
+      earliest ? el("span", { class: "alert-since" }, `since ${clockTime(earliest)}`) : null);
+  });
+  const hidden = groups.slice(MOST_BARS).reduce((n, group) => n + group.length, 0);
+  if (hidden) {
+    bars.push(el("p", { class: "alert-more" }, el("a", { href: "#events-heading" },
+      `and ${hidden} more ${hidden === 1 ? "alert" : "alerts"}: see Events`)));
+  }
+  replace("alerts", bars);
 }
 
 function renderEvents() {
@@ -561,7 +590,7 @@ function renderEvents() {
   replace("events", el("ul", { class: "plain events" }, events.map((e) => el("li", {},
     el("span", { class: "event-time" }, clockTime(e.t)), " ",
     el("strong", { class: e.event === "opened" && e.severity === "error" ? "stale" : "" },
-      e.event === "opened" ? e.label : `${e.label} resolved`),
+      e.event === "opened" ? e.label : `${e.label} ${e.event}`),
     ` ${e.device}: ${e.title}`,
     e.lasted_s !== undefined ? el("span", { class: "hint" }, ` (lasted ${Math.round(e.lasted_s)} s)`) : null))));
 }
