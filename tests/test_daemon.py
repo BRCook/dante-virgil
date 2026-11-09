@@ -897,7 +897,8 @@ def test_graphs_sample_every_virgil_and_console(tmp_path):
     a.election.resume(State.LEADER, None, 0.0)
     a.clock = {"source": "PHC0", "system_offset_ns": 44, "phc_trim_ppm": -5.35}
     device = {"name": "WingRack", "follows_this_virgil": True, "clock_offset_ppb": -849,
-              "latency_ns": 2_708_333.3, "latency_setting_ns": 5_000_000, "late_packets": 100}
+              "latency_ns": 2_708_333.3, "latency_average_ns": 1_400_000.0, "latency_setting_ns": 5_000_000,
+              "late_packets": 100}
     beat = Heartbeat(configs["B"].id, "Virgil B", "0.1.0", State.FOLLOWER, 1, configs["A"].id, False, None,
                      dante_devices=(device,), clock={"system_offset_ns": 54, "phc_offset_ns": 2220})
     a.peers[configs["B"].id] = Peer(beat, time.monotonic())
@@ -907,7 +908,9 @@ def test_graphs_sample_every_virgil_and_console(tmp_path):
     a.sample_graphs(1002.0)
     keys = set(a.graphs.series)
     assert {"trim/Virgil A", "offset/Virgil B", "phc/Virgil B", "console/Virgil B/WingRack",
-            "latency/Virgil B/WingRack", "limit/Virgil B/WingRack", "late/Virgil B/WingRack"} <= keys
+            "latency/Virgil B/WingRack", "average/Virgil B/WingRack", "limit/Virgil B/WingRack",
+            "late/Virgil B/WingRack"} <= keys
+    assert a.graphs.series["average/Virgil B/WingRack"].label == "WingRack (Virgil B) average"
     assert list(a.graphs.series["late/Virgil B/WingRack"].points) == [(1002.0, 15.0)]  # 30 late in 2 s
     assert a.graphs.series["console/Virgil B/WingRack"].points[-1][1] == -0.849
 

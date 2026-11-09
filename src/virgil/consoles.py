@@ -71,6 +71,7 @@ class DanteDevice:
     # Receive figures, from netaudio's diagnostics: the worst flow's latency, the late
     # packets counted across all flows, and the latency the device is set to.
     latency_ns: float | None = None
+    latency_average_ns: float | None = None
     late_packets: int | None = None
     latency_setting_ns: int | None = None
     follows_this_virgil: bool = False
@@ -89,6 +90,7 @@ class DanteDevice:
             "grandmaster": self.grandmaster,
             "servo": self.servo,
             "latency_ns": self.latency_ns,
+            "latency_average_ns": self.latency_average_ns,
             "late_packets": self.late_packets,
             "latency_setting_ns": self.latency_setting_ns,
             "warnings": list(self.warnings),
@@ -143,11 +145,11 @@ def _bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def receive_figures(diagnostics: Any) -> tuple[float | None, int | None]:
-    """The worst current latency across a device's receive flows (ns), and their late packets in total."""
+def receive_figures(diagnostics: Any) -> tuple[float | None, float | None, int | None]:
+    """A device's receive flows: the worst and the average current latency (ns), and late packets in total."""
     receiver = diagnostics.get("receiver") if isinstance(diagnostics, dict) else None
     paths = receiver.get("paths") if isinstance(receiver, dict) else None
-    worst, late, seen = None, 0, False
+    worst, late, seen, latencies = None, 0, False, []
     for path in paths if isinstance(paths, list) else []:
         if not isinstance(path, dict):
             continue
@@ -156,12 +158,14 @@ def receive_figures(diagnostics: Any) -> tuple[float | None, int | None]:
         value = current.get("value")
         if latency.get("fresh") and isinstance(value, (int, float)) and value > 0:
             worst = value if worst is None else max(worst, value)
+            latencies.append(value)
         packets = path.get("late_packets") if isinstance(path.get("late_packets"), dict) else {}
         count = (packets.get("current") or {}).get("value") if isinstance(packets.get("current"), dict) else None
         if isinstance(count, (int, float)):
             late += int(count)
             seen = True
-    return worst, late if seen else None
+    average = sum(latencies) / len(latencies) if latencies else None
+    return worst, average, late if seen else None
 
 
 def parse_devices(data: Any) -> list[DanteDevice]:
@@ -300,7 +304,8 @@ class Consoles:
                 except (aiohttp.ClientError, TimeoutError, OSError, ValueError):
                     self.diagnostics.pop(device.address, None)
         for device in current.values():
-            device.latency_ns, device.late_packets = receive_figures(self.diagnostics.get(device.address))
+            device.latency_ns, device.latency_average_ns, device.late_packets = receive_figures(
+                self.diagnostics.get(device.address))
         for address in list(self.diagnostics):
             if address not in current:
                 del self.diagnostics[address]
