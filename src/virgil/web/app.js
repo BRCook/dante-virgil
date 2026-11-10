@@ -586,8 +586,12 @@ function renderEvents() {
     return replace("events", el("p", { class: "hint" }, "This Virgil's netaudio doesn't report issues; alerts need netaudio 2.0.0 or later."));
   }
   const events = alerts.recent || [];
-  if (!events.length) return replace("events", el("p", { class: "hint" }, "No alerts since Virgil started."));
-  replace("events", el("ul", { class: "plain events" }, events.map((e) => el("li", {},
+  const recovering = (alerts.recovering || []).map((a) => el("p", { class: "hint" },
+    `${a.device} recovered from "${a.title}"; netaudio is still confirming it. The console reports it's synchronised.`));
+  if (!events.length) {
+    return replace("events", ...recovering, el("p", { class: "hint" }, "No alerts since Virgil started."));
+  }
+  replace("events", ...recovering, el("ul", { class: "plain events" }, events.map((e) => el("li", {},
     el("span", { class: "event-time" }, clockTime(e.t)), " ",
     el("strong", { class: e.event === "opened" && e.severity === "error" ? "stale" : "" },
       e.event === "opened" ? e.label : `${e.label} ${e.event}`),
@@ -641,7 +645,7 @@ function renderRecording() {
       } }, "Start recording"),
       el("label", { class: "check" }, group, "Record the other Virgils in the group too")));
     parts.push(el("p", { class: "hint" }, can
-      ? "Records status every 2 seconds, the graphs, each console's diagnostics, the timing services' logs and your notes. Stopping downloads it all as one file."
+      ? "Records status every 2 seconds, the graphs, each console's diagnostics, the timing services' logs and your notes."
       : "Log in to record."));
   } else if (!rec.here) {
     parts.push(el("p", {}, el("strong", {}, `Recording since ${clockTime(rec.since)}`),

@@ -506,6 +506,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     # Alerts come first: a lost lock or a mute matters more than anything else here.
     for alert in (status.get("alerts") or {}).get("open") or []:
         print(f"  ALERT: {_alert_line(alert)}")
+    for alert in (status.get("alerts") or {}).get("recovering") or []:
+        print(f"  Recovering: {alert['device']}: {alert['title']} (netaudio is still confirming it; "
+              "the console reports it's synchronised)")
     for member in (status.get("group") or {}).get("members", []):
         for alert in member.get("alerts") or []:
             print(f"  ALERT from {member['name']}: {_alert_line(alert)}")
