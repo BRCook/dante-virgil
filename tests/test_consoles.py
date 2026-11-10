@@ -305,11 +305,17 @@ def test_latency_history_from_points():
     """The shape of netaudio's ?history=points: [monotonic time, latency] for each flow."""
     from virgil.consoles import latency_history
 
-    def flow(points):
-        return {"latency": {"fresh": True, "points": points}}
+    # netaudio started 45 s after boot, say: its times count from then, not from boot.
+    # The current sample ties its clock to the wall clock: monotonic 101.0 was 2026-11-08T21:28:40Z.
+    anchor = {"observed_at": "2026-11-08T21:28:40Z", "observed_monotonic": 101.0, "value": 5_600_000}
+    wall = 1794173320.0  # 2026-11-08T21:28:40Z
+
+    def flow(points, current=anchor):
+        return {"latency": {"fresh": True, "current": current, "points": points}}
 
     diagnostics = {"receiver": {"paths": [flow([[100.0, 2_000_000], [101.0, 5_600_000]]),
                                           flow([[100.0, 1_000_000], [101.0, 0]]),  # not receiving at 101
+                                          flow([[100.0, 9_000_000]], current={}),  # no way to place it
                                           {"latency": {"fresh": True}}]}}  # a flow with no points at all
-    assert latency_history(diagnostics) == [(100.0, 2_000_000, 1_500_000), (101.0, 5_600_000, 5_600_000)]
+    assert latency_history(diagnostics) == [(wall - 1, 2_000_000, 1_500_000), (wall, 5_600_000, 5_600_000)]
     assert latency_history({}) == []

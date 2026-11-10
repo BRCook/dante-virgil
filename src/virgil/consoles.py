@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from datetime import datetime
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -168,21 +169,38 @@ def receive_figures(diagnostics: Any) -> tuple[float | None, float | None, int |
     return worst, average, late if seen else None
 
 
-def latency_history(diagnostics: Any) -> list[tuple[float, float, float]]:
-    """Each moment in a device's latency history: (netaudio's monotonic time, worst, average) across its flows.
+def _wall_clock(value: Any) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
-    netaudio observes all of a device's flows together, so their points share
-    times. Flows reading zero aren't receiving, and are left out of the average.
+
+def latency_history(diagnostics: Any) -> list[tuple[float, float, float]]:
+    """Each moment in a device's latency history: (Unix time, worst, average) across its flows.
+
+    netaudio times its history in seconds since its own daemon started, not by
+    any clock Virgil can read. Each flow's current sample carries both that
+    time and the wall-clock time of the same moment, which places every point
+    in its history exactly. netaudio observes a device's flows together, so
+    their points share times. Flows reading zero aren't receiving, and are
+    left out of the average.
     """
     receiver = diagnostics.get("receiver") if isinstance(diagnostics, dict) else None
     paths = receiver.get("paths") if isinstance(receiver, dict) else None
     moments: dict[float, list[float]] = {}
     for path in paths if isinstance(paths, list) else []:
         latency = path.get("latency") if isinstance(path, dict) and isinstance(path.get("latency"), dict) else {}
+        current = latency.get("current") if isinstance(latency.get("current"), dict) else {}
+        wall, monotonic = _wall_clock(current.get("observed_at")), current.get("observed_monotonic")
+        if wall is None or not isinstance(monotonic, (int, float)):
+            continue  # nothing to place this flow's history by
         for point in latency.get("points") or []:
             if (isinstance(point, list) and len(point) == 2 and all(isinstance(v, (int, float)) for v in point)
                     and point[1] > 0):
-                moments.setdefault(round(point[0], 1), []).append(float(point[1]))
+                moments.setdefault(round(wall + (point[0] - monotonic), 1), []).append(float(point[1]))
     return [(t, max(values), sum(values) / len(values)) for t, values in sorted(moments.items())]
 
 
@@ -268,7 +286,7 @@ class Consoles:
     # This Virgil's own grandmaster identity, and the other members' (identity to name).
     own_identity: Callable[[], str | None] = lambda: None
     member_identities: Callable[[], dict[str, str]] = dict
-    # Given each device's new latency history, (monotonic time, worst, average), for the graphs.
+    # Given each device's new latency history, (Unix time, worst, average), for the graphs.
     on_latency_history: Callable[[DanteDevice, list[tuple[float, float, float]]], None] = lambda device, points: None
     _history_seen: dict[str, float] = field(default_factory=dict)
     # Counts successful polls, so the graphs record each reading once.

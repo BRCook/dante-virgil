@@ -385,10 +385,9 @@ class Daemon:
         """netaudio's own latency history for a console, at its own resolution and times."""
         label, key = self._console_label(device.name)
         self._has_history[key] = True
-        offset = time.time() - time.monotonic()  # netaudio's times are on the same monotonic clock
-        for t, worst, average in points:
-            self.graphs.add(f"latency/{key}", "latency", f"{label} worst", "ns", t + offset, worst, WORST)
-            self.graphs.add(f"average/{key}", "latency", f"{label} average", "ns", t + offset, average)
+        for t, worst, average in points:  # already placed on the wall clock (see consoles.latency_history)
+            self.graphs.add(f"latency/{key}", "latency", f"{label} worst", "ns", t, worst, WORST)
+            self.graphs.add(f"average/{key}", "latency", f"{label} average", "ns", t, average)
 
     async def watch_graphs(self, pinger: Pinger | None = None) -> None:
         if pinger is not None:
