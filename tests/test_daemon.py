@@ -921,9 +921,9 @@ def test_graphs_record_this_virgils_own_figures(tmp_path):
 
     # netaudio's own history takes over the latency lines, at its times.
     device = DanteDevice("WingRack.local.", "WingRack", "192.168.20.246", None, None, True, False, -849)
-    monotonic_now = time.monotonic()
-    b.on_latency_history(device, [(monotonic_now - 3, 2_000_000.0, 1_500_000.0),
-                                  (monotonic_now - 2, 5_600_000.0, 5_100_000.0)])
+    wall_now = time.time()
+    b.on_latency_history(device, [(wall_now - 3, 2_000_000.0, 1_500_000.0),
+                                  (wall_now - 2, 5_600_000.0, 5_100_000.0)])
     points = list(b.graphs.series["latency/Virgil B/WingRack"].points)
     assert points[-1][1] == 5_600_000.0 and abs(points[-1][0] - (time.time() - 2)) < 0.5
     recent = lambda: [p for p in b.graphs.series["latency/Virgil B/WingRack"].points if p[0] > time.time() - 60]
