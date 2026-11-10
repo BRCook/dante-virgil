@@ -156,6 +156,9 @@ function collectWarnings() {
   const ptp = status.ptp || {};
   for (const w of ptp.warnings || []) warnings.push({ text: w, fault: true });
   for (const d of status.dante_devices || []) for (const w of d.warnings || []) warnings.push({ text: w });
+  const cert = status.web_certificate;
+  if (cert && cert.days_left <= 0) warnings.push({ text: "The web certificate has expired, so browsers will warn", fault: true });
+  else if (cert && cert.days_left < 30) warnings.push({ text: `The web certificate expires in ${Math.floor(cert.days_left)} days` });
   const auto = status.auto_trim || {};
   if (auto.paused) warnings.push({ text: `Auto-trim paused: ${auto.paused}. It resumes within 10 minutes.` });
   const na = status.netaudio;
@@ -323,6 +326,7 @@ function renderThisVirgil() {
     }
   }
   parts.push(...interfacesSection(can));
+  parts.push(...certificateSection());
   replace("this-virgil", parts);
 }
 
@@ -364,6 +368,24 @@ function devicesTable(devices, settings, can) {
   });
   return el("div", { class: "table-wrap" }, el("table", { class: "devices" }, el("thead", {}, header),
     el("tbody", {}, rows)));
+}
+
+// The web certificate: the person's own, for the ports people browse to, if they've imported one.
+function certificateSection() {
+  const cert = status.web_certificate;
+  const parts = [el("h3", {}, "Web certificate")];
+  if (!cert) {
+    parts.push(el("p", { class: "hint" }, "Virgil's own certificate, which browsers warn about. To use one from your CA, or a public one, run this on the Virgil:"),
+      el("p", { class: "command" }, el("code", {}, "sudo virgilctl tls import-web --cert fullchain.pem --key privkey.pem")));
+    return parts;
+  }
+  const until = new Date(cert.not_after * 1000).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+  const names = cert.names.map((n) => n.replace(/^(IP Address|DNS):/, "")).join(", ");
+  parts.push(el("div", { class: "facts" },
+    el("p", {}, `${cert.subject}, issued by ${cert.issuer}${cert.self_signed ? " (self-signed)" : ""}`),
+    el("p", { class: cert.days_left < 30 ? "caution" : "" }, `Valid until ${until} (${Math.max(0, Math.floor(cert.days_left))} days)`),
+    el("p", {}, `Covers ${names || "no names at all"}`)));
+  return parts;
 }
 
 // Interfaces: fetched when the page opens and after a change, not on every refresh.

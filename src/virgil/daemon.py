@@ -157,6 +157,8 @@ class Daemon:
     # The members this Virgil started recording, as the one coordinating a group recording.
     recording_members: list = field(default_factory=list, init=False)
     recording_here: bool = field(default=False, init=False)
+    # The imported web certificate's details, if there is one.
+    web_certificate: dict | None = field(default=None, init=False)
     _graphed: dict = field(default_factory=lambda: {"clock": None, "polls": None}, init=False)
     # Members' graphs, fetched for the page: member ID to (when, series).
     _member_graphs: dict = field(default_factory=dict, init=False)
@@ -1151,6 +1153,10 @@ class Daemon:
                 "device_settings": {
                     mac: {"native_ptpv2": d.native_ptpv2, "aes67": d.aes67} for mac, d in self.config.devices.items()
                 },
+                "web_certificate": None if self.web_certificate is None else {
+                    **self.web_certificate,
+                    "days_left": round((self.web_certificate["not_after"] - time.time()) / 86400, 1),
+                },
                 "recording": None if self.recording is None else {
                     **self.recording.state(),
                     # Whether this Virgil is coordinating it; a member's page says where to stop it.
@@ -1384,7 +1390,16 @@ def dhcp_lease_names() -> dict[str, str]:
 async def start_extras(daemon: Daemon, host: str, public: web.AppRunner) -> list[web.AppRunner]:
     """The web UI on 443, a redirect from HTTP on 80, and netaudio's UI. None of them is essential."""
     runners: list[web.AppRunner] = []
-    context = tls.public_server_context(daemon.identity)
+    # The ports people browse to use the web certificate, if one was imported (see tls.web_identity).
+    context = tls.web_server_context(daemon.identity, daemon.identity.cert_path.parent)
+    web_identity = tls.web_identity(daemon.identity.cert_path.parent)
+    if web_identity is not None:
+        try:
+            daemon.web_certificate = tls.inspect(web_identity.cert_path)
+            log.info("Using the web certificate for %s, issued by %s", daemon.web_certificate["subject"],
+                     daemon.web_certificate["issuer"])
+        except tls.TlsError as error:
+            log.warning("Couldn't read the web certificate: %s", error)
     try:
         await web.TCPSite(public, host, HTTPS_PORT, ssl_context=context).start()
     except OSError as error:

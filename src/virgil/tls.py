@@ -125,3 +125,110 @@ def group_client_context(identity: Identity, member_certs: list[str]) -> ssl.SSL
     for cert in member_certs:
         context.load_verify_locations(cadata=cert)
     return context
+
+
+# The web certificate: an optional certificate of the person's own, from their
+# CA or a public one, for the ports people browse to (443, and 8742 for
+# netaudio). The identity certificate above stays on the group port and on
+# 8740, where members, invites and virgilctl pin it, so importing one never
+# changes who a Virgil is to its group.
+
+WEB_DIR = "web"
+EXPIRY_WARNING_DAYS = 30
+
+
+def web_identity(directory: Path = TLS_DIR) -> Identity | None:
+    folder = directory / WEB_DIR
+    identity = Identity(folder / "cert.pem", folder / "key.pem")
+    return identity if identity.cert_path.is_file() and identity.key_path.is_file() else None
+
+
+def check_pair(cert_path: Path, key_path: Path) -> None:
+    """That the key belongs to the certificate, and both can be loaded."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    try:
+        context.load_cert_chain(cert_path, key_path, password=lambda: b"")
+    except ssl.SSLError as error:
+        reason = str(error)
+        if "KEY_VALUES_MISMATCH" in reason or "key values mismatch" in reason.lower():
+            raise TlsError("the key doesn't belong to that certificate") from error
+        if "bad decrypt" in reason.lower() or "BAD_DECRYPT" in reason:
+            raise TlsError("the key is protected by a passphrase; give Virgil an unencrypted key") from error
+        raise TlsError(f"couldn't load the certificate and key: {reason}") from error
+    except OSError as error:
+        raise TlsError(f"couldn't read the certificate or key: {error}") from error
+
+
+def _name(fields) -> str | None:
+    """A certificate subject or issuer's most telling name: its common name, else its organisation."""
+    values = {key: value for rdn in fields or () for key, value in rdn}
+    return values.get("commonName") or values.get("organizationName")
+
+
+def inspect(cert_path: Path) -> dict:
+    """Who a certificate is for, who issued it, when it's valid, and which names it covers."""
+    try:
+        decoded = ssl._ssl._test_decode_cert(str(cert_path))  # the first certificate in the file
+    except (ssl.SSLError, OSError) as error:
+        raise TlsError(f"couldn't read the certificate: {error}") from error
+    names = [f"{kind}:{value}" for kind, value in decoded.get("subjectAltName", ())]
+    subject, issuer = _name(decoded.get("subject")), _name(decoded.get("issuer"))
+    return {
+        "subject": subject,
+        "issuer": issuer,
+        "self_signed": decoded.get("subject") == decoded.get("issuer"),
+        "not_before": ssl.cert_time_to_seconds(decoded["notBefore"]),
+        "not_after": ssl.cert_time_to_seconds(decoded["notAfter"]),
+        "names": names,
+    }
+
+
+def covers(info: dict, name: str) -> bool:
+    """Whether a certificate is valid for a host name or address, as a browser judges it."""
+    for entry in info["names"]:
+        kind, _, value = entry.partition(":")
+        if kind == "IP Address" and value.rstrip() == name:
+            return True
+        if kind == "DNS":
+            value = value.lower()
+            if value == name.lower():
+                return True
+            if value.startswith("*.") and "." in name and name.lower().split(".", 1)[1] == value[2:]:
+                return True
+    return False
+
+
+def install_web(cert_path: Path, key_path: Path, directory: Path = TLS_DIR, owner: str | None = None) -> Identity:
+    """Copy a web certificate and key into place, the key readable only by virgild."""
+    import os
+    import pwd
+    import shutil
+
+    folder = directory / WEB_DIR
+    folder.mkdir(mode=0o755, exist_ok=True)
+    identity = Identity(folder / "cert.pem", folder / "key.pem")
+    for source, target, mode in ((cert_path, identity.cert_path, 0o644), (key_path, identity.key_path, 0o600)):
+        temporary = target.with_suffix(".new")
+        shutil.copyfile(source, temporary)
+        os.chmod(temporary, mode)
+        if owner is not None and target is identity.key_path:
+            user = pwd.getpwnam(owner)
+            os.chown(temporary, user.pw_uid, user.pw_gid)
+        os.replace(temporary, target)
+    return identity
+
+
+def remove_web(directory: Path = TLS_DIR) -> bool:
+    folder = directory / WEB_DIR
+    removed = False
+    for name in ("cert.pem", "key.pem"):
+        path = folder / name
+        if path.exists():
+            path.unlink()
+            removed = True
+    return removed
+
+
+def web_server_context(identity: Identity, directory: Path = TLS_DIR) -> ssl.SSLContext:
+    """For the ports people browse to: the web certificate if there is one, else the identity certificate."""
+    return public_server_context(web_identity(directory) or identity)
