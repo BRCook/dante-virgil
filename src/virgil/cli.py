@@ -292,6 +292,119 @@ def cmd_role(args: argparse.Namespace) -> int:
 # tls
 
 
+def _certificate_lines(info: dict) -> list[str]:
+    from datetime import datetime
+
+    days = (info["not_after"] - time.time()) / 86400
+    names = ", ".join(n.replace("IP Address:", "").replace("DNS:", "") for n in info["names"]) or "none"
+    return [
+        f"  For: {info['subject']}",
+        f"  Issued by: {info['issuer']}" + (" (self-signed)" if info["self_signed"] else ""),
+        f"  Valid until: {datetime.fromtimestamp(info['not_after']):%Y-%m-%d %H:%M} ({days:.0f} days)",
+        f"  Names and addresses: {names}",
+    ]
+
+
+def cmd_tls_show(args: argparse.Namespace) -> int:
+    from virgil import tls as tls_module
+
+    identity = tls_module.default_identity(args.tls_dir)
+    if not identity.cert_path.exists():
+        raise CliError("there's no certificate yet. Create one with: sudo virgilctl tls init")
+    fp = tls_module.fingerprint(identity.cert_pem)
+    print("Identity certificate (the group, invites and virgilctl use this; port 8740):")
+    print(f"  Short code: {tls_module.short_code(fp)}")
+    print(f"  Fingerprint: {fp}")
+    web = tls_module.web_identity(args.tls_dir)
+    if web is None:
+        print("Web certificate: none. Browsers on ports 443 and 8742 get the identity certificate, and warn about it.")
+        print("  To use your own: sudo virgilctl tls import-web --cert fullchain.pem --key privkey.pem")
+        return 0
+    print("Web certificate (browsers on ports 443 and 8742):")
+    for line in _certificate_lines(tls_module.inspect(web.cert_path)):
+        print(line)
+    return 0
+
+
+def _own_names() -> list[str]:
+    """Names and addresses people might browse to this Virgil by."""
+    import socket
+
+    from virgil.interfaces import ipv4_addresses, list_interfaces
+
+    names = [socket.gethostname(), f"{socket.gethostname()}.local"]
+    try:
+        names += [socket.getfqdn()]
+        for interface in list_interfaces():
+            names += ipv4_addresses(interface.name)
+    except OSError:
+        pass
+    return [n for i, n in enumerate(names) if n and n not in names[:i]]
+
+
+def cmd_tls_import_web(args: argparse.Namespace) -> int:
+    from virgil import tls as tls_module
+
+    cert, key = Path(args.cert), Path(args.key)
+    try:
+        tls_module.check_pair(cert, key)
+        info = tls_module.inspect(cert)
+    except tls_module.TlsError as error:
+        raise CliError(str(error)) from error
+    now = time.time()
+    if info["not_before"] > now:
+        raise CliError("that certificate isn't valid yet")
+    if info["not_after"] <= now:
+        raise CliError("that certificate has expired")
+    print("Web certificate:")
+    for line in _certificate_lines(info):
+        print(line)
+    if (info["not_after"] - now) / 86400 < tls_module.EXPIRY_WARNING_DAYS:
+        print(f"Warning: it expires in under {tls_module.EXPIRY_WARNING_DAYS} days.")
+    if not info["names"]:
+        print("Warning: it has no subject alternative names, so browsers won't accept it for any address.")
+    else:
+        own = _own_names()
+        covered = [n for n in own if tls_module.covers(info, n)]
+        if covered:
+            print(f"It covers this Virgil as: {', '.join(covered)}")
+        else:
+            print(f"Warning: it doesn't cover any of this Virgil's names or addresses ({', '.join(own)}), "
+                  "so browsers will still warn unless you browse to a name it does cover.")
+    if info["self_signed"]:
+        print("Note: it's self-signed, so each browser has to trust it directly.")
+    if not confirm("Use it for ports 443 and 8742?", default=True, assume_yes=args.yes):
+        print("Not changed.")
+        return 0
+    tls_module.install_web(cert, key, args.tls_dir, owner=args.owner or None)
+    _restart_virgild()
+    print("Installed. Browse to https://<this Virgil>/ and the page should be trusted, if your machine trusts the issuer.")
+    return 0
+
+
+def cmd_tls_remove_web(args: argparse.Namespace) -> int:
+    from virgil import tls as tls_module
+
+    if tls_module.web_identity(args.tls_dir) is None:
+        print("There's no web certificate to remove.")
+        return 0
+    if not confirm("Go back to the identity certificate for ports 443 and 8742?", default=True, assume_yes=args.yes):
+        return 0
+    tls_module.remove_web(args.tls_dir)
+    _restart_virgild()
+    print("Removed. Browsers will warn about the identity certificate again.")
+    return 0
+
+
+def _restart_virgild() -> None:
+    """virgild reads its certificates when it starts. Restarting it doesn't touch the timing services."""
+    try:
+        subprocess.run(["systemctl", "restart", "dante-virgil.service"], check=True, capture_output=True, timeout=30)
+        print("Restarted virgild to use it.")
+    except (OSError, subprocess.SubprocessError):
+        print("Restart virgild to use it: sudo systemctl restart dante-virgil")
+
+
 def cmd_tls_init(args: argparse.Namespace) -> int:
     identity = tls.default_identity(args.tls_dir)
     if identity.cert_path.exists():
@@ -792,6 +905,18 @@ def build_parser() -> argparse.ArgumentParser:
     tls_parser = commands.add_parser("tls", help="this Virgil's TLS certificate")
     tls_commands = tls_parser.add_subparsers(dest="tls_command", required=True)
     tls_commands.add_parser("init", help="create the certificate, if there isn't one").set_defaults(func=cmd_tls_init)
+    tls_commands.add_parser("show", help="show the identity certificate, and any web certificate").set_defaults(
+        func=cmd_tls_show)
+    import_web = tls_commands.add_parser(
+        "import-web", help="use your own certificate (your CA's, or a public CA's) for the ports people browse to")
+    import_web.add_argument("--cert", required=True, help="the certificate, with any intermediates (a full chain)")
+    import_web.add_argument("--key", required=True, help="its private key, unencrypted")
+    import_web.add_argument("--yes", action="store_true", help="don't ask; for renewal hooks such as certbot's")
+    import_web.add_argument("--owner", default="dante-virgil", help=argparse.SUPPRESS)
+    import_web.set_defaults(func=cmd_tls_import_web)
+    remove_web = tls_commands.add_parser("remove-web", help="go back to the identity certificate for browsers")
+    remove_web.add_argument("--yes", action="store_true", help="don't ask")
+    remove_web.set_defaults(func=cmd_tls_remove_web)
 
     group = commands.add_parser("group", help="create, join or show the group")
     group_commands = group.add_subparsers(dest="group_command", required=True)
