@@ -511,3 +511,13 @@ def test_config_set_offers_a_missing_stanza(config_path, monkeypatch, capsys, tm
     assert _set(config_path, "mgmt_interface", "enp1s0", "--yes") == 0
     assert "isn't set up to come up" in capsys.readouterr().out
     assert written[-1]["add"] == ["enp1s0"] and started == ["dante-virgil-dhcpnames.service"]
+
+
+def test_status_notes_a_recovery_quietly(monkeypatch, capsys):
+    recovering = {**ALERT, "device": "WingRack", "summary": "Recovering; waiting for five seconds"}
+    status = {**STATUS, "alerts": {"supported": True, "open": [], "recovering": [recovering], "recent": []}}
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "Recovering: WingRack: Clock synchronization lost (netaudio is still confirming it" in out
+    assert "ALERT" not in out

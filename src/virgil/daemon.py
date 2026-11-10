@@ -602,7 +602,16 @@ class Daemon:
             def local_servers() -> set[str]:
                 return {d.server_name for d in self.consoles.devices.values()} if self.consoles else set()
 
-            self.alerts = Alerts(client.issues, local_servers, events_path=self.events_path)
+            def console_healthy(server_name: str) -> bool:
+                """The console's own word: following this Virgil, with its servo synchronised."""
+                for device in self.consoles.devices.values() if self.consoles else []:
+                    if device.server_name == server_name:
+                        return bool(device.follows_this_virgil) and device.servo in (None, "synchronized") \
+                            and not (device.ptpv2 is False and device.aes67 is not True)
+                return False
+
+            self.alerts = Alerts(client.issues, local_servers, events_path=self.events_path,
+                                 console_healthy=console_healthy)
         self.consoles = Consoles(client, local, lambda: self.config.devices,
                                  on_latency_history=self.on_latency_history,
                                  clock_identity=clock_identity, own_identity=lambda: self.ptp.own_identity,
@@ -1106,6 +1115,7 @@ class Daemon:
                 "alerts": None if self.alerts is None else {
                     "supported": self.alerts.supported,
                     "open": self.alerts.open_summaries(),
+                    "recovering": self.alerts.recovering_summaries(),
                     "recent": list(self.alerts.recent),
                 },
                 "dhcp_names": dhcp_lease_names(),

@@ -137,3 +137,71 @@ def test_an_alert_that_stops_being_seen_goes_quiet(tmp_path, caplog):
     assert alerts.open == {}
     assert "Went quiet after" in caplog.text
     assert [e["event"] for e in alerts.recent] == ["went quiet", "opened"]
+
+
+RECOVERING = "Recovering; waiting for five seconds of continuous healthy clock status."
+
+
+def healthy_watcher(tmp_path, feed, healthy):
+    now = [LAST_SEEN + 10]
+    alerts = Alerts(feed, lambda: {"WingCompact.local."}, events_path=tmp_path / "events.jsonl",
+                    clock=lambda: now[0], console_healthy=lambda server: healthy[0])
+    return alerts, now
+
+
+def test_netaudio_confirming_a_recovery_isnt_an_alert(tmp_path, caplog):
+    """The soak test: netaudio stuck "Recovering" while the console reported itself synchronised."""
+    feed, healthy = Feed(), [True]
+    alerts, now = healthy_watcher(tmp_path, feed, healthy)
+    caplog.set_level(logging.INFO)
+    feed.page = page(issue("clock_synchronization", summary=RECOVERING), issue("clock_muted", summary=RECOVERING))
+    asyncio.run(alerts.poll())
+    assert alerts.open_summaries() == []
+    assert [a["label"] for a in alerts.recovering_summaries()] == ["LOCK LOST", "AUDIO MUTED"]
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert [e["event"] for e in alerts.recent] == ["recovering", "recovering"]
+
+
+def test_but_only_if_the_console_agrees(tmp_path):
+    feed, healthy = Feed(), [False]
+    alerts, now = healthy_watcher(tmp_path, feed, healthy)
+    feed.page = page(issue("clock_synchronization", summary=RECOVERING))
+    asyncio.run(alerts.poll())
+    assert [a["label"] for a in alerts.open_summaries()] == ["LOCK LOST"]  # netaudio's word alone isn't enough
+    assert alerts.recovering_summaries() == []
+
+
+def test_a_lost_lock_that_recovers_then_slips_again(tmp_path, caplog):
+    feed, healthy = Feed(), [False]
+    alerts, now = healthy_watcher(tmp_path, feed, healthy)
+    caplog.set_level(logging.INFO)
+    feed.page = page(issue("clock_synchronization"))  # really lost
+    asyncio.run(alerts.poll())
+    assert len(alerts.open) == 1
+    healthy[0] = True
+    feed.page = page(issue("clock_synchronization", summary=RECOVERING))
+    asyncio.run(alerts.poll())
+    assert alerts.open == {} and len(alerts.recovering) == 1  # the banner goes; the record shows it recovering
+    healthy[0] = False  # the console slips again before netaudio has confirmed
+    asyncio.run(alerts.poll())
+    assert len(alerts.open) == 1 and alerts.recovering == {}
+    assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+
+def test_a_recovery_that_completes(tmp_path):
+    feed, healthy = Feed(), [True]
+    alerts, now = healthy_watcher(tmp_path, feed, healthy)
+    feed.page = page(issue("clock_synchronization", summary=RECOVERING))
+    asyncio.run(alerts.poll())
+    feed.page = page()  # netaudio has confirmed and closed it
+    asyncio.run(alerts.poll())
+    assert alerts.recovering == {} and alerts.open == {}
+    assert [e["event"] for e in alerts.recent] == ["resolved", "recovering"]
+
+
+def test_a_real_lock_loss_is_still_an_alert_whatever_the_console_says(tmp_path):
+    feed, healthy = Feed(), [True]
+    alerts, now = healthy_watcher(tmp_path, feed, healthy)
+    feed.page = page(issue("clock_synchronization"))  # not "Recovering"
+    asyncio.run(alerts.poll())
+    assert [a["label"] for a in alerts.open_summaries()] == ["LOCK LOST"]

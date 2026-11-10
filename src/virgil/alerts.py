@@ -55,6 +55,11 @@ class Alert:
     since: str  # when netaudio first saw it
     last_seen: float | None = None  # when netaudio last saw it, as Unix time
 
+    @property
+    def recovering(self) -> bool:
+        """netaudio says the problem has cleared and it's confirming that. Its only marker is the summary."""
+        return self.summary.lower().startswith("recovering")
+
     def summary_dict(self) -> dict[str, Any]:
         return {"id": self.id, "kind": self.kind, "severity": self.severity, "label": self.label,
                 "device": self.device, "title": self.title, "summary": self.summary, "since": self.since}
@@ -104,9 +109,14 @@ class Alerts:
     """Watches netaudio's issues for this Virgil's local devices."""
 
     def __init__(self, fetch: Callable, local_servers: Callable[[], set[str]],
-                 events_path: Path = EVENTS_PATH, clock: Callable[[], float] = time.time):
+                 events_path: Path = EVENTS_PATH, clock: Callable[[], float] = time.time,
+                 console_healthy: Callable[[str], bool] = lambda server_name: False):
         self._fetch = fetch
         self._local = local_servers
+        # Whether the console itself says its clock is fine: synchronised, and following this Virgil.
+        self._healthy = console_healthy
+        # Issues netaudio is still confirming the end of, while the console says it's fine.
+        self.recovering: dict[str, Alert] = {}
         self._events_path = events_path
         self._clock = clock
         self.open: dict[str, Alert] = {}
@@ -127,11 +137,28 @@ class Alerts:
         self.supported = True
         local = self._local()
         now = self._clock()
-        current = {
+        fresh = {
             a.id: a for a in parse_issues(data)
             if a.server_name in local and a.severity != "info"
             and (a.last_seen is None or now - a.last_seen <= FRESH_FOR)
         }
+        # Not an alert while netaudio is only confirming a recovery the console itself reports.
+        quiet = {i: a for i, a in fresh.items() if a.recovering and self._healthy(a.server_name)}
+        current = {i: a for i, a in fresh.items() if i not in quiet}
+        for alert_id, alert in quiet.items():
+            if alert_id not in self.recovering:
+                log.info("Recovering: %s: %s (the console reports it's synchronised)", alert.device, alert.title)
+                if alert_id in self.open:
+                    lasted = now - self._opened_at.pop(alert_id, now)
+                    self._record("recovering", alert, now, lasted)
+                    del self.open[alert_id]
+                else:
+                    self._record("recovering", alert, now)
+        for alert_id in list(self.recovering):
+            if alert_id not in fresh:
+                log.info("Recovered: %s: %s", self.recovering[alert_id].device, self.recovering[alert_id].title)
+                self._record("resolved", self.recovering[alert_id], now)
+        self.recovering = quiet
         for alert_id, alert in current.items():
             if alert_id not in self.open:
                 self._opened_at[alert_id] = now
@@ -139,6 +166,8 @@ class Alerts:
                 log.log(level, "%s", alert.line())
                 self._record("opened", alert, now)
         for alert_id in list(self.open):
+            if alert_id in quiet:
+                continue  # moved to recovering above
             if alert_id not in current:
                 alert = self.open[alert_id]
                 lasted = now - self._opened_at.pop(alert_id, now)
@@ -163,6 +192,9 @@ class Alerts:
                 f.write(json.dumps(event, separators=(",", ":")) + "\n")
         except OSError as error:
             log.warning("Couldn't record the event: %s", error)
+
+    def recovering_summaries(self) -> list[dict[str, Any]]:
+        return [a.summary_dict() for a in self.recovering.values()]
 
     def open_summaries(self) -> list[dict[str, Any]]:
         return [a.summary_dict() for a in sorted(self.open.values(), key=lambda a: (a.severity != "error", a.since))]
