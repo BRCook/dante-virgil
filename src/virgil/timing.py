@@ -89,6 +89,14 @@ class TimingManager:
         self._acknowledge = True
         self._wake.set()
 
+    def resync(self) -> None:
+        """Set the timing services up from scratch, as at boot, such as after the leader's time was set.
+
+        A follower then steps straight to the leader's time, rather than spending hours slewing to it.
+        """
+        self.request = None
+        self._wake.set()
+
     def poke(self) -> None:
         """Rebuild the request for the current role, such as after a config change."""
         self._wake.set()

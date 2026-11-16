@@ -1030,3 +1030,75 @@ def test_a_group_recording_comes_back_as_one_file(tmp_path):
     assert len(inner) == 2 and inner[0].endswith("-Virgil-A.tar.gz") and inner[1].endswith("-Virgil-B.tar.gz")
     assert not b.recording.active and b.recording.recordings() == []  # B's copy was fetched, then tidied away
     assert [r["name"] for r in a.recording.recordings()] == [bundle.name]
+
+
+def _time_pair(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    b = Daemon(paths["B"], identities["B"])
+
+    class Timing:
+        def __init__(self):
+            self.resyncs = 0
+
+        def resync(self):
+            self.resyncs += 1
+
+    a.timing, b.timing = Timing(), Timing()
+    return a, b, configs
+
+
+def test_setting_the_groups_time_on_the_leader(tmp_path, monkeypatch):
+    import virgil.daemon as daemon_module
+    from virgil.daemon import Peer
+
+    a, b, configs = _time_pair(tmp_path)
+    monkeypatch.setattr(daemon_module, "SETTIME_REQUEST", tmp_path / "settime.json")
+    started = []
+
+    class Systemd:
+        def start(self, unit, block=True):
+            started.append((unit, json.loads((tmp_path / "settime.json").read_text())))
+
+    async def scenario():
+        runners = await start(a) + await start(b)
+        introduce(a, b)
+        introduce(b, a)
+        a.election.resume(State.LEADER, None, time.monotonic())
+        b.election.resume(State.FOLLOWER, configs["A"].id, time.monotonic())
+        a.peers[configs["B"].id] = Peer(b.heartbeat(), time.monotonic())
+        try:
+            return await a.set_group_time(-192.5, Systemd())
+        finally:
+            for runner in runners:
+                await runner.cleanup()
+
+    result = asyncio.run(scenario())
+    assert started == [("dante-virgil-settime.service", {"delta": -192.5})]
+    assert result == {"moved_by": -192.5, "leader": "Virgil A", "resynchronised": ["Virgil B"]}
+    assert b.timing.resyncs == 1 and a.timing.resyncs == 0
+
+
+def test_a_followers_page_asks_the_leader(tmp_path):
+    a, b, configs = _time_pair(tmp_path)
+    asked = []
+
+    async def scenario():
+        b.election.resume(State.FOLLOWER, configs["A"].id, time.monotonic())
+
+        async def call(virgil_id, method, path, body=None, **kwargs):
+            asked.append((virgil_id, path, body))
+            return {"moved_by": body["delta"], "leader": "Virgil A", "resynchronised": ["Virgil B"]}
+
+        b._member_call = call
+        return await b.set_group_time(30.0)
+
+    result = asyncio.run(scenario())
+    assert asked == [(configs["A"].id, "/group/v1/settime", {"delta": 30.0})] and result["leader"] == "Virgil A"
+
+
+def test_no_time_setting_without_managing_timing(tmp_path):
+    a, b, configs = _time_pair(tmp_path)
+    a.timing = None
+    with pytest.raises(RuntimeError, match="observe_only"):
+        asyncio.run(a.set_group_time(5.0))

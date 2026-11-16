@@ -56,7 +56,9 @@ def test_follower_with_a_phc(tmp_path):
         "args": ["/usr/sbin/chronyd", "-q", "-t", "20", "server 192.168.20.21 iburst"],
         "may_fail": True,
     }
-    assert plan["sync"][-1]["args"] == ["/usr/sbin/phc_ctl", "/dev/ptp0", "--", "freq", "22800"]
+    assert plan["sync"][-2]["args"] == ["/usr/sbin/phc_ctl", "/dev/ptp0", "--", "freq", "22800"]
+    assert plan["sync"][-1] == {"args": ["/usr/sbin/hwclock", "--systohc"], "may_fail": True}
+    assert plan["phc"] == "/dev/ptp0"
 
 
 def test_leader_has_no_phc2sys(tmp_path):
@@ -139,7 +141,7 @@ def test_sync_runs_the_plan_in_order(tmp_path):
     run = Recorder()
     assert sync(generated, run) == 0
     assert [call[0] for call in run.calls] == [
-        "/usr/sbin/chronyd", "/usr/sbin/hwstamp_ctl", "/usr/sbin/phc_ctl", "/usr/sbin/phc_ctl",
+        "/usr/sbin/chronyd", "/usr/sbin/hwstamp_ctl", "/usr/sbin/phc_ctl", "/usr/sbin/phc_ctl", "/usr/sbin/hwclock",
     ]
 
 
@@ -147,7 +149,7 @@ def test_sync_carries_on_when_the_leader_cant_be_reached(tmp_path):
     generated = _prepare(tmp_path, _follower())
     run = Recorder({"/usr/sbin/chronyd": 1})
     assert sync(generated, run) == 0
-    assert len(run.calls) == 3
+    assert len(run.calls) == 4  # chronyd, the PHC's time and rate, and the hardware clock
 
 
 def test_sync_stops_when_the_phc_cant_be_set(tmp_path):
@@ -291,3 +293,28 @@ def test_dhcpnames_adds_a_missing_stanza_and_brings_it_up(tmp_path):
     ran.clear()
     assert dhcpnames(request, tmp_path / "interfaces", "debian-server-2", tmp_path / "dhcpcd.conf", run) == 0
     assert (tmp_path / "interfaces").read_text().count("iface enp1s0") == 1 and ["ifup", "enp1s0"] not in ran
+
+
+def test_settime_moves_the_clock_and_the_phc_with_it(tmp_path):
+    from virgil.rootctl import settime
+
+    generated = _prepare(tmp_path, _leader())
+    request = tmp_path / "settime.json"
+    request.write_text(json.dumps({"delta": -192.5}))
+    moved, run = [], Recorder()
+    assert settime(request, generated, run, set_clock=moved.append, now=lambda: 1_000_000.0) == 0
+    assert moved == [999_807.5]  # 3 min 12.5 s back
+    assert run.calls == [["/usr/sbin/phc_ctl", "/dev/ptp0", "--", "set"], ["/usr/sbin/hwclock", "--systohc"]]
+    assert not request.exists()  # one use only
+    assert settime(request, generated, run, set_clock=moved.append) == 1  # nothing left to apply
+
+
+@pytest.mark.parametrize("delta", ["soon", None, True, float("inf"), 25 * 365 * 86400])
+def test_settime_refuses_nonsense(tmp_path, delta):
+    from virgil.rootctl import settime
+
+    generated = _prepare(tmp_path, _leader())
+    request = tmp_path / "settime.json"
+    request.write_text(json.dumps({"delta": delta}))
+    moved = []
+    assert settime(request, generated, Recorder(), set_clock=moved.append) == 1 and moved == []

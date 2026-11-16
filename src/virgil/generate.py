@@ -177,6 +177,11 @@ class Command:
     may_fail: bool = False
 
 
+# Saving the system time to the hardware clock, so an offline boot starts near the right time.
+# Not every machine has one, so it may fail.
+HWCLOCK = Command(("/usr/sbin/hwclock", "--systohc"), may_fail=True)
+
+
 def sync_commands(setup: TimingSetup, leader: str | None) -> list[Command]:
     """The commands that prepare the clocks before the timing services start.
 
@@ -191,13 +196,14 @@ def sync_commands(setup: TimingSetup, leader: str | None) -> list[Command]:
             Command(("/usr/sbin/chronyd", "-q", "-t", "20", f"server {leader} iburst"), may_fail=True)
         )
     if not setup.hardware:
-        return commands
+        return commands + ([HWCLOCK] if leader is not None else [])
     hwstamp = hwstamp_ctl_args(setup)
     if hwstamp is not None:
         commands.append(Command(("/usr/sbin/hwstamp_ctl", *hwstamp)))
     # "--" ends phc_ctl's options, so a negative trim isn't read as one.
     commands.append(Command(("/usr/sbin/phc_ctl", setup.phc, "--", "set")))
     commands.append(Command(("/usr/sbin/phc_ctl", setup.phc, "--", "freq", str(setup.trim_ppb))))
+    commands.append(HWCLOCK)
     return commands
 
 

@@ -9,6 +9,7 @@ It's run by Virgil's systemd units, never by hand:
            it's on.
   trim     Change a leader's PHC rate to its trim, in place.
   dhcpnames  Name each chosen interface's DHCP lease, in /etc/network/interfaces.
+  settime  Move a leader's clock by the correction virgild asked for, and its PHC with it.
 
 sync, hwstamp and trim only read what prepare generated, never the request itself.
 """
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -90,6 +92,7 @@ def prepare(
         "sync": [{"args": list(c.args), "may_fail": c.may_fail} for c in sync_commands(setup, request.leader)],
         "hwstamp": ["/usr/sbin/hwstamp_ctl", *hwstamp] if hwstamp else None,
         "trim": list(trim.args) if (trim := trim_command(setup)) else None,
+        "phc": setup.phc if setup.hardware else None,
     }
 
     atomic_write(generated / "ptp4l.conf", ptp4l_conf(setup, request.tuning).encode())
@@ -245,11 +248,55 @@ def dhcpnames(request_path: Path | None = None, interfaces_file: Path | None = N
     return 0
 
 
+SETTIME_REQUEST = Path("/run/dante-virgil/settime.json")
+# A correction beyond this is surely a mistake.
+MAX_CORRECTION = 20 * 365 * 86400
+
+
+def settime(request_path: Path | None = None, generated: Path = GENERATED_DIR, run=None,
+            set_clock=None, now=time.time) -> int:
+    """Move the leader's clock by the requested correction: the system clock, the PHC with it, and the RTC.
+
+    The PHC is the PTP time every console follows, so this makes them re-lock. It's only
+    ever asked for from the web UI, after a warning that says so.
+    """
+    import math
+
+    request_path = request_path or SETTIME_REQUEST
+    run = run or SYSTEM_RUN
+    set_clock = set_clock or (lambda t: time.clock_settime(time.CLOCK_REALTIME, t))
+    try:
+        data = json.loads(read_small_file(request_path, 1024))
+        request_path.unlink()  # one use only
+    except (OSError, ValueError, UnsafeFileError) as error:
+        print(f"virgil-root: no time correction to apply: {error}", file=sys.stderr)
+        return 1
+    delta = data.get("delta") if isinstance(data, dict) else None
+    if isinstance(delta, bool) or not isinstance(delta, (int, float)) or not math.isfinite(delta) \
+            or abs(delta) > MAX_CORRECTION:
+        print("virgil-root: the time correction isn't a sensible number of seconds", file=sys.stderr)
+        return 1
+    set_clock(now() + delta)
+    print(f"Moved the system clock by {delta:+.3f} s")
+    try:
+        phc = _plan(generated).get("phc")
+    except (OSError, ValueError):
+        phc = None
+    if phc:
+        status = run(["/usr/sbin/phc_ctl", phc, "--", "set"])
+        if status != 0:
+            print(f"virgil-root: couldn't set {phc} to the new time", file=sys.stderr)
+            return status
+        print(f"Set {phc} to match")
+    run(["/usr/sbin/hwclock", "--systohc"])
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="virgil-root", description="Virgil's root helper. Run by systemd.")
     parser.add_argument("--request", type=Path, default=REQUEST_PATH, help=argparse.SUPPRESS)
     parser.add_argument("--generated", type=Path, default=GENERATED_DIR, help=argparse.SUPPRESS)
-    parser.add_argument("command", choices=["prepare", "sync", "hwstamp", "trim", "dhcpnames"])
+    parser.add_argument("command", choices=["prepare", "sync", "hwstamp", "trim", "dhcpnames", "settime"])
     args = parser.parse_args(argv)
 
     try:
@@ -262,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
             return trim(args.generated)
         if args.command == "dhcpnames":
             return dhcpnames()
+        if args.command == "settime":
+            return settime(generated=args.generated)
         return hwstamp(args.generated)
     except (RequestError, PrepareError, UnsafeFileError, OSError) as error:
         print(f"virgil-root: {error}", file=sys.stderr)

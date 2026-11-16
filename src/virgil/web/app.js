@@ -325,6 +325,7 @@ function renderThisVirgil() {
         `Virgil doesn't know ${d.name}'s MAC address yet, so its settings can't be enforced.`));
     }
   }
+  parts.push(...timeSection(can));
   parts.push(...interfacesSection(can));
   parts.push(...certificateSection());
   replace("this-virgil", parts);
@@ -368,6 +369,70 @@ function devicesTable(devices, settings, can) {
   });
   return el("div", { class: "table-wrap" }, el("table", { class: "devices" }, el("thead", {}, header),
     el("tbody", {}, rows)));
+}
+
+// Time: how far this Virgil's clock is from the device the page is open on, and setting the group's from it.
+let timeOffset = null;  // this Virgil's clock minus the device's, in seconds
+let syncArmedUntil = 0;
+
+async function measureTime() {
+  try {
+    const before = Date.now();
+    const reply = await fetch("/api/v1/time", { credentials: "same-origin", cache: "no-store" });
+    const after = Date.now();
+    const { now } = await reply.json();
+    timeOffset = now - (before + after) / 2000;  // allowing for the round trip
+  } catch {
+    timeOffset = null;
+  }
+  return timeOffset;
+}
+
+function spanOfTime(seconds) {
+  const s = Math.abs(seconds);
+  if (s < 60) return `${s.toFixed(1)} s`;
+  const days = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (days) return `${days} ${days === 1 ? "day" : "days"} ${h} h`;
+  if (h) return `${h} h ${m} min`;
+  return `${m} min ${Math.round(s % 60)} s`;
+}
+
+function timeSection(can) {
+  const parts = [el("h3", {}, "Time")];
+  if (timeOffset === null) return [...parts, el("p", { class: "hint" }, "Comparing with your device…")];
+  const agrees = Math.abs(timeOffset) < 0.5;
+  parts.push(el("p", { class: agrees ? "" : "caution" }, agrees
+    ? "This Virgil's clock agrees with your device."
+    : `This Virgil is ${spanOfTime(timeOffset)} ${timeOffset < 0 ? "behind" : "ahead of"} your device.`));
+  const armed = Date.now() < syncArmedUntil;
+  if (armed) {
+    parts.push(el("div", { class: "danger-warning", role: "alert" },
+      "YOU WILL ABSOLUTELY UNDOUBTEDLY AND UNEQUIVOCALLY CAUSE AUDIO TO STOP FLOWING FOR A FEW SECONDS IF YOU PRESS THIS BUTTON AGAIN"));
+  }
+  parts.push(el("div", { class: "row" },
+    el("button", { class: armed ? "danger" : "", disabled: !can || agrees, onclick: async () => {
+      if (Date.now() >= syncArmedUntil) {
+        syncArmedUntil = Date.now() + 15000;
+        renderThisVirgil();
+        setTimeout(() => { syncArmedUntil = 0; renderThisVirgil(); }, 15000);
+        return;
+      }
+      syncArmedUntil = 0;
+      const offset = await measureTime();  // measured again, just before
+      if (offset === null) return notice("Couldn't compare the clocks", true);
+      const data = await act("/api/v1/time/sync", { delta: -offset }, "Done");
+      if (data) {
+        const others = data.resynchronised && data.resynchronised.length ? `; ${data.resynchronised.join(", ")} resynchronising` : "";
+        notice(`Moved the group's clock by ${spanOfTime(data.moved_by)} on ${data.leader}${others}`);
+        setTimeout(() => measureTime().then(renderThisVirgil), 3000);
+      }
+      renderThisVirgil();
+    } }, "Sync time"),
+    armed ? el("button", { onclick: () => { syncArmedUntil = 0; renderThisVirgil(); } }, "Cancel") : null));
+  if (!armed) {
+    parts.push(el("p", { class: "hint" }, "Sets every Virgil in the group to your device's time. The consoles' PTP time moves with it, so they re-lock."));
+  }
+  return parts;
 }
 
 // The web certificate: the person's own, for the ports people browse to, if they've imported one.
@@ -756,7 +821,7 @@ function render() {
   // Don't redraw a form while someone's typing in it.
   const typing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
   if (!typing) {
-    if (changed("this", [own, session, interfaces, unit])) renderThisVirgil();
+    if (changed("this", [own, session, interfaces, unit, timeOffset && Math.round(timeOffset * 2), syncArmedUntil > Date.now()])) renderThisVirgil();
     if (changed("group", [group && group.id, members, status.other_virgils, session, lastInvite])) renderGroup();
     // The recording's elapsed time ticks along, so it's redrawn with each refresh.
     if (changed("recording", [status.recording, session, recordings, Math.floor(Date.now() / 10000)])) renderRecording();
@@ -785,5 +850,6 @@ async function loadSession() {
 }
 
 setUpUnits();
-loadSession().then(loadInterfaces).then(refresh);
+loadSession().then(loadInterfaces).then(measureTime).then(refresh);
+setInterval(measureTime, 30000);
 setInterval(refresh, REFRESH_MS);
