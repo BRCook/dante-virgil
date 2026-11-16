@@ -86,6 +86,10 @@ RESTART_EXIT = 75
 # Seconds without any PTP from outside this Virgil before it says so.
 PTP_QUIET_AFTER = 60.0
 GRAPHS_PATH = "/group/v1/graphs"
+SETTIME_PATH = "/group/v1/settime"
+RESYNC_PATH = "/group/v1/resync"
+SETTIME_UNIT = "dante-virgil-settime.service"
+SETTIME_REQUEST = Path("/run/dante-virgil/settime.json")
 RECORDING_PATH = "/group/v1/recording"
 RECORDINGS_PATH = "/group/v1/recordings"
 NETAUDIO_UNIT = "dante-virgil-netaudio.service"
@@ -410,6 +414,10 @@ class Daemon:
         except ValueError:
             raise web.HTTPBadRequest(text="window must be a number of seconds") from None
 
+    async def time_api(self, request: web.Request) -> web.Response:
+        """This Virgil's clock, for the page to compare with the device it's on."""
+        return web.json_response({"now": time.time()})
+
     async def graphs_api(self, request: web.Request) -> web.Response:
         """This Virgil's graphs, and every member's, merged for the page."""
         window = self._window(request)
@@ -496,6 +504,54 @@ class Daemon:
 
         await asyncio.to_thread(pack)
         return {"archive": bundle.name}
+
+    # Setting the group's time: on the leader, its system clock and PHC; then every follower resynchronises.
+
+    async def set_group_time(self, delta: float, systemd: roles.Systemd | None = None) -> dict:
+        """Move the group's clock by delta seconds. Every console re-locks, so audio stops for a few seconds."""
+        if self.timing is None:
+            raise RuntimeError("virgild doesn't manage the timing services here (observe_only is set)")
+        if self.election.state is not State.LEADER:
+            leader = self.election.leader
+            if leader is None:
+                raise RuntimeError("there's no leader to set the time on")
+            reply = await self._member_call(leader, "POST", SETTIME_PATH, {"delta": delta}, timeout=60)
+            if reply is None:
+                raise RuntimeError("the leader didn't answer")
+            return reply
+        atomic_write(SETTIME_REQUEST, json.dumps({"delta": delta}).encode(), mode=0o640)
+        await asyncio.to_thread((systemd or roles.Systemd()).start, SETTIME_UNIT)
+        log.warning("Moved the group's clock by %+.3f s; the consoles will re-lock", delta)
+        followers = []
+        for virgil_id in self._heard_members():
+            if await self._member_call(virgil_id, "POST", RESYNC_PATH, {}) is not None:
+                followers.append(self.config.group.members[virgil_id].name)
+        return {"moved_by": delta, "leader": self.config.name, "resynchronised": followers}
+
+    async def group_settime(self, request: web.Request) -> web.Response:
+        """A follower's page asked to set the time; the leader does it for the whole group."""
+        sender = self._member_for_certificate(request)
+        if sender is None or sender == self.config.id:
+            raise web.HTTPForbidden()
+        try:
+            delta = float((await request.json())["delta"])
+        except (ValueError, KeyError, TypeError):
+            raise web.HTTPBadRequest() from None
+        try:
+            return web.json_response(await self.set_group_time(delta))
+        except (RuntimeError, OSError, roles.ServiceError) as error:
+            return web.json_response({"error": str(error)}, status=409)
+
+    async def group_resync(self, request: web.Request) -> web.Response:
+        """The leader's time was set: set the timing services up from scratch, stepping to its new time."""
+        sender = self._member_for_certificate(request)
+        if sender is None or sender == self.config.id:
+            raise web.HTTPForbidden()
+        if self.timing is None:
+            return web.json_response({"error": "not managing timing"}, status=409)
+        log.warning("The leader's clock was set; resynchronising")
+        self.timing.resync()
+        return web.json_response({"resynchronising": True})
 
     async def group_recording(self, request: web.Request) -> web.Response:
         """A member, coordinating a group recording, starts or stops this Virgil's part of it."""
@@ -1196,6 +1252,7 @@ class Daemon:
         app.router.add_get("/static/{name}", self.static_file)
         app.router.add_get("/api/v1/status", self.status)
         app.router.add_get("/api/v1/graphs", self.graphs_api)
+        app.router.add_get("/api/v1/time", self.time_api)
         app.router.add_post(JOIN_PATH, self.join)
         self.web = WebApi(self)
         self.web.routes(app)
@@ -1319,6 +1376,8 @@ class Daemon:
         app.router.add_post(HANDOVER_PATH, self.receive_handover)
         app.router.add_get(GRAPHS_PATH, self.group_graphs)
         app.router.add_post(RECORDING_PATH, self.group_recording)
+        app.router.add_post(SETTIME_PATH, self.group_settime)
+        app.router.add_post(RESYNC_PATH, self.group_resync)
         app.router.add_get(RECORDINGS_PATH + "/{name}", self.group_recording_file)
         app.router.add_post(RECORDINGS_PATH + "/delete", self.group_recording_delete)
         return app

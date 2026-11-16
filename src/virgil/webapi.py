@@ -245,6 +245,20 @@ class WebApi:
         return web.json_response({"message": f"{choice.note} {message}" if choice.note else message,
                                   "restarting": True})
 
+    # Time
+
+    async def sync_time(self, request: web.Request, body: dict) -> web.Response:
+        """Set the group's time from the browser's. The page has already warned that audio stops."""
+        delta = body.get("delta")
+        if isinstance(delta, bool) or not isinstance(delta, (int, float)) or abs(delta) > 20 * 365 * 86400:
+            return _error("delta must be a number of seconds", 400)
+        if abs(delta) < 0.5:
+            return _error("this Virgil's clock already agrees with your device", 409)
+        try:
+            return web.json_response(await self.daemon.set_group_time(float(delta)))
+        except (RuntimeError, OSError) as error:
+            return _error(str(error), 409)
+
     # Recordings
 
     async def start_recording(self, request: web.Request, body: dict) -> web.Response:
@@ -309,6 +323,7 @@ class WebApi:
             ("/api/v1/group/invite", self.invite),
             ("/api/v1/group/join", self.join),
             ("/api/v1/interfaces", self.choose_interfaces),
+            ("/api/v1/time/sync", self.sync_time),
             ("/api/v1/recording/start", self.start_recording),
             ("/api/v1/recording/stop", self.stop_recording),
             ("/api/v1/recording/note", self.recording_note),

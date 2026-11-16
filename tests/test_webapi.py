@@ -2,6 +2,7 @@
 
 import asyncio
 import shutil
+import time
 
 import aiohttp
 import pytest
@@ -389,3 +390,29 @@ def test_recording_from_the_page(virgil, tmp_path):
     assert download[0] == 200 and "attachment" in download[1] and download[2] > 0
     assert [r["name"] for r in listed] == [stopped[1]["archive"]]
     assert deleted == (200, {"deleted": 1})
+
+
+def test_the_time_and_syncing_it(virgil):
+    async def scenario(daemon, session, base):
+        async with session.get(f"{base}/api/v1/time") as reply:
+            now = (await reply.json())["now"]
+        async with session.post(f"{base}/api/v1/time/sync", json={"delta": 5}, headers=HEADERS) as reply:
+            anonymous = reply.status
+        await _login(session, base)
+        moved = []
+
+        async def set_group_time(delta):
+            moved.append(delta)
+            return {"moved_by": delta, "leader": "Box A", "resynchronised": []}
+
+        daemon.set_group_time = set_group_time
+
+        async def sync(delta):
+            async with session.post(f"{base}/api/v1/time/sync", json={"delta": delta}, headers=HEADERS) as reply:
+                return reply.status
+
+        return now, anonymous, await sync(0.2), await sync("soon"), await sync(-192.5), moved
+
+    now, anonymous, tiny, nonsense, real, moved = run(virgil, scenario)
+    assert abs(now - time.time()) < 5
+    assert anonymous == 401 and tiny == 409 and nonsense == 400 and real == 200 and moved == [-192.5]

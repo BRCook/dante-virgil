@@ -167,3 +167,13 @@ def test_nothing_running_means_nothing_adopted(tmp_path):
     (tmp_path / "state.json").write_text(json.dumps({"role": "leader", "leader_id": None}))
     m, _ = manager(tmp_path, Recorder(), systemd=FakeSystemd(active=False))
     assert m.request is None and m.applied is None
+
+
+def test_resync_sets_everything_up_from_scratch(tmp_path):
+    from virgil.timing import TimingManager
+
+    manager = TimingManager.__new__(TimingManager)
+    manager.request = object()
+    manager._wake = asyncio.Event()
+    manager.resync()
+    assert manager.request is None and manager._wake.is_set()
