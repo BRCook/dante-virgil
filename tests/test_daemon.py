@@ -1220,3 +1220,62 @@ def test_serving_reaches_heartbeats(tmp_path, monkeypatch):
     a.ptp.own_announced_at = time.monotonic()
     beat = a.heartbeat()
     assert beat.serving["v2"] is True and beat.serving["v1"] is False and beat.serving["v1_reason"]
+
+
+def test_changing_a_members_console_from_this_virgils_page(tmp_path):
+    """A's page ticks "Enforce native PTPv2" for B's console: B applies and saves it, as if on its own page."""
+    from virgil.daemon import Peer
+    from virgil.webapi import WebApi
+
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        b = Daemon(paths["B"], identities["B"])
+        runners = await start(a) + await start(b)
+        introduce(a, b)
+        introduce(b, a)
+        a.peers[configs["B"].id] = Peer(b.heartbeat(), time.monotonic())
+        try:
+            web_api = WebApi(a)
+
+            class Request:
+                pass
+
+            forwarded = await web_api.device(Request(), {"mac": "00:1D:C1:9F:77:FA", "setting": "ptpv2",
+                                                         "enabled": True, "virgil": configs["B"].id})
+            stranger = await web_api.device(Request(), {"mac": "00:1d:c1:9f:77:fa", "setting": "ptpv2",
+                                                        "enabled": True, "virgil": "0" * 32})
+            return json.loads(forwarded.body), forwarded.status, stranger.status, a, b
+        finally:
+            for runner in runners:
+                await runner.cleanup()
+
+    forwarded, status, stranger, a, b = asyncio.run(scenario())
+    assert status == 200 and forwarded == {"mac": "00:1d:c1:9f:77:fa", "native_ptpv2": True, "aes67": False}
+    assert b.config.devices["00:1d:c1:9f:77:fa"].native_ptpv2  # changed on B, where the console is
+    assert config_file.load(paths["B"]).devices["00:1d:c1:9f:77:fa"].native_ptpv2  # and saved there
+    assert "00:1d:c1:9f:77:fa" not in a.config.devices  # not on A
+    assert stranger == 404
+
+
+def test_heartbeats_carry_each_virgils_console_settings(tmp_path):
+    from virgil.config import DeviceSettings
+    from virgil.consoles import DanteDevice
+
+    paths, identities, configs = make_pair(tmp_path)
+    b = Daemon(paths["B"], identities["B"])
+    b.config.devices["00:1d:c1:9f:77:fa"] = DeviceSettings(native_ptpv2=True)
+
+    class Consoles:
+        devices = {"192.168.20.246": DanteDevice("WingRack.local.", "WingRack", "192.168.20.246",
+                                                 "00:1d:c1:9f:77:fa", None, True, False, 0)}
+
+        def summaries(self):
+            return []
+
+        def announcing_themselves(self):
+            return set()
+
+    b.consoles = Consoles()
+    assert b.heartbeat().device_settings == {"00:1d:c1:9f:77:fa": {"native_ptpv2": True, "aes67": False}}

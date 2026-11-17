@@ -38,7 +38,8 @@ from virgil import ptpv1 as ptpv1_module
 from virgil.ptpwatch import mac_of_identity
 from virgil.consoles import POLL_INTERVAL, Consoles, NetaudioClient
 from virgil.control import CONTROL_SOCKET, HANDOVER_PATH, LEAD_PATH
-from virgil.config import Config
+from virgil.config import Config, DeviceSettings
+from virgil.consoles import normalise_mac
 from virgil.files import atomic_write
 from virgil.election import Change, Election, State
 from virgil.generate import Role
@@ -88,6 +89,7 @@ RESTART_EXIT = 75
 # Seconds without any PTP from outside this Virgil before it says so.
 PTP_QUIET_AFTER = 60.0
 GRAPHS_PATH = "/group/v1/graphs"
+DEVICE_PATH = "/group/v1/device"
 SETTIME_PATH = "/group/v1/settime"
 RESYNC_PATH = "/group/v1/resync"
 SETTIME_UNIT = "dante-virgil-settime.service"
@@ -324,7 +326,7 @@ class Daemon:
                          tuple(self.alerts.open_summaries()[:16]) if self.alerts else (),
                          {"active": True, "size": self.recording.size()}
                          if self.recording is not None and self.recording.active else None,
-                         self.serving())
+                         self.serving(), self.local_device_settings())
 
     # Graphs
 
@@ -511,6 +513,44 @@ class Daemon:
 
         await asyncio.to_thread(pack)
         return {"archive": bundle.name}
+
+    # Consoles' enforce settings, kept by the Virgil each console is plugged into.
+
+    def set_device(self, mac: str, setting: str, enabled: bool) -> dict:
+        current = self.config.devices.get(mac, DeviceSettings())
+        if setting == "ptpv2":
+            current.native_ptpv2 = enabled
+        else:
+            current.aes67 = enabled
+        self.config.devices[mac] = current
+        self.save()
+        log.info("%s enforcing %s for %s", "Now" if enabled else "No longer", setting, mac)
+        return {"mac": mac, "native_ptpv2": current.native_ptpv2, "aes67": current.aes67}
+
+    def local_device_settings(self) -> dict:
+        """The enforce settings of this Virgil's own consoles, for heartbeats."""
+        settings = {}
+        for device in list(self.consoles.devices.values())[:16] if self.consoles else []:
+            if device.mac:
+                chosen = self.config.devices.get(device.mac, DeviceSettings())
+                settings[device.mac] = {"native_ptpv2": chosen.native_ptpv2, "aes67": chosen.aes67}
+        return settings
+
+    async def group_device(self, request: web.Request) -> web.Response:
+        """A member's page changed one of this Virgil's consoles' settings."""
+        sender = self._member_for_certificate(request)
+        if sender is None or sender == self.config.id:
+            raise web.HTTPForbidden()
+        try:
+            body = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        mac = normalise_mac(body.get("mac"))
+        setting, enabled = body.get("setting"), body.get("enabled")
+        if mac is None or setting not in ("ptpv2", "aes67") or not isinstance(enabled, bool):
+            raise web.HTTPBadRequest()
+        log.info("%s changed a console's setting from its page", self.config.group.members[sender].name)
+        return web.json_response(self.set_device(mac, setting, enabled))
 
     # Setting the group's time: on the leader, its system clock and PHC; then every follower resynchronises.
 
@@ -1239,6 +1279,7 @@ class Daemon:
                     "alerts": list(beat.alerts) if beat else [],
                     "recording": beat.recording if beat else None,
                     "serving": beat.serving if beat else None,
+                    "device_settings": beat.device_settings if beat else {},
                 }
             )
         others = [
@@ -1472,6 +1513,7 @@ class Daemon:
         app.router.add_get(GRAPHS_PATH, self.group_graphs)
         app.router.add_post(RECORDING_PATH, self.group_recording)
         app.router.add_post(SETTIME_PATH, self.group_settime)
+        app.router.add_post(DEVICE_PATH, self.group_device)
         app.router.add_post(RESYNC_PATH, self.group_resync)
         app.router.add_get(RECORDINGS_PATH + "/{name}", self.group_recording_file)
         app.router.add_post(RECORDINGS_PATH + "/delete", self.group_recording_delete)

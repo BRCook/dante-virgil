@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from virgil.election import PeerView, State
@@ -51,6 +51,8 @@ class Heartbeat:
     recording: dict[str, Any] | None = None
     # Which PTP versions this Virgil is serving, and why it is or isn't serving PTPv1.
     serving: dict[str, Any] | None = None
+    # Its own consoles' enforce settings, by MAC address, so every page can show and change them.
+    device_settings: dict[str, dict[str, bool]] = field(default_factory=dict)
 
     def encode(self) -> dict[str, Any]:
         return {
@@ -71,6 +73,7 @@ class Heartbeat:
             "alerts": list(self.alerts),
             "recording": self.recording,
             "serving": self.serving,
+            "device_settings": self.device_settings,
         }
 
     def view(self, heard_at: float) -> PeerView:
@@ -144,6 +147,13 @@ def decode(data: Any) -> Heartbeat:
         or not all(isinstance(v, (bool, str)) and (not isinstance(v, str) or len(v) <= 120) for v in serving.values())
     ):
         raise HeartbeatError("bad serving")
+    device_settings = data.get("device_settings") or {}
+    if not isinstance(device_settings, dict) or len(device_settings) > 16 or not all(
+        isinstance(mac, str) and len(mac) <= 17 and isinstance(chosen, dict) and len(chosen) <= 2
+        and all(k in ("native_ptpv2", "aes67") and isinstance(v, bool) for k, v in chosen.items())
+        for mac, chosen in device_settings.items()
+    ):
+        raise HeartbeatError("bad device_settings")
     return Heartbeat(
         id=virgil_id,
         name=name,
@@ -162,4 +172,5 @@ def decode(data: Any) -> Heartbeat:
         alerts=tuple(alerts),
         recording=recording,
         serving=serving,
+        device_settings=device_settings,
     )
