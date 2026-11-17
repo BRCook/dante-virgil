@@ -477,7 +477,8 @@ function timeSection(can) {
     } }, "Sync time"),
     armed ? el("button", { onclick: () => { syncArmedUntil = 0; renderThisVirgil(); } }, "Cancel") : null));
   if (!armed) {
-    parts.push(el("p", { class: "hint" }, "Sets every Virgil in the group to your device's time. The consoles' PTP time moves with it, so they re-lock."));
+    parts.push(el("p", { class: "hint" }, "Syncs every Virgil in this group to your device's clock. This affects Virgil's PTP clock, "
+      + "so any connected consoles will need to re-lock. ", el("strong", {}, "This will interrupt audio.")));
   }
   return parts;
 }
@@ -487,7 +488,7 @@ function certificateSection() {
   const cert = status.web_certificate;
   const parts = [el("h3", {}, "Web certificate")];
   if (!cert) {
-    parts.push(el("p", { class: "hint" }, "Virgil's own certificate, which browsers warn about. To use one from your CA, or a public one, run this on the Virgil:"),
+    parts.push(el("p", { class: "hint" }, "To use a custom certificate, run the following on this Virgil:"),
       el("p", { class: "command" }, el("code", {}, "sudo virgilctl tls import-web --cert fullchain.pem --key privkey.pem")));
     return parts;
   }
