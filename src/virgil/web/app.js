@@ -176,6 +176,30 @@ function collectWarnings() {
   return warnings;
 }
 
+// PTP badges: v1 and v2, lit when a Virgil serves that version or a console follows it, outlined amber when
+// a console leads it (or bridges this Virgil's PTPv2 into PTPv1), dim otherwise.
+const STATE_WORDS = { following: "following", leading: "leading", bridging: "bridging PTPv2 into PTPv1",
+  passive: "passive", listening: "listening", off: "off" };
+
+function badge(version, look, title) {
+  return el("span", { class: `badge ${look}`, title }, `v${version}`);
+}
+
+function servingBadges(serving) {
+  if (!serving) return null;
+  return el("span", { class: "badges" },
+    badge(1, serving.v1 ? "lit" : "dim", serving.v1 ? `Serving PTPv1${serving.v1_reason ? `: ${serving.v1_reason}` : ""}`
+      : `Not serving PTPv1${serving.v1_reason ? `: ${serving.v1_reason}` : ""}`),
+    badge(2, serving.v2 ? "lit" : "dim", serving.v2 ? "Serving PTPv2" : "Not serving PTPv2"));
+}
+
+function deviceBadges(d) {
+  if (!d.v1 && !d.v2) return null;
+  const look = (state) => (state === "following" ? "lit" : state === "leading" || state === "bridging" ? "outline" : "dim");
+  return el("span", { class: "badges" },
+    [1, 2].map((n) => badge(n, look(d[`v${n}`]), `PTPv${n}: ${STATE_WORDS[d[`v${n}`]] || d[`v${n}`] || "unknown"}`)));
+}
+
 function consoleRows(devices) {
   if (!devices || devices.length === 0) return null;
   return el("ul", { class: "consoles" }, devices.map((d) => {
@@ -187,6 +211,7 @@ function consoleRows(devices) {
     return el("li", { class: "console" },
       el("span", { class: "console-name", title: [d.model, d.servo && `servo ${d.servo}`].filter(Boolean).join(", ") },
         el("span", { class: `dot ${state}` }), d.name),
+      deviceBadges(d) || el("span", {}),
       el("span", {}, offset === null || offset === undefined ? (following ? "locked" : "not following") : ppm(offset)));
   }));
 }
@@ -206,7 +231,7 @@ function virgils() {
   // This Virgil and its members, as one list: name, state, leader, clock, consoles.
   const own = {
     name: status.name, self: true, state: status.state, leader: status.leader, clock: status.clock,
-    dante_devices: status.dante_devices, heard_ago: 0,
+    dante_devices: status.dante_devices, heard_ago: 0, serving: status.serving,
   };
   const members = ((status.group || {}).members || []).map((m) => ({ ...m, self: false }));
   return [own, ...members];
@@ -234,7 +259,8 @@ function renderChain() {
     const silent = !v.self && (v.heard_ago === null || v.heard_ago > QUIET_AFTER);
     parts.push(el("article", { class: `node${v.state === "leader" ? " leader" : ""}${silent ? " silent" : ""}` },
       el("p", { class: "node-name" }, v.name, v.self ? " (this Virgil)" : ""),
-      el("span", { class: "node-role" }, describeState(v.state, v.leader === status.name ? "this Virgil" : v.leader)),
+      el("span", { class: "node-role" }, describeState(v.state, v.leader === status.name ? "this Virgil" : v.leader),
+        " ", servingBadges(v.serving)),
       el("div", { class: "node-facts" }, clockFacts(v.clock).map((f) => el("p", {}, f))),
       consoleRows(v.dante_devices)));
   });
@@ -325,6 +351,7 @@ function renderThisVirgil() {
         `Virgil doesn't know ${d.name}'s MAC address yet, so its settings can't be enforced.`));
     }
   }
+  parts.push(...ptpv1Section(can));
   parts.push(...timeSection(can));
   parts.push(...interfacesSection(can));
   parts.push(...certificateSection());
@@ -343,6 +370,7 @@ function devicesTable(devices, settings, can) {
   const header = el("tr", {},
     el("th", { scope: "col", class: "name" }, "Device"),
     ["Model", "Address", "PTPv2", "AES67", "Clock (ppm)"].map((h) => el("th", { scope: "col" }, h)),
+    el("th", { scope: "col", title: "What it's doing on each PTP version" }, "PTP"),
     Object.values(ENFORCE).map((e) => el("th", { scope: "col", title: enforceTip(e.name) }, e.heading)));
   const rows = devices.map((d) => {
     const wanted = settings[d.mac] || {};
@@ -364,11 +392,30 @@ function devicesTable(devices, settings, can) {
       el("td", { "data-label": "AES67" }, onOff(d.aes67)),
       el("td", { "data-label": "Clock (ppm)" }, d.clock_offset_ppb === null || d.clock_offset_ppb === undefined
         ? "" : ppmValue(d.clock_offset_ppb)),
+      el("td", { "data-label": "PTP" }, deviceBadges(d) || ""),
       enforce("ptpv2", wanted.native_ptpv2),
       enforce("aes67", wanted.aes67));
   });
   return el("div", { class: "table-wrap" }, el("table", { class: "devices" }, el("thead", {}, header),
     el("tbody", {}, rows)));
+}
+
+function ptpv1Section(can) {
+  const serving = status.serving;
+  if (!serving) return [];
+  const parts = [el("h3", {}, "PTPv1")];
+  const select = el("select", { "aria-label": "Serve PTPv1", disabled: !can });
+  for (const [value, label] of [["fallback", "When no device bridges PTPv2 into PTPv1"], ["always", "Always"], ["off", "Off"]]) {
+    select.append(el("option", { value }, label));
+  }
+  select.value = serving.v1_mode;
+  select.addEventListener("change", () => act("/api/v1/ptpv1", { mode: select.value }, "PTPv1 setting saved"));
+  parts.push(el("div", { class: "row" }, el("label", { class: "field" }, "Serve PTPv1", select)));
+  const facts = [serving.v1 ? `Serving PTPv1: ${serving.v1_reason}` : `Standing by: ${serving.v1_reason}`];
+  if (serving.v1 && serving.v1_timestamps && serving.v1_timestamps !== "hardware") facts.push(`Using ${serving.v1_timestamps} timestamps`);
+  if (serving.v1 && serving.v1_followers && serving.v1_followers.length) facts.push(`Followed by ${serving.v1_followers.join(", ")}`);
+  parts.push(el("div", { class: "facts" }, facts.map((f) => el("p", {}, f))));
+  return parts;
 }
 
 // Time: how far this Virgil's clock is from the device the page is open on, and setting the group's from it.

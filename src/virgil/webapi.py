@@ -245,6 +245,20 @@ class WebApi:
         return web.json_response({"message": f"{choice.note} {message}" if choice.note else message,
                                   "restarting": True})
 
+    # PTPv1
+
+    async def set_ptpv1(self, request: web.Request, body: dict) -> web.Response:
+        from virgil.config import PTPV1_MODES
+
+        mode = body.get("mode")
+        if mode not in PTPV1_MODES:
+            return _error(f"mode must be one of {', '.join(PTPV1_MODES)}", 400)
+        self.daemon.config.ptpv1 = mode
+        self.daemon.save()
+        self.daemon.ptpv1_pending = None
+        await self.daemon.check_ptpv1(settle=0)  # someone asked: no need to wait
+        return web.json_response({"mode": mode, **self.daemon.serving()})
+
     # Time
 
     async def sync_time(self, request: web.Request, body: dict) -> web.Response:
@@ -324,6 +338,7 @@ class WebApi:
             ("/api/v1/group/join", self.join),
             ("/api/v1/interfaces", self.choose_interfaces),
             ("/api/v1/time/sync", self.sync_time),
+            ("/api/v1/ptpv1", self.set_ptpv1),
             ("/api/v1/recording/start", self.start_recording),
             ("/api/v1/recording/stop", self.stop_recording),
             ("/api/v1/recording/note", self.recording_note),

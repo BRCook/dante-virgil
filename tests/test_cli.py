@@ -521,3 +521,20 @@ def test_status_notes_a_recovery_quietly(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Recovering: WingRack: Clock synchronization lost (netaudio is still confirming it" in out
     assert "ALERT" not in out
+
+
+def test_status_says_what_is_served(monkeypatch, capsys):
+    status = {**STATUS, "serving": {"v2": True, "v1": False, "v1_reason": "WingCompact is bridging this Virgil's PTPv2 into PTPv1",
+                                    "v1_mode": "fallback"}}
+    status["dante_devices"] = [{**STATUS["dante_devices"][0], "v1": "bridging", "v2": "following"}]
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "Serving PTPv2; PTPv1 standing by (WingCompact is bridging this Virgil's PTPv2 into PTPv1)" in out
+    assert "v1 bridging, v2 following" in out
+
+
+def test_ptpv1_setting(config_path):
+    assert config_file.load(config_path).ptpv1 == "fallback"
+    assert _set(config_path, "ptpv1", "always") == 0 and config_file.load(config_path).ptpv1 == "always"
+    assert _set(config_path, "ptpv1", "sometimes") == 1

@@ -25,6 +25,15 @@ class ConfigError(Exception):
     pass
 
 
+PTPV1_MODES = ("fallback", "always", "off")
+
+
+def _ptpv1_mode(value) -> str:
+    if value not in PTPV1_MODES:
+        raise ConfigError(f"ptpv1 must be one of {', '.join(PTPV1_MODES)}")
+    return value
+
+
 @dataclass
 class DeviceSettings:
     """Settings for one local Dante device, keyed by its MAC address."""
@@ -47,6 +56,9 @@ class Config:
     auto_trim: bool = True
     # Have chrony use the management interface's hardware timestamps, where it safely can.
     ntp_hwtimestamp: bool = True
+    # Serving PTPv1 to Dante devices: "fallback" (only when no local device bridges this Virgil's
+    # PTPv2 into PTPv1), "always" or "off".
+    ptpv1: str = "fallback"
     # The web UI's password, as a scrypt hash. None means the web UI is read-only.
     web_password: str | None = None
     devices: dict[str, DeviceSettings] = field(default_factory=dict)
@@ -106,6 +118,7 @@ def from_dict(data: dict[str, Any]) -> Config:
         observe_only=_expect(data, "observe_only", bool, optional=True) or False,
         auto_trim=_expect(data, "auto_trim", bool, optional=True) is not False,
         ntp_hwtimestamp=_expect(data, "ntp_hwtimestamp", bool, optional=True) is not False,
+        ptpv1=_ptpv1_mode(data.get("ptpv1", "fallback")),
         web_password=_expect(data, "web_password", str, optional=True),
         devices=devices,
         group=group,
@@ -123,6 +136,7 @@ def to_dict(config: Config) -> dict[str, Any]:
     data["observe_only"] = config.observe_only
     data["auto_trim"] = config.auto_trim
     data["ntp_hwtimestamp"] = config.ntp_hwtimestamp
+    data["ptpv1"] = config.ptpv1
     if config.devices:
         data["devices"] = {
             mac: {"native_ptpv2": settings.native_ptpv2, "aes67": settings.aes67}

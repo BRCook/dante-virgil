@@ -34,6 +34,8 @@ from virgil.alerts import EVENTS_PATH, Alerts
 from virgil.graphs import KEEP_SECONDS, WORST, Recorder, jitter
 from virgil.pinger import Pinger
 from virgil.recording import RECORDINGS, Session, stamp_now
+from virgil import ptpv1 as ptpv1_module
+from virgil.ptpwatch import mac_of_identity
 from virgil.consoles import POLL_INTERVAL, Consoles, NetaudioClient
 from virgil.control import CONTROL_SOCKET, HANDOVER_PATH, LEAD_PATH
 from virgil.config import Config
@@ -163,6 +165,10 @@ class Daemon:
     recording_here: bool = field(default=False, init=False)
     # The imported web certificate's details, if there is one.
     web_certificate: dict | None = field(default=None, init=False)
+    # Serving PTPv1: the grandmaster when it's running, why it is or isn't, and a change waiting to settle.
+    ptpv1_server: ptpv1_module.Server | None = field(default=None, init=False)
+    ptpv1_reason: str = field(default="watching the network before deciding", init=False)
+    ptpv1_pending: tuple | None = field(default=None, init=False)
     _graphed: dict = field(default_factory=lambda: {"clock": None, "polls": None}, init=False)
     # Members' graphs, fetched for the page: member ID to (when, series).
     _member_graphs: dict = field(default_factory=dict, init=False)
@@ -317,7 +323,8 @@ class Daemon:
                          self.ptp.own_identity, tuple(self.ptp_warnings()[:8]), devices, self.clock,
                          tuple(self.alerts.open_summaries()[:16]) if self.alerts else (),
                          {"active": True, "size": self.recording.size()}
-                         if self.recording is not None and self.recording.active else None)
+                         if self.recording is not None and self.recording.active else None,
+                         self.serving())
 
     # Graphs
 
@@ -619,6 +626,87 @@ class Daemon:
             return []
         self._member_graphs[virgil_id] = (time.monotonic(), window, series)
         return series
+
+    # PTPv1
+
+    def serving_ptpv2(self, now: float) -> bool:
+        """Whether ptp4l is serving: its Announces have gone out lately."""
+        return self.ptp.own_announced_at is not None and now - self.ptp.own_announced_at <= 10.0
+
+    def _device_names(self, addresses) -> str:
+        names = {d.address: d.name for d in self.consoles.devices.values()} if self.consoles else {}
+        return " and ".join(names.get(a, a) for a in addresses)
+
+    def ptpv1_wanted(self, now: float) -> tuple[bool, str]:
+        """Whether this Virgil should serve PTPv1, and why, following the ptpv1 setting."""
+        mode = self.config.ptpv1
+        if mode == "off":
+            return False, "off in this Virgil's settings"
+        if self.config.ptp_interface is None or self.ptp_watcher is None:
+            return False, "there's no PTP interface to serve on"
+        if not self.ptp_addresses:
+            return False, f"{self.config.ptp_interface} has no IPv4 address"
+        if not self.serving_ptpv2(now) or mac_of_identity(self.ptp.own_identity) is None:
+            return False, "this Virgil isn't serving PTPv2, so there's no clock to serve"
+        if mode == "always":
+            return True, "always on in this Virgil's settings"
+        if now - self.ptp_watch_started < 20.0:
+            return False, "watching the network before deciding"
+        bridging = self.ptp.bridging(now)
+        if bridging:
+            return False, f"{self._device_names(bridging)} is bridging this Virgil's PTPv2 into PTPv1"
+        capable = [d for d in self.consoles.devices.values() if d.ptpv2 or d.aes67] if self.consoles else []
+        if capable:
+            names = " and ".join(d.name for d in capable)
+            return False, f"{names} can bridge this Virgil's PTPv2 into PTPv1"
+        serving = self.ptpv1_server is not None and self.ptpv1_server.running
+        if not serving and not self.ptp.ptpv1_heard(now):
+            return False, "no PTPv1 devices here"
+        return True, "no device here bridges this Virgil's PTPv2 into PTPv1"
+
+    async def check_ptpv1(self, now: float | None = None, settle: float = 30.0) -> None:
+        """Start or stop serving PTPv1, once what's wanted has held for `settle` seconds."""
+        now = time.monotonic() if now is None else now
+        wanted, reason = self.ptpv1_wanted(now)
+        serving = self.ptpv1_server is not None and self.ptpv1_server.running
+        self.ptpv1_reason = reason
+        if wanted == serving:
+            self.ptpv1_pending = None
+            return
+        # Every switch makes devices choose their leader again, so a change has to hold first.
+        if self.ptpv1_pending is None or self.ptpv1_pending[0] != wanted:
+            self.ptpv1_pending = (wanted, now)
+        if now - self.ptpv1_pending[1] < settle:
+            return
+        self.ptpv1_pending = None
+        if wanted:
+            mac = mac_of_identity(self.ptp.own_identity)
+            server = ptpv1_module.Server(self.config.ptp_interface, self.ptp_addresses[0], mac)
+            try:
+                server.start()
+            except OSError as error:
+                log.warning("Couldn't serve PTPv1: %s", error)
+                self.ptpv1_reason = f"couldn't open PTPv1's ports: {error}"
+                return
+            self.ptpv1_server = server
+            log.info("Serving PTPv1: %s", reason)
+        else:
+            await self.ptpv1_server.stop()
+            self.ptpv1_server = None
+            log.info("Stopped serving PTPv1: %s", reason)
+
+    async def watch_ptpv1(self) -> None:
+        while True:
+            await asyncio.sleep(5.0)
+            try:
+                await self.check_ptpv1()
+            except Exception:
+                log.exception("Couldn't decide about PTPv1")
+
+    def serving(self, now: float | None = None) -> dict:
+        now = time.monotonic() if now is None else now
+        server = self.ptpv1_server if self.ptpv1_server is not None and self.ptpv1_server.running else None
+        return {"v2": self.serving_ptpv2(now), "v1": server is not None, "v1_reason": self.ptpv1_reason[:120]}
 
     async def watch_clock(self) -> None:
         while True:
@@ -1150,6 +1238,7 @@ class Daemon:
                     "clock": beat.clock if beat else None,
                     "alerts": list(beat.alerts) if beat else [],
                     "recording": beat.recording if beat else None,
+                    "serving": beat.serving if beat else None,
                 }
             )
         others = [
@@ -1182,6 +1271,12 @@ class Daemon:
                                     if self.timing is not None and self.timing.request is not None else None),
                 "auto_trim": {"enabled": self.config.auto_trim, "last": self.last_trim, "paused": self.trim_paused,
                               "paused_at": self.trim_paused_wall},
+                "serving": {
+                    **self.serving(),
+                    "v1_mode": self.config.ptpv1,
+                    "v1_timestamps": self.ptpv1_server.timestamps() if self.ptpv1_server else None,
+                    "v1_followers": self.ptpv1_server.current_followers() if self.ptpv1_server else [],
+                },
                 "ptp": {
                     "interface": self.config.ptp_interface,
                     "link_up": self._ptp_link_up(),
@@ -1507,7 +1602,7 @@ async def serve(daemon: Daemon, host: str) -> None:
     extras = await start_extras(daemon, host, public)
     jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election(),
             daemon.tidy_ptp(), daemon.watch_consoles(), daemon.watch_clock(), daemon.watch_trim(),
-            daemon.watch_alerts(), daemon.watch_graphs(Pinger(daemon.on_ping))]
+            daemon.watch_alerts(), daemon.watch_graphs(Pinger(daemon.on_ping)), daemon.watch_ptpv1()]
     if daemon.timing is not None:
         jobs.append(daemon.timing.run())
     tasks = [asyncio.create_task(job) for job in jobs]
@@ -1528,6 +1623,8 @@ async def serve(daemon: Daemon, host: str) -> None:
             daemon.ptp_watcher.stop(asyncio.get_running_loop())
         if daemon.discovery is not None:
             await daemon.discovery.stop()
+        if daemon.ptpv1_server is not None:
+            await daemon.ptpv1_server.stop()
         for runner in extras:
             await runner.cleanup()
         await public.cleanup()

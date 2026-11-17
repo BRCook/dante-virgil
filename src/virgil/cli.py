@@ -172,6 +172,12 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             config.trim_ppb = int(value)
         except ValueError as error:
             raise CliError("trim_ppb must be a whole number") from error
+    elif key == "ptpv1":
+        from virgil.config import PTPV1_MODES
+
+        if value not in PTPV1_MODES:
+            raise CliError(f"ptpv1 must be one of {', '.join(PTPV1_MODES)}")
+        config.ptpv1 = value
     elif key in ("observe_only", "auto_trim", "ntp_hwtimestamp"):
         if value.lower() not in ("true", "false"):
             raise CliError(f"{key} must be true or false")
@@ -499,6 +505,27 @@ def fetch_status(tls_dir: Path, port: int = groups.PUBLIC_PORT) -> dict:
         raise CliError("couldn't reach virgild. Is it running? (systemctl status dante-virgil)") from error
 
 
+def _serving_line(serving: dict) -> str:
+    """What a Virgil serves: PTPv2, PTPv1, both or neither, and why PTPv1 is or isn't."""
+    v2, v1 = serving.get("v2"), serving.get("v1")
+    reason = serving.get("v1_reason")
+    if v1:
+        line = "Serving PTPv2 and PTPv1" if v2 else "Serving PTPv1"
+        timestamps = serving.get("v1_timestamps")
+        extra = [reason] if reason else []
+        if timestamps and timestamps != "hardware":
+            extra.append(f"{timestamps} timestamps")
+        return line + (f" ({'; '.join(extra)})" if extra else "")
+    line = "Serving PTPv2" if v2 else "Not serving PTP"
+    return line + (f"; PTPv1 standing by ({reason})" if reason else "")
+
+
+def _versions(dante: dict) -> str | None:
+    """A console's state on each PTP version, such as "v1 bridging, v2 following"."""
+    parts = [f"v{n} {dante[f'v{n}']}" for n in (1, 2) if dante.get(f"v{n}")]
+    return ", ".join(parts) if parts else None
+
+
 def _describe_device(dante: dict | None, heard: dict | None, virgil: str = "this Virgil") -> str:
     """One line about a Dante device, from netaudio's view if there is one.
 
@@ -511,6 +538,8 @@ def _describe_device(dante: dict | None, heard: dict | None, virgil: str = "this
         return f"Dante device at {where}: {'following' if following else 'NOT following'} {virgil}"
     parts = [f"{dante['name']}" + (f" ({dante['model']})" if dante.get("model") else "") + f" at {where}"]
     parts.append(f"following {virgil}" if following else f"NOT following {virgil}")
+    if _versions(dante):
+        parts.append(_versions(dante))
     if dante.get("ptpv2") is not None:
         parts.append("PTPv2 " + ("on" if dante["ptpv2"] else "off"))
     if dante.get("aes67") is not None:
@@ -634,6 +663,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  {line}")
     if status.get("ntp_hwtimestamp"):
         print(f"  NTP: hardware timestamps on {status['ntp_hwtimestamp']}")
+    if status.get("serving"):
+        print(f"  {_serving_line(status['serving'])}")
     if status.get("state") == "leader":
         line = _auto_trim_line(status)
         if line:
@@ -675,6 +706,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             else:
                 line += ", address unknown"
             print(line)
+            if member.get("serving"):
+                print(f"    {_serving_line(member['serving'])}")
             leader = member.get("leader")
             if leader is not None and leader == status.get("name"):
                 leader = "this Virgil"
@@ -869,7 +902,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_commands.add_parser("show", help="print the config file").set_defaults(func=cmd_config_show)
     config_set = config_commands.add_parser("set", help="change a setting")
     config_set.add_argument("key", choices=["name", "ptp_interface", "mgmt_interface", "trim_ppb", "observe_only",
-                                            "auto_trim", "ntp_hwtimestamp"])
+                                            "auto_trim", "ntp_hwtimestamp", "ptpv1"])
     config_set.add_argument("value")
     config_set.add_argument("--yes", action="store_true", help="accept warnings and NIC profiles without asking")
     config_set.set_defaults(func=cmd_config_set)

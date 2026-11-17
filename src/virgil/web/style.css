@@ -89,7 +89,7 @@ h1 { margin: 0; font-size: 1.9rem; line-height: 1.15; font-weight: 700; letter-s
 .chain-wrap { overflow-x: auto; padding: 1rem 0 1.5rem; }
 .chain { display: flex; align-items: stretch; min-width: min-content; }
 .node {
-  flex: 0 0 auto; width: 17rem; background: var(--panel); border: 1px solid var(--line);
+  flex: 0 0 auto; width: 20rem; background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--radius-node); padding: 0.9rem 1rem;
 }
 .node.leader { border: 2px solid var(--amber); }
@@ -100,9 +100,17 @@ h1 { margin: 0; font-size: 1.9rem; line-height: 1.15; font-weight: 700; letter-s
 .node-facts { margin: 0.5rem 0 0; color: var(--muted); font-size: 0.9rem; }
 .node-facts p { margin: 0.15rem 0; }
 .consoles { margin: 0.75rem 0 0; padding: 0.6rem 0 0; border-top: 1px solid var(--line); list-style: none; }
-.console { display: flex; justify-content: space-between; gap: 0.5rem; font-size: 0.95rem; }
+.console { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 0.5rem; font-size: 0.95rem; }
 .console > span:last-child { white-space: nowrap; }
 .console-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badges { display: inline-flex; gap: 0.25rem; vertical-align: middle; }
+.badge {
+  font-size: 0.7rem; font-weight: 700; line-height: 1.4; padding: 0 0.35rem; border-radius: 4px;
+  border: 1px solid var(--line); color: var(--muted); cursor: help;
+}
+.badge.lit { background: var(--ok); border-color: var(--ok); color: #fff; }
+.badge.outline { border-color: var(--amber); color: var(--amber); }
+.badge.dim { opacity: 0.55; }
 .dot { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; margin-right: 0.4rem; background: var(--muted); }
 .dot.ok { background: var(--ok); }
 .dot.amber { background: var(--amber); }
