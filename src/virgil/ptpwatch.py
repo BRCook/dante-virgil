@@ -82,6 +82,11 @@ class PtpPacket:
     message_type: int | None  # PTPv2 only
     clock_identity: str | None  # PTPv2 sender's clock identity
     grandmaster: str | None  # PTPv2 Announce only
+    # PTPv1 (IEEE 1588-2002) only: the control field (0 Sync, 1 Delay_Req, 2 Follow_Up, 3 Delay_Resp),
+    # the header's flags, and, for a Sync, the grandmaster's UUID (a MAC address).
+    v1_control: int | None = None
+    v1_flags: int = 0
+    v1_grandmaster: str | None = None
 
 
 def _identity(raw: bytes) -> str:
@@ -100,13 +105,33 @@ def parse(frame: bytes, outgoing: bool = False) -> PtpPacket | None:
     if len(payload) < 2:
         return None
     if payload[0] == 0x00 and payload[1] == 0x01:
-        return PtpPacket(source, outgoing, 1, None, None, None)
+        if len(payload) < 40:
+            return PtpPacket(source, outgoing, 1, None, None, None)
+        control = payload[32]
+        flags = struct.unpack_from("!H", payload, 34)[0]
+        grandmaster = _identity(payload[54:60]) if control == V1_SYNC and len(payload) >= 60 else None
+        return PtpPacket(source, outgoing, 1, None, None, None, control, flags, grandmaster)
     if payload[1] & 0x0F != 2 or len(payload) < 34:
         return None
     message_type = payload[0] & 0x0F
     clock_identity = _identity(payload[20:28])
     grandmaster = _identity(payload[53:61]) if message_type == ANNOUNCE and len(payload) >= 61 else None
     return PtpPacket(source, outgoing, 2, message_type, clock_identity, grandmaster)
+
+
+# PTPv1's control values, and the flag a boundary clock sets.
+V1_SYNC, V1_DELAY_REQ = 0, 1
+V1_BOUNDARY_CLOCK = 0x04
+
+
+def mac_of_identity(identity: str | None) -> str | None:
+    """A PTPv2 clock identity made from a MAC (ff:fe in the middle) back to the MAC, as PTPv1 names clocks."""
+    if not identity:
+        return None
+    parts = identity.split(":")
+    if len(parts) != 8 or parts[3:5] != ["ff", "fe"]:
+        return None
+    return ":".join(parts[:3] + parts[5:])
 
 
 @dataclass
@@ -117,6 +142,11 @@ class LocalDevice:
     # Sending Delay Requests to this Virgil's grandmaster means it's following it.
     follows_this_virgil: bool = False
     clock_identity: str | None = None
+    # When it last led PTPv1 (sent a Sync), bridged this Virgil's PTPv2 into PTPv1 (a boundary clock's
+    # Sync naming this Virgil as grandmaster), and followed PTPv1 (sent a Delay_Req).
+    v1_leading_at: float | None = None
+    v1_bridging_at: float | None = None
+    v1_following_at: float | None = None
 
 
 @dataclass
@@ -124,6 +154,8 @@ class PtpState:
     """What PTP watching has learned, kept up to date by observe()."""
 
     own_identity: str | None = None
+    # When this Virgil's own PTPv2 Announce last went out: ptp4l is serving.
+    own_announced_at: float | None = None
     # When PTP was last heard from anything other than this Virgil.
     last_heard: float | None = None
     devices: dict[str, LocalDevice] = field(default_factory=dict)
@@ -136,6 +168,7 @@ class PtpState:
                 if self.own_identity != packet.grandmaster:
                     log.info("This Virgil's grandmaster identity is %s", packet.grandmaster)
                 self.own_identity = packet.grandmaster
+                self.own_announced_at = now
             return
         self.last_heard = now
         if packet.message_type == ANNOUNCE and packet.grandmaster:
@@ -151,9 +184,24 @@ class PtpState:
         device.last_seen = now
         if packet.version == 1:
             device.ptpv1 = True
+            if packet.v1_control == V1_SYNC:
+                device.v1_leading_at = now
+                if (packet.v1_flags & V1_BOUNDARY_CLOCK and packet.v1_grandmaster
+                        and packet.v1_grandmaster == mac_of_identity(self.own_identity)):
+                    device.v1_bridging_at = now
+            elif packet.v1_control == V1_DELAY_REQ:
+                device.v1_following_at = now
         elif packet.message_type == DELAY_REQ:
             device.follows_this_virgil = True
             device.clock_identity = packet.clock_identity
+
+    def bridging(self, now: float, within: float = 30.0) -> list[str]:
+        """Local devices bridging this Virgil's PTPv2 into PTPv1, as a Wing does."""
+        return sorted(a for a, d in self.devices.items() if d.v1_bridging_at and now - d.v1_bridging_at <= within)
+
+    def ptpv1_heard(self, now: float, within: float = 30.0) -> bool:
+        """Whether any local device uses PTPv1 at all."""
+        return any(d.ptpv1 and now - d.last_seen <= within for d in self.devices.values())
 
     def forget_old(self, now: float) -> None:
         for address in [a for a, d in self.devices.items() if now - d.last_seen > FORGET_AFTER]:

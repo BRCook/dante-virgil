@@ -416,3 +416,16 @@ def test_the_time_and_syncing_it(virgil):
     now, anonymous, tiny, nonsense, real, moved = run(virgil, scenario)
     assert abs(now - time.time()) < 5
     assert anonymous == 401 and tiny == 409 and nonsense == 400 and real == 200 and moved == [-192.5]
+
+
+def test_the_ptpv1_setting_from_the_page(virgil):
+    async def scenario(daemon, session, base):
+        await _login(session, base)
+        results = []
+        for mode in ("off", "sometimes"):
+            async with session.post(f"{base}/api/v1/ptpv1", json={"mode": mode}, headers=HEADERS) as reply:
+                results.append(reply.status)
+        return results, daemon.config.ptpv1
+
+    statuses, mode = run(virgil, scenario)
+    assert statuses == [200, 400] and mode == "off"

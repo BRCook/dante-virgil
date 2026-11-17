@@ -1102,3 +1102,121 @@ def test_no_time_setting_without_managing_timing(tmp_path):
     a.timing = None
     with pytest.raises(RuntimeError, match="observe_only"):
         asyncio.run(a.set_group_time(5.0))
+
+
+class _FakeServer:
+    started = 0
+
+    def __init__(self, interface, address, mac):
+        self.interface, self.address, self.mac = interface, address, mac
+        self.running = False
+
+    def start(self):
+        _FakeServer.started += 1
+        self.running = True
+
+    async def stop(self):
+        self.running = False
+
+    def timestamps(self):
+        return "hardware"
+
+    def current_followers(self):
+        return []
+
+
+def _ptpv1_virgil(tmp_path, monkeypatch, mode="fallback"):
+    import virgil.daemon as daemon_module
+
+    monkeypatch.setattr(daemon_module.ptpv1_module, "Server", _FakeServer)
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    a.config.ptp_interface, a.config.ptpv1 = "enp1s0", mode
+    a.ptp_watcher = object()
+    a.ptp_watch_started = 0.0
+    a.ptp_addresses = ("192.168.20.212",)
+    a.ptp.own_identity = "8c:a6:82:ff:fe:71:3b:b6"
+    a.ptp.own_announced_at = 100.0
+    return a
+
+
+def _ptpv1_device(a, address="192.168.20.246", t=100.0):
+    from virgil.ptpwatch import LocalDevice
+
+    a.ptp.devices[address] = LocalDevice(address, t, ptpv1=True, v1_leading_at=t)
+
+
+def test_ptpv1_waits_then_serves_where_nothing_bridges(tmp_path, monkeypatch):
+    a = _ptpv1_virgil(tmp_path, monkeypatch)
+    _ptpv1_device(a)
+    assert a.ptpv1_wanted(10.0) == (False, "watching the network before deciding")
+    wanted, reason = a.ptpv1_wanted(100.0)
+    assert wanted and reason == "no device here bridges this Virgil's PTPv2 into PTPv1"
+
+    def alive(t):  # the device and ptp4l keep transmitting
+        a.ptp.devices["192.168.20.246"].last_seen = t
+        a.ptp.own_announced_at = t
+
+    async def scenario():
+        await a.check_ptpv1(100.0)
+        first = a.ptpv1_server
+        alive(129.0)
+        await a.check_ptpv1(129.0)  # not held for 30 s yet
+        second = a.ptpv1_server
+        alive(131.0)
+        await a.check_ptpv1(131.0)
+        return first, second, a.ptpv1_server
+
+    first, second, third = asyncio.run(scenario())
+    assert first is None and second is None and third is not None and third.running
+    assert third.mac == "8c:a6:82:71:3b:b6" and third.address == "192.168.20.212"
+    assert a.serving(131.0)["v1"] is True
+
+
+def test_ptpv1_stands_by_for_a_bridging_device(tmp_path, monkeypatch):
+    a = _ptpv1_virgil(tmp_path, monkeypatch)
+    _ptpv1_device(a, "192.168.20.224")
+    a.ptp.devices["192.168.20.224"].v1_bridging_at = 100.0
+    wanted, reason = a.ptpv1_wanted(100.0)
+    assert not wanted and reason == "192.168.20.224 is bridging this Virgil's PTPv2 into PTPv1"
+
+
+def test_ptpv1_stands_by_for_a_console_that_could_bridge(tmp_path, monkeypatch):
+    """While Virgil serves, a console with PTPv2 on goes passive; the console's path is steadier, so step aside."""
+    from virgil.consoles import DanteDevice
+
+    a = _ptpv1_virgil(tmp_path, monkeypatch)
+    _ptpv1_device(a, "192.168.20.224")
+
+    class Consoles:
+        devices = {"192.168.20.224": DanteDevice("Wing.local.", "WingCompact", "192.168.20.224", None, None,
+                                                 True, False, 0)}
+
+    a.consoles = Consoles()
+    wanted, reason = a.ptpv1_wanted(100.0)
+    assert not wanted and reason == "WingCompact can bridge this Virgil's PTPv2 into PTPv1"
+
+
+@pytest.mark.parametrize("change, reason", [
+    (lambda a: setattr(a.config, "ptpv1", "off"), "off in this Virgil's settings"),
+    (lambda a: setattr(a, "ptp_addresses", ()), "enp1s0 has no IPv4 address"),
+    (lambda a: setattr(a.ptp, "own_announced_at", 50.0), "this Virgil isn't serving PTPv2, so there's no clock to serve"),
+    (lambda a: a.ptp.devices.clear(), "no PTPv1 devices here"),
+])
+def test_ptpv1_standing_by(tmp_path, monkeypatch, change, reason):
+    a = _ptpv1_virgil(tmp_path, monkeypatch)
+    _ptpv1_device(a)
+    change(a)
+    assert a.ptpv1_wanted(100.0) == (False, reason)
+
+
+def test_ptpv1_always(tmp_path, monkeypatch):
+    a = _ptpv1_virgil(tmp_path, monkeypatch, mode="always")
+    assert a.ptpv1_wanted(1.0) == (True, "always on in this Virgil's settings")  # no waiting, no devices needed
+
+
+def test_serving_reaches_heartbeats(tmp_path, monkeypatch):
+    a = _ptpv1_virgil(tmp_path, monkeypatch)
+    a.ptp.own_announced_at = time.monotonic()
+    beat = a.heartbeat()
+    assert beat.serving["v2"] is True and beat.serving["v1"] is False and beat.serving["v1_reason"]

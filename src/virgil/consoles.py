@@ -75,6 +75,11 @@ class DanteDevice:
     latency_average_ns: float | None = None
     late_packets: int | None = None
     latency_setting_ns: int | None = None
+    # What it's doing on each version, from its own port records: "following", "leading", "bridging"
+    # (leading PTPv1 with this Virgil as grandmaster, from PTPv2), "passive", "listening" or "off".
+    v1: str | None = None
+    v2: str | None = None
+    v1_grandmaster: str | None = None
     follows_this_virgil: bool = False
     warnings: list[str] = field(default_factory=list)
 
@@ -94,6 +99,8 @@ class DanteDevice:
             "latency_average_ns": self.latency_average_ns,
             "late_packets": self.late_packets,
             "latency_setting_ns": self.latency_setting_ns,
+            "v1": self.v1,
+            "v2": self.v2,
             "warnings": list(self.warnings),
         }
 
@@ -204,6 +211,30 @@ def latency_history(diagnostics: Any) -> list[tuple[float, float, float]]:
     return [(t, max(values), sum(values) / len(values)) for t, values in sorted(moments.items())]
 
 
+def uuid_to_mac(value: Any) -> str | None:
+    """A PTPv1 UUID as netaudio gives it, a list of six bytes, or as text, as a MAC address."""
+    if isinstance(value, list) and len(value) == 6 and all(isinstance(b, int) and 0 <= b <= 255 for b in value):
+        return ":".join(f"{b:02x}" for b in value)
+    return normalise_mac(value)
+
+
+PORT_STATES = {"follower": "following", "slave": "following", "uncalibrated": "following", "master": "leading",
+               "leader": "leading", "passive": "passive", "listening": "listening", "disabled": "off",
+               "faulty": "off", "initializing": "listening"}
+
+
+def port_states(clock_status: dict) -> dict[int, str]:
+    """Each PTP version's state on the primary interface: what the device itself reports."""
+    states: dict[int, str] = {}
+    for record in clock_status.get("clock_port_records") or []:
+        if not isinstance(record, dict) or record.get("user_disabled") or record.get("network_interface_index", 0) != 0:
+            continue
+        version, state = record.get("ptp_version"), record.get("state")
+        if version in (1, 2) and isinstance(state, str) and version not in states:
+            states[version] = PORT_STATES.get(state.lower(), state.lower())
+    return states
+
+
 def parse_devices(data: Any) -> list[DanteDevice]:
     """Read netaudio's /devices response, skipping anything without a usable address."""
     if not isinstance(data, dict):
@@ -234,6 +265,9 @@ def parse_devices(data: Any) -> list[DanteDevice]:
                 identity=clock_identity(clock_status.get("ptpv2_device_identity")),
                 latency_setting_ns=(record.get("active_latency_ns")
                                     if isinstance(record.get("active_latency_ns"), int) else None),
+                v1=port_states(clock_status).get(1),
+                v2=port_states(clock_status).get(2),
+                v1_grandmaster=uuid_to_mac(clock_status.get("ptpv1_grandmaster_uuid")),
             )
         )
     return devices
@@ -321,9 +355,17 @@ class Consoles:
             if device.address not in local:
                 continue
             own = self.own_identity()
+            # Leading PTPv1 with this Virgil as grandmaster means bridging this Virgil's PTPv2 into it.
+            from virgil.ptpwatch import mac_of_identity
+
+            if device.v1 == "leading" and device.v1_grandmaster and device.v1_grandmaster == mac_of_identity(own):
+                device.v1 = "bridging"
             # The device's own word is best; the Delay Requests PTP watching hears are the fallback.
-            if device.grandmaster is not None and own is not None:
+            if device.grandmaster is not None and own is not None and device.v2 != "passive":
                 device.follows_this_virgil = device.grandmaster == own
+            elif device.v1 == "following" and device.v1_grandmaster and own is not None:
+                # Following PTPv1 from this Virgil, as when it serves PTPv1 and the device's PTPv2 goes passive.
+                device.follows_this_virgil = device.v1_grandmaster == mac_of_identity(own)
             else:
                 device.follows_this_virgil = local[device.address]
             if device.mac is None:

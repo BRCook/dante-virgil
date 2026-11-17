@@ -101,3 +101,12 @@ def test_recording_round_trip():
     assert decode(beat.encode()).recording == beat.recording
     with pytest.raises(HeartbeatError):
         decode({**BEAT.encode(), "recording": {"active": "yes please"}})
+
+
+def test_serving_round_trip():
+    from dataclasses import replace
+
+    beat = replace(BEAT, serving={"v2": True, "v1": False, "v1_reason": "WingCompact is bridging"})
+    assert decode(beat.encode()).serving == beat.serving
+    with pytest.raises(HeartbeatError):
+        decode({**BEAT.encode(), "serving": {"v1": "x" * 200}})

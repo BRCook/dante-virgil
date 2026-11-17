@@ -49,6 +49,8 @@ class Heartbeat:
     alerts: tuple[dict[str, Any], ...] = ()
     # Whether this Virgil is recording, and how much it has written so far.
     recording: dict[str, Any] | None = None
+    # Which PTP versions this Virgil is serving, and why it is or isn't serving PTPv1.
+    serving: dict[str, Any] | None = None
 
     def encode(self) -> dict[str, Any]:
         return {
@@ -68,6 +70,7 @@ class Heartbeat:
             "clock": self.clock,
             "alerts": list(self.alerts),
             "recording": self.recording,
+            "serving": self.serving,
         }
 
     def view(self, heard_at: float) -> PeerView:
@@ -135,6 +138,12 @@ def decode(data: Any) -> Heartbeat:
         or not all(isinstance(v, (bool, int, float)) for v in recording.values())
     ):
         raise HeartbeatError("bad recording")
+    serving = data.get("serving")
+    if serving is not None and (
+        not isinstance(serving, dict) or len(serving) > 4
+        or not all(isinstance(v, (bool, str)) and (not isinstance(v, str) or len(v) <= 120) for v in serving.values())
+    ):
+        raise HeartbeatError("bad serving")
     return Heartbeat(
         id=virgil_id,
         name=name,
@@ -152,4 +161,5 @@ def decode(data: Any) -> Heartbeat:
         clock=clock,
         alerts=tuple(alerts),
         recording=recording,
+        serving=serving,
     )

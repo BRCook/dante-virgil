@@ -319,3 +319,46 @@ def test_latency_history_from_points():
                                           {"latency": {"fresh": True}}]}}  # a flow with no points at all
     assert latency_history(diagnostics) == [(wall - 1, 2_000_000, 1_500_000), (wall, 5_600_000, 5_600_000)]
     assert latency_history({}) == []
+
+
+def test_port_states_and_ptpv1_grandmaster():
+    from virgil.consoles import port_states, uuid_to_mac
+
+    records = {"clock_port_records": [
+        {"ptp_version": 1, "network_interface_index": 0, "state": "master", "user_disabled": False},
+        {"ptp_version": 2, "network_interface_index": 0, "state": "passive", "user_disabled": False},
+        {"ptp_version": 1, "network_interface_index": 0, "state": "disabled", "user_disabled": True},
+    ]}
+    assert port_states(records) == {1: "leading", 2: "passive"}
+    assert uuid_to_mac([140, 166, 130, 113, 59, 182]) == "8c:a6:82:71:3b:b6"  # as netaudio gives it
+    assert uuid_to_mac("8ca682713bb6") == "8c:a6:82:71:3b:b6" and uuid_to_mac([1, 2]) is None
+
+
+def _wing(v1_state, v2_state, v1_grandmaster):
+    clock = {**REAL_CLOCK, "ptpv1_grandmaster_uuid": v1_grandmaster, "clock_port_records": [
+        {"ptp_version": 1, "network_interface_index": 0, "state": v1_state},
+        {"ptp_version": 2, "network_interface_index": 0, "state": v2_state}]}
+    return {"WingCompact.local.": {**WING, "clock_status": clock}}
+
+
+def _poll(record):
+    fake = FakeNetaudio(record)
+
+    async def scenario(client):
+        consoles = Consoles(client, lambda: {"10.10.100.50": False}, lambda: {}, clock=lambda: 100.0,
+                            own_identity=lambda: BOX_A)
+        await consoles.poll()
+        return consoles.summaries()[0]
+
+    return asyncio.run(_with_fake(fake, scenario))
+
+
+def test_a_console_bridging_this_virgil():
+    summary = _poll(_wing("master", "follower", [140, 166, 130, 113, 59, 182]))
+    assert summary["v1"] == "bridging" and summary["v2"] == "following" and summary["follows_this_virgil"]
+
+
+def test_a_console_following_this_virgils_ptpv1():
+    """As in the test: the Wing's PTPv2 went passive, and it followed Box A's PTPv1."""
+    summary = _poll(_wing("follower", "passive", [140, 166, 130, 113, 59, 182]))
+    assert summary["v1"] == "following" and summary["v2"] == "passive" and summary["follows_this_virgil"]
