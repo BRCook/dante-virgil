@@ -37,6 +37,9 @@ def _error(message: str, status: int) -> web.Response:
     return web.json_response({"error": message}, status=status)
 
 
+DEVICE_PATH = "/group/v1/device"
+
+
 class WebApi:
     def __init__(self, daemon: Daemon):
         self.daemon = daemon
@@ -147,18 +150,21 @@ class WebApi:
         return web.json_response({"auto_trim": enabled})
 
     async def device(self, request: web.Request, body: dict) -> web.Response:
+        """Change a console's enforce setting: this Virgil's own, or a member's, by asking that member."""
         mac = normalise_mac(body.get("mac"))
-        setting, enabled = body.get("setting"), body.get("enabled")
+        setting, enabled, virgil = body.get("setting"), body.get("enabled"), body.get("virgil")
         if mac is None or setting not in ("ptpv2", "aes67") or not isinstance(enabled, bool):
             return _error("needs a MAC address, a setting (ptpv2 or aes67), and enabled", 400)
-        current = self.daemon.config.devices.get(mac, DeviceSettings())
-        if setting == "ptpv2":
-            current.native_ptpv2 = enabled
-        else:
-            current.aes67 = enabled
-        self.daemon.config.devices[mac] = current
-        self.daemon.save()
-        return web.json_response({"mac": mac, "native_ptpv2": current.native_ptpv2, "aes67": current.aes67})
+        if virgil in (None, self.daemon.config.id):
+            return web.json_response(self.daemon.set_device(mac, setting, enabled))
+        group = self.daemon.config.group
+        if not isinstance(virgil, str) or group is None or virgil not in group.members:
+            return _error("that console's Virgil isn't a member of this group", 404)
+        reply = await self.daemon._member_call(virgil, "POST", DEVICE_PATH,
+                                               {"mac": mac, "setting": setting, "enabled": enabled})
+        if reply is None:
+            return _error(f"{group.members[virgil].name} didn't answer, so its console wasn't changed", 503)
+        return web.json_response(reply)
 
     async def invite(self, request: web.Request, body: dict) -> web.Response:
         config = self.daemon.config

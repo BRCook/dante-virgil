@@ -110,3 +110,12 @@ def test_serving_round_trip():
     assert decode(beat.encode()).serving == beat.serving
     with pytest.raises(HeartbeatError):
         decode({**BEAT.encode(), "serving": {"v1": "x" * 200}})
+
+
+def test_device_settings_round_trip():
+    from dataclasses import replace
+
+    beat = replace(BEAT, device_settings={"00:1d:c1:9f:77:fa": {"native_ptpv2": True, "aes67": False}})
+    assert decode(beat.encode()).device_settings == beat.device_settings
+    with pytest.raises(HeartbeatError):
+        decode({**BEAT.encode(), "device_settings": {"00:1d:c1:9f:77:fa": {"reboot": True}}})

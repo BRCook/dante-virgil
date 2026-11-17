@@ -339,18 +339,6 @@ function renderThisVirgil() {
     : last ? `Last automatic change: ${ppm(last.from_ppb)} to ${ppm(last.to_ppb)}, with consoles at ${ppm(last.consoles_ppb)}`
     : "No automatic changes yet."));
 
-  parts.push(el("h3", {}, "Consoles"));
-  const devices = status.dante_devices || [];
-  if (devices.length === 0) {
-    parts.push(el("p", { class: "hint" }, ptp.link_up === false ? "Nothing is plugged into the PTP interface."
-      : "No Dante devices heard on the PTP interface yet."));
-  } else {
-    parts.push(devicesTable(devices, status.device_settings || {}, can));
-    for (const d of devices.filter((d) => !d.mac)) {
-      parts.push(el("p", { class: "hint" },
-        `Virgil doesn't know ${d.name}'s MAC address yet, so its settings can't be enforced.`));
-    }
-  }
   parts.push(...ptpv1Section(can));
   parts.push(...timeSection(can));
   parts.push(...interfacesSection(can));
@@ -366,26 +354,63 @@ const enforceTip = (name) => `Watches this device, and asks it to turn ${name} b
 const onOff = (value) => (value === null || value === undefined ? "Unknown" : value ? "On" : "Off");
 const ppmValue = (ppb) => `${ppb >= 0 ? "+" : "-"}${Math.abs(ppb / 1000).toFixed(3)}`;
 
-function devicesTable(devices, settings, can) {
+// Every console in the group, each with the Clock Box it's plugged into, whose settings it uses.
+function groupConsoles() {
+  const entries = (status.dante_devices || []).map((d) => ({
+    d, box: { id: status.id, name: status.name, self: true, reachable: true }, settings: status.device_settings || {} }));
+  for (const m of (status.group || {}).members || []) {
+    const reachable = m.heard_ago !== null && m.heard_ago !== undefined && m.heard_ago <= QUIET_AFTER;
+    for (const d of m.dante_devices || []) {
+      entries.push({ d, box: { id: m.id, name: m.name, self: false, reachable }, settings: m.device_settings || {} });
+    }
+  }
+  return entries;
+}
+
+function renderConsoles() {
+  const can = session.logged_in;
+  const entries = groupConsoles();
+  const parts = [];
+  if (entries.length === 0) {
+    parts.push(el("p", { class: "hint" }, (status.ptp || {}).link_up === false
+      ? "Nothing is plugged into this Virgil's PTP interface, and no other Virgil has reported a console."
+      : "No consoles heard yet."));
+  } else {
+    parts.push(devicesTable(entries, can));
+    for (const { d } of entries.filter((e) => !e.d.mac)) {
+      parts.push(el("p", { class: "hint" },
+        `Virgil doesn't know ${d.name}'s MAC address yet, so its settings can't be enforced.`));
+    }
+  }
+  replace("consoles", parts);
+}
+
+function devicesTable(entries, can) {
   const header = el("tr", {},
     el("th", { scope: "col", class: "name" }, "Device"),
+    el("th", { scope: "col", title: "The Clock Box it's plugged into, which keeps its settings" }, "Clock Box"),
     ["Model", "Address", "PTPv2", "AES67", "Clock (ppm)"].map((h) => el("th", { scope: "col" }, h)),
     el("th", { scope: "col", title: "What it's doing on each PTP version" }, "PTP"),
     Object.values(ENFORCE).map((e) => el("th", { scope: "col", title: enforceTip(e.name) }, e.heading)));
-  const rows = devices.map((d) => {
+  const rows = entries.map(({ d, box, settings }) => {
     const wanted = settings[d.mac] || {};
     const enforce = (setting, on) => {
       const { name, heading } = ENFORCE[setting];
+      const title = !box.reachable ? `${box.name} isn't being heard from, so its consoles can't be changed`
+        : enforceTip(name);
       return el("td", { "data-label": heading }, el("input", {
-        type: "checkbox", checked: !!on, disabled: !can || !d.mac, title: enforceTip(name),
+        type: "checkbox", checked: !!on, disabled: !can || !d.mac || !box.reachable, title,
         "aria-label": `${heading} on ${d.name}`,
-        onchange: (event) => act("/api/v1/device", { mac: d.mac, setting, enabled: event.target.checked },
-          event.target.checked ? `Virgil will enforce ${d.name}'s ${name}`
-            : `Virgil will no longer enforce ${d.name}'s ${name}`),
+        onchange: (event) => act("/api/v1/device",
+          { mac: d.mac, setting, enabled: event.target.checked, ...(box.self ? {} : { virgil: box.id }) },
+          event.target.checked ? `${box.name} will enforce ${d.name}'s ${name}`
+            : `${box.name} will no longer enforce ${d.name}'s ${name}`),
       }));
     };
     return el("tr", {},
       el("th", { scope: "row", class: "name" }, d.name),
+      el("td", { "data-label": "Clock Box", class: "box-cell" }, el("span", {}, box.name,
+        box.self ? el("span", { class: "this-box" }, " (this Virgil)") : null)),
       el("td", { "data-label": "Model" }, d.model || ""),
       el("td", { "data-label": "Address" }, d.address),
       el("td", { "data-label": "PTPv2" }, onOff(d.ptpv2)),
@@ -871,6 +896,9 @@ function render() {
   if (!typing) {
     if (changed("this", [own, session, interfaces, unit, timeOffset && Math.round(timeOffset * 2), syncArmedUntil > Date.now()])) renderThisVirgil();
     if (changed("group", [group && group.id, members, status.other_virgils, session, lastInvite])) renderGroup();
+    const consoleSnapshot = [status.dante_devices, status.device_settings, ((group || {}).members || [])
+      .map((m) => [m.id, m.dante_devices, m.device_settings, m.heard_ago <= QUIET_AFTER])];
+    if (changed("consoles", [consoleSnapshot, session])) renderConsoles();
     // The recording's elapsed time ticks along, so it's redrawn with each refresh.
     if (changed("recording", [status.recording, session, recordings, Math.floor(Date.now() / 10000)])) renderRecording();
   }
