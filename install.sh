@@ -41,7 +41,8 @@ if [[ "${ID:-}" != debian || "${VERSION_ID:-}" != 13 ]]; then
     printf 'Warning: Virgil is built for Debian 13, and this is %s.\n' "${PRETTY_NAME:-something else}"
 fi
 
-PACKAGES=(chrony linuxptp ethtool iproute2 openssl python3-venv polkitd)
+# util-linux-extra provides hwclock, which saves the time to the hardware clock after each setup.
+PACKAGES=(chrony linuxptp ethtool iproute2 openssl python3-venv polkitd util-linux-extra)
 missing=()
 for package in "${PACKAGES[@]}"; do
     if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"; then
