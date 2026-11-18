@@ -450,9 +450,8 @@ function ptpv1Section(can) {
   }
   const slots = (status.ptp || {}).tx_slots;
   if (slots && !slots.can_share && serving.v1_mode !== "off") {
-    facts.push(`${status.ptp.interface} has ${slots.count === null ? "an unknown number of transmit timestamp slots (treated as 1)"
-      : slots.count === 1 ? "1 transmit timestamp slot" : `${slots.count} transmit timestamp slots`}, so while ptp4l is `
-      + "running, PTPv1 takes its transmit timestamps from the kernel.");
+    facts.push(`${status.ptp.interface} ${slots.reason}, so while ptp4l is running, PTPv1 takes its transmit timestamps `
+      + "from the kernel.");
   }
   if (serving.v1 && serving.v1_followers && serving.v1_followers.length) facts.push(`Followed by ${serving.v1_followers.join(", ")}`);
   parts.push(el("div", { class: "facts" }, facts.map((f) => el("p", {}, f))));
@@ -571,8 +570,8 @@ function interfaceFacts(i, forPtp) {
   }
   if (forPtp && i.tx_slots) {
     facts.push(el("span", { class: i.tx_slots.can_share ? "" : "caution",
-      title: "How many transmit timestamps the card can hold at once. ptp4l and Virgil's PTPv1 can only both use "
-        + "the card's transmit timestamps if it has more than one." }, i.tx_slots.description));
+      title: `${i.tx_slots.description}. ptp4l and Virgil's PTPv1 can only both use the card's transmit timestamps `
+        + "if it can hold more than one at a time." }, i.tx_slots.short));
   }
   if (!i.link_up) facts.push(el("span", { class: "caution" }, "No link"));
   if (i.configured === false) facts.push(el("span", { class: "caution",

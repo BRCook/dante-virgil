@@ -86,9 +86,34 @@ class Slots:
         why = {"evidence": "seen losing timestamps", "probe": "probed"}.get(self.source, self.source)
         return f"{self.count} transmit timestamp {noun} ({why})"
 
+    def short(self) -> str:
+        """A label that fits beside an interface; describe() gives the whole story."""
+        if self.count is None:
+            return "TX slots unknown"
+        if self.count == 0:
+            return "No hardware TX timestamps"
+        noun = "TX slot" if self.count == 1 and not self.at_least else "TX slots"
+        if self.source == "evidence":
+            return f"{self.count_text} {noun}, lost timestamps"
+        if self.shareable is not None:
+            return f"{self.count_text} {noun}, {'shares safely' if self.shareable else 'can’t share'}"
+        return f"{self.count_text} {noun}"
+
+    def reason(self) -> str:
+        """Why PTPv1 can't use the card's transmit timestamps, to follow the interface's name."""
+        if self.count is None:
+            return "hasn't had its transmit timestamp slots measured yet"
+        if self.count == 0:
+            return "gives no hardware transmit timestamps"
+        if self.source == "evidence":
+            return "lost transmit timestamps while ptp4l and PTPv1 shared them"
+        if self.count == 1:
+            return "has 1 transmit timestamp slot"
+        return "couldn't share its transmit timestamps under test"
+
     def as_dict(self) -> dict:
         return {"count": self.count, "count_text": self.count_text, "source": self.source, "can_share": self.can_share,
-                "margin": self.margin, "description": self.describe()}
+                "margin": self.margin, "description": self.describe(), "short": self.short(), "reason": self.reason()}
 
 
 def card_key(interface: str, driver: str | None, release: str | None = None) -> str:
