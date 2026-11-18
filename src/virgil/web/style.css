@@ -128,9 +128,18 @@ h1 { margin: 0; font-size: 1.9rem; line-height: 1.15; font-weight: 700; letter-s
 
 /* Graphs */
 .graph-windows button { padding: 0.3rem 0.7rem; }
-.graph-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 30rem), 1fr)); gap: 2.25rem 2.75rem;
-  margin-top: 1rem;
+/* Fixed columns, so related charts line up in rows: three on a wide screen, two on a medium one, one on a phone. */
+.graph-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2.25rem 2.75rem; margin-top: 0.75rem; }
+@media (min-width: 760px) { .graph-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1200px) { .graph-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.graph-group { margin-top: 1.75rem; }
+.graph-group h3 { margin: 0; }
+
+/* This Virgil: running it on the left, setting it up on the right, on a wide screen. */
+.this-columns { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 3.5rem; }
+@media (min-width: 1200px) {
+  .this-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .this-column > h3:first-child { margin-top: 0; } /* only side by side, so the columns' tops line up */
 }
 .graph-card { margin: 0; }
 .graph-card.wide { grid-column: 1 / -1; }
