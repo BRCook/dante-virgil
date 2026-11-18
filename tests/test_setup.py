@@ -57,3 +57,12 @@ def test_describe():
     assert described["enp1s0"]["ptp_capable"] and described["enp1s0"]["profile"]["status"] == "tested"
     assert described["br0"]["timestamping"] == "virtual" and not described["br0"]["ptp_capable"]
     assert described["enp2s0"]["link_up"] is False
+
+
+def test_each_hardware_card_shows_its_slots(tmp_path):
+    described = {d["name"]: d for d in describe_interfaces(list(INTERFACES.values()), set_up=None,
+                                                         evidence=tmp_path / "none.json")}
+    assert described["enp1s0"]["tx_slots"]["count"] is None  # unmeasured: unknown, whatever the driver
+    assert described["enp1s0"]["tx_slots"]["can_share"] is False
+    assert described["enp191s0"]["tx_slots"]["source"] == "unknown"
+    assert described["enp5s0"]["tx_slots"] is None  # software timestamping: no slots to speak of

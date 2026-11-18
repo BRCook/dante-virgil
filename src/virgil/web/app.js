@@ -442,7 +442,18 @@ function ptpv1Section(can) {
   select.addEventListener("change", () => act("/api/v1/ptpv1", { mode: select.value }, "PTPv1 setting saved"));
   parts.push(el("div", { class: "row" }, el("label", { class: "field" }, "Serve PTPv1", select)));
   const facts = [serving.v1 ? `Serving PTPv1: ${serving.v1_reason}` : `Standing by: ${serving.v1_reason}`];
-  if (serving.v1 && serving.v1_timestamps && serving.v1_timestamps !== "hardware") facts.push(`Using ${serving.v1_timestamps} timestamps`);
+  const stamps = serving.v1_timestamps;
+  if (serving.v1 && stamps && stamps.send !== "none yet" && stamps.receive !== "none yet"
+      && !(stamps.send === "hardware" && stamps.receive === "hardware")) {
+    facts.push(stamps.send === stamps.receive ? `Using ${stamps.send} timestamps`
+      : `Using ${stamps.send} timestamps when sending, and ${stamps.receive} timestamps when receiving`);
+  }
+  const slots = (status.ptp || {}).tx_slots;
+  if (slots && !slots.can_share && serving.v1_mode !== "off") {
+    facts.push(`${status.ptp.interface} has ${slots.count === null ? "an unknown number of transmit timestamp slots (treated as 1)"
+      : slots.count === 1 ? "1 transmit timestamp slot" : `${slots.count} transmit timestamp slots`}, so while ptp4l is `
+      + "running, PTPv1 takes its transmit timestamps from the kernel.");
+  }
   if (serving.v1 && serving.v1_followers && serving.v1_followers.length) facts.push(`Followed by ${serving.v1_followers.join(", ")}`);
   parts.push(el("div", { class: "facts" }, facts.map((f) => el("p", {}, f))));
   return parts;
@@ -558,6 +569,11 @@ function interfaceFacts(i, forPtp) {
       ? el("span", {}, "Hardware timestamping supported")
       : el("span", { class: "caution" }, "Software timestamping only"));
   }
+  if (forPtp && i.tx_slots) {
+    facts.push(el("span", { class: i.tx_slots.can_share ? "" : "caution",
+      title: "How many transmit timestamps the card can hold at once. ptp4l and Virgil's PTPv1 can only both use "
+        + "the card's transmit timestamps if it has more than one." }, i.tx_slots.description));
+  }
   if (!i.link_up) facts.push(el("span", { class: "caution" }, "No link"));
   if (i.configured === false) facts.push(el("span", { class: "caution",
     title: "There's no setup for it in /etc/network/interfaces, so it won't come up, or get an address, after a reboot" },
@@ -597,6 +613,12 @@ function interfacesSection(can) {
       + "connected consoles will re-lock. ", el("strong", {}, "This will interrupt audio.")),
     el("div", { class: "row" }, el("button", { disabled: !can,
       onclick: () => saveInterfaces(ptp.select.value, mgmt.select.value) }, "Save interfaces")));
+  const probing = el("input", { type: "checkbox", checked: (status.ptp || {}).probe_timestamps !== false, disabled: !can,
+    onchange: (event) => act("/api/v1/probe-timestamps", { enabled: event.target.checked },
+      event.target.checked ? "Will probe timestamp slots at the next setup" : "Won't probe timestamp slots") });
+  parts.push(el("label", { class: "check", title: "While ptp4l is stopped during a setup from scratch, send a few seconds "
+    + "of test frames to measure how many transmit timestamps the PTP interface's card can hold at once. Each card is "
+    + "only probed once per driver and kernel." }, probing, "Probe timestamp slots at boot"));
   return parts;
 }
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from virgil.interfaces import Interface, Timestamping, get_interface, list_interfaces
@@ -86,8 +87,11 @@ def configured(interfaces_file: str = INTERFACES_FILE) -> set[str] | None:
 
 
 def describe_interfaces(interfaces: list[Interface] | None = None,
-                        set_up: set[str] | None | bool = True) -> list[dict[str, Any]]:
+                        set_up: set[str] | None | bool = True,
+                        evidence: Path | None = None) -> list[dict[str, Any]]:
     """Every interface, as the web UI shows them."""
+    from virgil import timestamping
+
     known = configured() if set_up is True else set_up
     result = []
     for interface in interfaces if interfaces is not None else list_interfaces():
@@ -108,5 +112,9 @@ def describe_interfaces(interfaces: list[Interface] | None = None,
                 "status": profile.status.value,
                 "notes": profile.notes,
             },
+            # How many transmit timestamps the card can hold at once, for cards that timestamp in hardware.
+            "tx_slots": timestamping.slots_for(
+                interface.name, interface.driver, path=evidence or timestamping.EVIDENCE_PATH).as_dict()
+            if interface.mode.value == "hardware" and interface.physical else None,
         })
     return result

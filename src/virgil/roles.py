@@ -78,7 +78,8 @@ def transition(old: TimingRequest | None, new: TimingRequest | None) -> list[Ste
     # The trim changes a leader's PHC rate in place, with nothing restarted.
     # A follower's rate belongs to phc2sys, so its trim only matters at the next sync.
     retrim = old.trim_ppb != new.trim_ppb and new.role is Role.LEADER
-    if replace(old, trim_ppb=new.trim_ppb) == new:
+    # Probing only happens during a setup from scratch, so a change to it only needs the plan rewritten.
+    if replace(old, trim_ppb=new.trim_ppb, probe_timestamps=new.probe_timestamps) == new:
         return steps + ([_start(TRIM)] if retrim else [])
 
     if new.role is Role.LEADER:

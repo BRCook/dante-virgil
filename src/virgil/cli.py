@@ -79,10 +79,16 @@ def cmd_interfaces(args: argparse.Namespace) -> int:
         print(json.dumps([_interface_json(i) for i in interfaces], indent=2))
         return 0
 
-    rows = [("NAME", "NIC", "DRIVER", "LINK", "TIMESTAMPING", "PHC", "PROFILE")]
+    from virgil import timestamping
+
+    rows = [("NAME", "NIC", "DRIVER", "LINK", "TIMESTAMPING", "PHC", "TX SLOTS", "PROFILE")]
+    slots = {}
     for i in interfaces:
         ts = i.timestamping
         profile = i.profile
+        hardware = i.physical and i.mode is Timestamping.HARDWARE
+        if hardware:
+            slots[i.name] = timestamping.slots_for(i.name, i.driver)
         rows.append(
             (
                 i.name,
@@ -91,6 +97,7 @@ def cmd_interfaces(args: argparse.Namespace) -> int:
                 "up" if i.link_up else "down",
                 i.mode.value if i.physical else "virtual",
                 (ts.phc_device if ts else None) or "-",
+                (str(slots[i.name].count) if slots[i.name].count is not None else "unknown") if hardware else "-",
                 profile.status.value if profile else ("untested" if i.ptp_capable else "-"),
             )
         )
@@ -107,6 +114,12 @@ def cmd_interfaces(args: argparse.Namespace) -> int:
     if any(i.physical and i.mode is Timestamping.SOFTWARE for i in interfaces):
         print()
         print(f"Interfaces with software timestamping only: {SOFTWARE_WARNING}")
+
+    single = [name for name, found in slots.items() if not found.can_share]
+    if single:
+        print()
+        print(f"{', '.join(single)}: {slots[single[0]].describe()}. ptp4l and Virgil's PTPv1 can't both use "
+              "the card's transmit timestamps, so when both run, PTPv1 takes its transmit timestamps from the kernel.")
 
     unknown = [i for i in interfaces if i.ptp_capable and i.profile is None]
     if unknown:
@@ -178,7 +191,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         if value not in PTPV1_MODES:
             raise CliError(f"ptpv1 must be one of {', '.join(PTPV1_MODES)}")
         config.ptpv1 = value
-    elif key in ("observe_only", "auto_trim", "ntp_hwtimestamp"):
+    elif key in ("observe_only", "auto_trim", "ntp_hwtimestamp", "probe_timestamps"):
         if value.lower() not in ("true", "false"):
             raise CliError(f"{key} must be true or false")
         setattr(config, key, value.lower() == "true")
@@ -505,16 +518,28 @@ def fetch_status(tls_dir: Path, port: int = groups.PUBLIC_PORT) -> dict:
         raise CliError("couldn't reach virgild. Is it running? (systemctl status dante-virgil)") from error
 
 
+def _timestamps_words(timestamps) -> str | None:
+    """PTPv1's timestamps, when they aren't simply hardware for both: "software send, hardware receive timestamps"."""
+    if not isinstance(timestamps, dict):
+        return None
+    send, receive = timestamps.get("send"), timestamps.get("receive")
+    if send == receive == "hardware" or "none yet" in (send, receive):
+        return None
+    if send == receive:
+        return f"{send} timestamps"
+    return f"{send} send, {receive} receive timestamps"
+
+
 def _serving_line(serving: dict) -> str:
     """What a Virgil serves: PTPv2, PTPv1, both or neither, and why PTPv1 is or isn't."""
     v2, v1 = serving.get("v2"), serving.get("v1")
     reason = serving.get("v1_reason")
     if v1:
         line = "Serving PTPv2 and PTPv1" if v2 else "Serving PTPv1"
-        timestamps = serving.get("v1_timestamps")
         extra = [reason] if reason else []
-        if timestamps and timestamps != "hardware":
-            extra.append(f"{timestamps} timestamps")
+        timing = _timestamps_words(serving.get("v1_timestamps"))
+        if timing:
+            extra.append(timing)
         return line + (f" ({'; '.join(extra)})" if extra else "")
     line = "Serving PTPv2" if v2 else "Not serving PTP"
     return line + (f"; PTPv1 standing by ({reason})" if reason else "")
@@ -902,7 +927,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_commands.add_parser("show", help="print the config file").set_defaults(func=cmd_config_show)
     config_set = config_commands.add_parser("set", help="change a setting")
     config_set.add_argument("key", choices=["name", "ptp_interface", "mgmt_interface", "trim_ppb", "observe_only",
-                                            "auto_trim", "ntp_hwtimestamp", "ptpv1"])
+                                            "auto_trim", "ntp_hwtimestamp", "ptpv1", "probe_timestamps"])
     config_set.add_argument("value")
     config_set.add_argument("--yes", action="store_true", help="accept warnings and NIC profiles without asking")
     config_set.set_defaults(func=cmd_config_set)

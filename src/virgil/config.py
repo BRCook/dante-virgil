@@ -59,6 +59,8 @@ class Config:
     # Serving PTPv1 to Dante devices: "fallback" (only when no local device bridges this Virgil's
     # PTPv2 into PTPv1), "always" or "off".
     ptpv1: str = "fallback"
+    # Measure the PTP interface's transmit timestamp slots during a setup from scratch (see virgil.tsprobe).
+    probe_timestamps: bool = True
     # The web UI's password, as a scrypt hash. None means the web UI is read-only.
     web_password: str | None = None
     devices: dict[str, DeviceSettings] = field(default_factory=dict)
@@ -119,6 +121,7 @@ def from_dict(data: dict[str, Any]) -> Config:
         auto_trim=_expect(data, "auto_trim", bool, optional=True) is not False,
         ntp_hwtimestamp=_expect(data, "ntp_hwtimestamp", bool, optional=True) is not False,
         ptpv1=_ptpv1_mode(data.get("ptpv1", "fallback")),
+        probe_timestamps=_expect(data, "probe_timestamps", bool, optional=True) is not False,
         web_password=_expect(data, "web_password", str, optional=True),
         devices=devices,
         group=group,
@@ -137,6 +140,7 @@ def to_dict(config: Config) -> dict[str, Any]:
     data["auto_trim"] = config.auto_trim
     data["ntp_hwtimestamp"] = config.ntp_hwtimestamp
     data["ptpv1"] = config.ptpv1
+    data["probe_timestamps"] = config.probe_timestamps
     if config.devices:
         data["devices"] = {
             mac: {"native_ptpv2": settings.native_ptpv2, "aes67": settings.aes67}

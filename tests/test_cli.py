@@ -538,3 +538,17 @@ def test_ptpv1_setting(config_path):
     assert config_file.load(config_path).ptpv1 == "fallback"
     assert _set(config_path, "ptpv1", "always") == 0 and config_file.load(config_path).ptpv1 == "always"
     assert _set(config_path, "ptpv1", "sometimes") == 1
+
+
+def test_ptpv1_timestamps_in_words():
+    from virgil.cli import _timestamps_words
+
+    assert _timestamps_words({"send": "hardware", "receive": "hardware"}) is None
+    assert _timestamps_words({"send": "software", "receive": "hardware"}) == "software send, hardware receive timestamps"
+    assert _timestamps_words({"send": "software", "receive": "software"}) == "software timestamps"
+    assert _timestamps_words({"send": "none yet", "receive": "hardware"}) is None
+
+
+def test_probe_timestamps_setting(config_path):
+    assert config_file.load(config_path).probe_timestamps is True
+    assert _set(config_path, "probe_timestamps", "false") == 0 and config_file.load(config_path).probe_timestamps is False
