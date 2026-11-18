@@ -203,7 +203,10 @@ function renderGraphs() {
       const when = at === undefined ? [] : [el("li", { class: "legend-when" }, `at ${agoLabel(at)}`)];
       legend.replaceChildren(...when, ...series.map((s) => {
         const value = at === undefined ? (s.points.length ? s.points[s.points.length - 1][1] : null) : valueAt(s.points, at);
-        return el("li", {}, el("span", { class: `swatch ${s.style}`, style: `--swatch:${s.colour}` }),
+        // The colour is set through the CSSOM: the content security policy blocks inline style attributes.
+        const swatch = el("span", { class: `swatch ${s.style}` });
+        swatch.style.setProperty("--swatch", s.colour);
+        return el("li", {}, swatch,
           `${s.label} `, el("span", { class: "legend-value" }, formatValue(chart, value)));
       }));
     };
