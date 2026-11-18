@@ -200,6 +200,11 @@ function deviceBadges(d) {
     [1, 2].map((n) => badge(n, look(d[`v${n}`]), `PTPv${n}: ${STATE_WORDS[d[`v${n}`]] || d[`v${n}`] || "unknown"}`)));
 }
 
+// A console pulling its clock further than this gets an amber dot. Two consoles' own crystals can differ by a few
+// ppm, so trim can't bring both near zero: the Wings sat at +2 and -2 ppm for hours, perfectly happy. Pulling around
+// 20 ppm is where the prototype's consoles started losing lock.
+const PULL_WARNING_PPB = 10000;
+
 function consoleRows(devices) {
   if (!devices || devices.length === 0) return null;
   return el("ul", { class: "consoles" }, devices.map((d) => {
@@ -207,7 +212,7 @@ function consoleRows(devices) {
     const offset = d.clock_offset_ppb;
     const settling = d.servo && d.servo !== "synchronized";
     const state = !following ? "fault"
-      : (settling || (offset !== null && Math.abs(offset) > 1000) ? "amber" : "ok");
+      : (settling || (offset !== null && offset !== undefined && Math.abs(offset) > PULL_WARNING_PPB) ? "amber" : "ok");
     return el("li", { class: "console" },
       el("span", { class: "console-name", title: [d.model, d.servo && `servo ${d.servo}`].filter(Boolean).join(", ") },
         el("span", { class: `dot ${state}` }), d.name),
@@ -554,8 +559,9 @@ function interfaceFacts(i, forPtp) {
       : el("span", { class: "caution" }, "Software timestamping only"));
   }
   if (!i.link_up) facts.push(el("span", { class: "caution" }, "No link"));
-  if (i.configured === false) facts.push(el("span", { class: "caution", title: "Not in /etc/network/interfaces" },
-    "Not set up to come up"));
+  if (i.configured === false) facts.push(el("span", { class: "caution",
+    title: "There's no setup for it in /etc/network/interfaces, so it won't come up, or get an address, after a reboot" },
+    "Interface not set up in OS"));
   const lease = (status && status.dhcp_names || {})[forPtp ? "ptp" : "mgmt"];
   if (lease) facts.push(el("span", { title: "The name this interface gives the DHCP server" }, `DHCP name ${lease}`));
   return facts;
@@ -795,20 +801,20 @@ function recordingSizes(rec) {
 function renderRecording() {
   const can = session.logged_in;
   const rec = status.recording;
-  if (!rec) return replace("recording", el("p", { class: "hint" }, "Recording isn't available."));
+  if (!rec) return replace("recording", el("p", { class: "hint" }, "Logging isn't available."));
   const parts = [];
   if (!rec.active) {
     const group = el("input", { type: "checkbox", checked: true, disabled: !can });
     parts.push(el("div", { class: "row" },
       el("button", { class: "primary", disabled: !can, onclick: async () => {
-        await act("/api/v1/recording/start", { group: group.checked }, "Recording");
-      } }, "Start recording"),
-      el("label", { class: "check" }, group, "Record the other Virgils in the group too")));
+        await act("/api/v1/recording/start", { group: group.checked }, "Logging");
+      } }, "Start logging"),
+      el("label", { class: "check" }, group, "Log the other Virgils in the group too")));
     parts.push(el("p", { class: "hint" }, can
-      ? "Records status every 2 seconds, the graphs, each console's diagnostics, the timing services' logs and your notes."
-      : "Log in to record."));
+      ? "Logs status every 2 seconds, the graphs, each console's diagnostics, the timing services' logs and your notes. No audio is recorded."
+      : "Log in to start logging."));
   } else if (!rec.here) {
-    parts.push(el("p", {}, el("strong", {}, `Recording since ${clockTime(rec.since)}`),
+    parts.push(el("p", {}, el("strong", {}, `Logging since ${clockTime(rec.since)}`),
       ` (${elapsed(rec.since)}), started from another Virgil's page. Stop it there to get the file.`));
     parts.push(el("p", { class: "hint" }, `${megabytes(rec.size || 0)} so far on this Virgil (before compression)`));
   } else {
@@ -820,18 +826,18 @@ function renderRecording() {
       if (data) { delete drafts.note; note.value = ""; }
     };
     note.addEventListener("keydown", (event) => { if (event.key === "Enter") addNote(); });
-    parts.push(el("p", {}, el("strong", { class: "stale" }, "● "), el("strong", {}, `Recording since ${clockTime(rec.since)}`),
+    parts.push(el("p", {}, el("strong", { class: "stale" }, "● "), el("strong", {}, `Logging since ${clockTime(rec.since)}`),
       ` (${elapsed(rec.since)})`, rec.notes ? `, ${rec.notes} ${rec.notes === 1 ? "note" : "notes"}` : ""));
     parts.push(el("p", { class: "hint" }, recordingSizes(rec)));
     parts.push(el("div", { class: "row" }, note, el("button", { disabled: !can, onclick: addNote }, "Add note")));
     parts.push(el("div", { class: "row" }, el("button", { class: "primary", disabled: !can, onclick: async () => {
-      notice("Stopping, and gathering the recordings…");
-      const data = await act("/api/v1/recording/stop", {}, "Recording saved");
+      notice("Stopping, and gathering the logs…");
+      const data = await act("/api/v1/recording/stop", {}, "Logs saved");
       if (data && data.download) { download(data.download); await loadRecordings(); renderRecording(); }
-    } }, "Stop and download")));
+    } }, "Stop logging and download")));
   }
   if (can && recordings.length) {
-    parts.push(el("h3", {}, "Saved recordings"));
+    parts.push(el("h3", {}, "Saved logs"));
     parts.push(el("ul", { class: "plain recordings" }, recordings.map((r) => el("li", {},
       el("span", {}, r.name),
       el("span", { class: "hint" }, `${megabytes(r.size)}, ${new Date(r.modified * 1000).toLocaleString([], { hour12: false })}`),
@@ -842,7 +848,7 @@ function renderRecording() {
       } }, "Delete")))));
     if (recordings.length > 1) {
       parts.push(el("div", { class: "row" }, el("button", { onclick: async () => {
-        if (!confirm(`Delete all ${recordings.length} recordings?`)) return;
+        if (!confirm(`Delete all ${recordings.length} logs?`)) return;
         if (await act("/api/v1/recordings/delete", { all: true }, "Deleted")) { await loadRecordings(); renderRecording(); }
       } }, "Delete all")));
     }

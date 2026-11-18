@@ -233,9 +233,10 @@ class WebApi:
         if missing and add_stanzas is None:
             names = " and ".join(missing)
             return web.json_response({"needs": "stanza", "interfaces": missing, "message": (
-                f"{names} {'isn' if len(missing) == 1 else 'aren'}'t set up to come up in /etc/network/interfaces, "
-                "so it won't have an address after a reboot. Add a standard DHCP setup for "
-                f"{'it' if len(missing) == 1 else 'them'}?")}, status=409)
+                f"{names} {'isn' if len(missing) == 1 else 'aren'}'t set up in the OS (there's no setup for "
+                f"{'it' if len(missing) == 1 else 'them'} in /etc/network/interfaces), so "
+                f"{'it' if len(missing) == 1 else 'they'} won't have an address after a reboot. Add a standard DHCP "
+                f"setup for {'it' if len(missing) == 1 else 'them'}?")}, status=409)
         if (choice.name, choice.nic_profile, mgmt) == (config.ptp_interface, config.nic_profile, config.mgmt_interface):
             if missing and add_stanzas:
                 self.daemon.update_dhcp_names(add=missing, force=True)
@@ -283,13 +284,13 @@ class WebApi:
 
     async def start_recording(self, request: web.Request, body: dict) -> web.Response:
         if self.daemon.recording.active:
-            return _error("already recording", 409)
+            return _error("already logging", 409)
         return web.json_response(await self.daemon.start_recording(group=body.get("group", True) is not False))
 
     async def stop_recording(self, request: web.Request, body: dict) -> web.Response:
         result = await self.daemon.stop_recording()
         if result["archive"] is None:
-            return _error("not recording", 409)
+            return _error("not logging", 409)
         return web.json_response({**result, "download": f"/api/v1/recordings/{result['archive']}"})
 
     async def recording_note(self, request: web.Request, body: dict) -> web.Response:
@@ -299,7 +300,7 @@ class WebApi:
         try:
             return web.json_response({"at": self.daemon.recording.note(text)})
         except RuntimeError:
-            return _error("not recording", 409)
+            return _error("not logging", 409)
 
     async def delete_recordings(self, request: web.Request, body: dict) -> web.Response:
         names = [r["name"] for r in self.daemon.recording.recordings()] if body.get("all") else [body.get("name", "")]

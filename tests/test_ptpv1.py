@@ -39,7 +39,8 @@ def test_a_bridging_device_is_recognised():
     ours = bytes.fromhex(BOX_A_MAC.replace(":", ""))
     state.observe(parse(frame("192.168.20.224", wing_sync(True, ours), 319)), 100.0, set())
     assert state.bridging(100.0) == ["192.168.20.224"] and state.ptpv1_heard(100.0)
-    assert state.bridging(140.0) == []  # gone quiet for over 30 s
+    assert state.bridging(114.0) == ["192.168.20.224"]  # 14 s of silence: still bridging
+    assert state.bridging(116.0) == []  # over 15 s: it has stopped
 
 
 def test_leading_on_its_own_isnt_bridging():

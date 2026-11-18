@@ -352,7 +352,7 @@ def test_choosing_an_interface_ifupdown_wont_bring_up(virgil, monkeypatch):
 
     asked, done, added, restarts = run(virgil, scenario)
     assert asked[0] == 409 and asked[1]["needs"] == "stanza" and asked[1]["interfaces"] == ["enp1s0"]
-    assert "isn't set up to come up" in asked[1]["message"]
+    assert "isn't set up in the OS" in asked[1]["message"]
     assert done[0] == 200 and added == [["enp1s0"]] and restarts == [True]
 
 

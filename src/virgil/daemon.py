@@ -81,6 +81,8 @@ NETWORK_CHECK_INTERVAL = 2.0
 # How long the election waits for the management interface to get an address
 # before going ahead anyway, so a console still gets a clock without a network.
 NETWORK_WAIT = 60.0
+# How long the answer to "should this Virgil serve PTPv1?" must hold before it switches.
+PTPV1_SETTLE = 15.0
 # How long a self-assigned 169.254.x.x address has to be the only one before
 # it counts, so DHCP has time to finish on networks that have it.
 LINK_LOCAL_GRACE = 30.0
@@ -704,8 +706,12 @@ class Daemon:
             return False, "no PTPv1 devices here"
         return True, "no device here bridges this Virgil's PTPv2 into PTPv1"
 
-    async def check_ptpv1(self, now: float | None = None, settle: float = 30.0) -> None:
-        """Start or stop serving PTPv1, once what's wanted has held for `settle` seconds."""
+    async def check_ptpv1(self, now: float | None = None, settle: float = PTPV1_SETTLE) -> None:
+        """Start or stop serving PTPv1, once what's wanted has held for `settle` seconds.
+
+        Together with ptpwatch.BRIDGING_SILENCE, a bridging console that goes quiet (while it reboots,
+        say) is covered after about 30 seconds, and one that's back sooner than that never notices.
+        """
         now = time.monotonic() if now is None else now
         wanted, reason = self.ptpv1_wanted(now)
         serving = self.ptpv1_server is not None and self.ptpv1_server.running

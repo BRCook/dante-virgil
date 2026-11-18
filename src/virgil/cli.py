@@ -198,8 +198,8 @@ def _offer_stanza(interface: str, config, assume_yes: bool) -> None:
     known = configured()
     if known is None or interface in known:
         return
-    print(f"{interface} isn't set up to come up in /etc/network/interfaces, so it won't have an address "
-          "after a reboot.")
+    print(f"{interface} isn't set up in the OS (there's no setup for it in /etc/network/interfaces), so it "
+          "won't have an address after a reboot.")
     if not confirm("Add a standard DHCP setup for it, and bring it up now?", default=True, assume_yes=assume_yes):
         return
     from virgil.files import atomic_write
