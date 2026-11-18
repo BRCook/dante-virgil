@@ -56,3 +56,15 @@ def test_a_count_the_probe_couldnt_exceed_is_at_least():
     assert slots.describe() == "At least 10 transmit timestamp slots (probed; shared safely at 100× normal load)"
     exact = timestamping.Slots(4, "probe", shareable=True, margin=100, senders=10)
     assert exact.count_text == "4" and exact.describe().startswith("4 transmit timestamp slots")
+
+
+def test_short_labels_and_reasons():
+    S = timestamping.Slots
+    assert S(2, "probe", shareable=False, senders=2).short() == "2+ TX slots, can’t share"
+    assert S(2, "probe", shareable=False, senders=2).reason() == "couldn't share its transmit timestamps under test"
+    assert S(4, "probe", shareable=True, margin=100, senders=10).short() == "4 TX slots, shares safely"
+    assert S(None, "unknown").short() == "TX slots unknown"
+    assert S(None, "unknown").reason() == "hasn't had its transmit timestamp slots measured yet"
+    assert S(1, "evidence").short() == "1 TX slot, lost timestamps"
+    assert S(1, "probe", shareable=False, senders=4).short() == "1 TX slot, can’t share"
+    assert S(1, "probe", shareable=False, senders=4).reason() == "has 1 transmit timestamp slot"

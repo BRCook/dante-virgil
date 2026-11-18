@@ -1,4 +1,5 @@
 :root {
+  --page-width: 1600px; /* the page's widest; it shrinks to fit smaller screens */
   color-scheme: light dark;
   --bg: #eceff2;
   --panel: #ffffff;
@@ -33,11 +34,11 @@ body {
   padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0)
     env(safe-area-inset-left, 0);
 }
-main { max-width: 1100px; margin: 0 auto; padding: 0 1rem 3rem; }
+main { max-width: var(--page-width); margin: 0 auto; padding: 0 1rem 3rem; }
 
 /* Header */
 .top {
-  max-width: 1100px; margin: 0 auto; padding: 1.25rem 1rem 1rem;
+  max-width: var(--page-width); margin: 0 auto; padding: 1.25rem 1rem 1rem;
   display: flex; flex-wrap: wrap; gap: 0.75rem 1.5rem; align-items: center; justify-content: space-between;
 }
 .identity { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; }
@@ -62,7 +63,7 @@ h1 { margin: 0; font-size: 1.9rem; line-height: 1.15; font-weight: 700; letter-s
 .units { color: var(--muted); display: inline-flex; gap: 0.4rem; align-items: center; }
 
 /* Warnings: the first thing that matters */
-.warnings { max-width: 1100px; margin: 0 auto; padding: 0 1rem; }
+.warnings { max-width: var(--page-width); margin: 0 auto; padding: 0 1rem; }
 .warnings:empty { display: none; }
 .warning {
   margin: 0 0 0.5rem; padding: 0.6rem 0.9rem; border-left: 4px solid var(--amber);
@@ -71,7 +72,7 @@ h1 { margin: 0; font-size: 1.9rem; line-height: 1.15; font-weight: 700; letter-s
 .warning.fault { border-left-color: var(--fault); background: color-mix(in srgb, var(--fault) 12%, var(--panel)); }
 
 /* Alerts: the loudest thing on the page */
-.alerts { max-width: 1100px; margin: 0 auto; padding: 0 1rem; }
+.alerts { max-width: var(--page-width); margin: 0 auto; padding: 0 1rem; }
 .alerts:empty { display: none; }
 .alert {
   display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; align-items: baseline; margin: 0 0 0.6rem;
