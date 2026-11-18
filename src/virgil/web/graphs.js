@@ -5,16 +5,17 @@
 // Relies on app.js for el(), replace(), UNITS and the chosen unit.
 
 const CHARTS = [
-  // Time charts start in a unit that suits them; null follows the page's Units setting.
-  { id: "offset", title: "Clock offset from the leader", kind: "time", signed: true, unit: null },
-  { id: "phc", title: "PHC offset from system clock", kind: "time", signed: true, unit: null },
-  { id: "latency", title: "Receive latency", kind: "time", wide: true, unit: "ms" },
-  { id: "late", title: "Late packets", kind: "rate" },
-  { id: "console", title: "Console clocks", kind: "ppm", signed: true },
-  { id: "trim", title: "Trim", kind: "ppm", fit: true },
-  { id: "rtt", title: "Link round trip", kind: "time", unit: "ms" },
-  { id: "jitter", title: "Link jitter", kind: "time", unit: "us" },
-  { id: "loss", title: "Link packet loss", kind: "percent" },
+  // In groups of three, so each row holds related charts. Time charts start in a unit that suits them;
+  // null follows the page's Units setting.
+  { id: "offset", group: "Clocks", title: "Clock offset from the leader", kind: "time", signed: true, unit: null },
+  { id: "phc", group: "Clocks", title: "PHC offset from system clock", kind: "time", signed: true, unit: null },
+  { id: "trim", group: "Clocks", title: "Trim", kind: "ppm", fit: true },
+  { id: "latency", group: "Dante devices", title: "Receive latency", kind: "time", wide: true, unit: "ms" },
+  { id: "late", group: "Dante devices", title: "Late packets", kind: "rate" },
+  { id: "console", group: "Dante devices", title: "Device clocks", kind: "ppm", signed: true },
+  { id: "rtt", group: "Link", title: "Link round trip", kind: "time", unit: "ms" },
+  { id: "jitter", group: "Link", title: "Link jitter", kind: "time", unit: "us" },
+  { id: "loss", group: "Link", title: "Link packet loss", kind: "percent" },
 ];
 const WINDOWS = [[30, "30 s"], [60, "1 min"], [120, "2 min"], [300, "5 min"], [600, "10 min"]];
 // Consoles and Clock Boxes draw from separate sets, each ordered so neighbours contrast, so two consoles (or two
@@ -228,7 +229,14 @@ function renderGraphs() {
     requestAnimationFrame(() => drawChart(canvas, chart, series));
     return card;
   });
-  replace("graphs", controls, el("div", { class: "graph-grid" }, cards));
+  // One labelled row of charts per group.
+  const groups = [];
+  shown.forEach((chart, index) => {
+    if (!groups.length || groups[groups.length - 1].name !== chart.group) groups.push({ name: chart.group, cards: [] });
+    groups[groups.length - 1].cards.push(cards[index]);
+  });
+  replace("graphs", controls, ...groups.map((group) => el("section", { class: "graph-group" },
+    el("h3", {}, group.name), el("div", { class: "graph-grid" }, group.cards))));
 }
 
 async function loadGraphs() {

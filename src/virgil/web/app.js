@@ -346,9 +346,10 @@ function renderThisVirgil() {
 
   parts.push(...ptpv1Section(can));
   parts.push(...timeSection(can));
-  parts.push(...interfacesSection(can));
-  parts.push(...certificateSection());
-  replace("this-virgil", parts);
+  // Two columns on a wide screen: running this Virgil on the left, setting it up on the right.
+  const setup = [...interfacesSection(can), ...certificateSection()];
+  replace("this-virgil", el("div", { class: "this-columns" },
+    el("div", { class: "this-column" }, parts), el("div", { class: "this-column" }, setup)));
 }
 
 const ENFORCE = {
@@ -766,6 +767,9 @@ function renderAlerts(alerts) {
   replace("alerts", bars);
 }
 
+const EVENTS_SHOWN = 10;
+let eventsExpanded = false;
+
 function renderEvents() {
   const alerts = status.alerts;
   if (!alerts) return replace("events", el("p", { class: "hint" }, "Alerts need netaudio running on this Virgil."));
@@ -778,12 +782,19 @@ function renderEvents() {
   if (!events.length) {
     return replace("events", ...recovering, el("p", { class: "hint" }, "No alerts since Virgil started."));
   }
-  replace("events", ...recovering, el("ul", { class: "plain events" }, events.map((e) => el("li", {},
+  // The latest few, newest first; the rest on request, so a long history doesn't bury what's below.
+  const shown = eventsExpanded ? events : events.slice(0, EVENTS_SHOWN);
+  const more = events.length - shown.length;
+  replace("events", ...recovering, el("ul", { class: "plain events" }, shown.map((e) => el("li", {},
     el("span", { class: "event-time" }, clockTime(e.t)), " ",
     el("strong", { class: e.event === "opened" && e.severity === "error" ? "stale" : "" },
       e.event === "opened" ? e.label : `${e.label} ${e.event}`),
     ` ${e.device}: ${e.title}`,
-    e.lasted_s !== undefined ? el("span", { class: "hint" }, ` (lasted ${Math.round(e.lasted_s)} s)`) : null))));
+    e.lasted_s !== undefined ? el("span", { class: "hint" }, ` (lasted ${Math.round(e.lasted_s)} s)`) : null))),
+    more > 0 || eventsExpanded && events.length > EVENTS_SHOWN
+      ? el("button", { onclick: () => { eventsExpanded = !eventsExpanded; renderEvents(); } },
+        eventsExpanded ? "Show the latest only" : `Show all ${events.length}`)
+      : null);
 }
 
 // Recording: everything from a test session, from this Virgil and the group, as one file.

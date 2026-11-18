@@ -475,7 +475,7 @@ Each Virgil keeps the last ten minutes of its own measurements in memory:
 
 When a web UI asks for graphs, its Virgil fetches every other member's measurements through the group API, and merges them with its own. That way, a Dante device on the far side of the link is graphed in as much detail as a local one. When there are more points than fit on a chart, latency, round trip, jitter and late packets keep each stretch's worst value (so a spike is never averaged away), while the others keep the average.
 
-The page draws the charts itself, on canvases, with windows from 30 seconds to 10 minutes. Each chart of times has its own unit, chosen by clicking the unit beside its title and remembered by the browser. Clock offsets start in the page's unit (nanoseconds, by default), receive latency and round trip in milliseconds, and jitter in microseconds.
+The page draws the charts itself, on canvases, with windows from 30 seconds to 10 minutes. They're arranged in three labelled rows of related charts: **Clocks** (offset from the leader, PHC offset, and the trim), **Dante devices** (receive latency across the full width, then late packets and each device's clock correction), and **Link** (round trip, jitter and packet loss). On a wide screen, each row has three columns; narrower screens get two, and phones one. Each chart of times has its own unit, chosen by clicking the unit beside its title and remembered by the browser. Clock offsets start in the page's unit (nanoseconds, by default), receive latency and round trip in milliseconds, and jitter in microseconds.
 
 ### Logging
 
