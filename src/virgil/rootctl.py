@@ -118,8 +118,14 @@ Runner = Callable[[Sequence[str]], int]
 
 
 def _run(args: Sequence[str]) -> int:
+    """Run a command, and return its exit status. A command that isn't installed is status 127, as in a shell,
+    rather than an error: a step that may fail then carries on, and any other step fails with a clear message."""
     print("+", " ".join(args), flush=True)
-    return subprocess.run(args).returncode
+    try:
+        return SYSTEM_RUN(args).returncode
+    except FileNotFoundError:
+        print(f"{args[0]} isn't installed", flush=True)
+        return 127
 
 
 def sync(generated: Path = GENERATED_DIR, run: Runner = _run, probe_card=None, probe_path: Path | None = None) -> int:
@@ -312,7 +318,7 @@ def settime(request_path: Path | None = None, generated: Path = GENERATED_DIR, r
     import math
 
     request_path = request_path or SETTIME_REQUEST
-    run = run or SYSTEM_RUN
+    run = run or _run  # exit statuses, not subprocess results
     set_clock = set_clock or (lambda t: time.clock_settime(time.CLOCK_REALTIME, t))
     try:
         data = json.loads(read_small_file(request_path, 1024))

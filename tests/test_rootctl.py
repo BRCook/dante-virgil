@@ -385,3 +385,48 @@ def test_evidence_beats_the_probe(tmp_path):
     timestamping.save_evidence(key, "tx_hwtstamp_skipped rose", tmp_path / "e.json")
     slots = timestamping.slots_for("enp1s0", "igc", path=tmp_path / "e.json", probe_path=tmp_path / "p.json")
     assert slots == timestamping.Slots(1, "evidence") and not slots.can_share
+
+
+def test_a_missing_command_doesnt_crash_the_sync(tmp_path, monkeypatch):
+    """Debian 13 doesn't install hwclock by default: saving the hardware clock may fail, but mustn't stop the sync."""
+    import subprocess as sp
+
+    import virgil.rootctl as rootctl
+
+    ran = []
+
+    def system(args, **kwargs):
+        ran.append(args[0])
+        if args[0] == "/usr/sbin/hwclock":
+            raise FileNotFoundError(2, "No such file or directory", args[0])
+        return sp.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(rootctl, "SYSTEM_RUN", system)
+    generated = _prepare(tmp_path, _leader(probe_timestamps=False))
+    assert sync(generated) == 0  # the real runner, not a stand-in
+    assert ran[-1] == "/usr/sbin/hwclock"
+
+
+def test_a_missing_command_that_must_not_fail_stops_the_sync_cleanly(tmp_path, monkeypatch):
+    import virgil.rootctl as rootctl
+
+    def system(args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", args[0])
+
+    monkeypatch.setattr(rootctl, "SYSTEM_RUN", system)
+    generated = _prepare(tmp_path, _leader(probe_timestamps=False))
+    assert sync(generated) == 127
+
+
+def test_settime_with_the_real_runner_reports_success(tmp_path, monkeypatch):
+    """With subprocess's results rather than plain numbers, success must still look like success."""
+    import subprocess as sp
+
+    import virgil.rootctl as rootctl
+    from virgil.rootctl import settime
+
+    monkeypatch.setattr(rootctl, "SYSTEM_RUN", lambda args, **kwargs: sp.CompletedProcess(args, 0))
+    generated = _prepare(tmp_path, _leader())
+    request = tmp_path / "settime.json"
+    request.write_text(json.dumps({"delta": 5.0}))
+    assert settime(request, generated, set_clock=lambda t: None) == 0
