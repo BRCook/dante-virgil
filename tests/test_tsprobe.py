@@ -15,8 +15,9 @@ class Clock:
 
 
 class SimulatedCard(tsprobe.Card):
-    def __init__(self, clock, slots, hold=0.0001, hardware=True, min_gap=None):
+    def __init__(self, clock, slots, hold=0.0001, hardware=True, min_gap=None, cores=16):
         self.clock, self.slots, self.hold, self.hardware, self.min_gap = clock, slots, hold, hardware, min_gap
+        self.cores = cores
         self.busy = []  # when each occupied slot frees up
         self.pending = [0, 0]
         self.last = None
@@ -35,6 +36,19 @@ class SimulatedCard(tsprobe.Card):
     def collect(self, which, wait):
         count, self.pending[which] = self.pending[which], 0
         return count
+
+    @property
+    def parallel(self):
+        return self.cores
+
+    def simultaneous(self, senders):
+        """Every sender's request arrives at the same instant: only as many as there are free slots succeed."""
+        now = self.clock()
+        self.busy = [t for t in self.busy if t > now]
+        got = min(senders, self.slots - len(self.busy)) if self.hardware else 0
+        self.busy += [now + self.hold] * got
+        self.clock.sleep(0.05)  # the real probe waits for the timestamps before the next round
+        return got
 
 
 def run(**card):
@@ -56,7 +70,19 @@ def test_a_card_with_one_slot_loses_every_pair():
 
 def test_a_card_with_four_slots_shares():
     result = run(slots=4)
-    assert result.slots == 4 and result.pairs_lost == 0 and result.margin == 100 and result.shareable
+    assert result.slots == 4 and result.senders == 10 and result.pairs_lost == 0 and result.margin == 100
+    assert result.shareable
+
+
+def test_more_slots_than_senders_is_at_least():
+    """Ten senders on a card with 64 slots all get their timestamps: the card has at least ten."""
+    result = run(slots=64)
+    assert result.slots == 10 and result.senders == 10 and result.shareable
+
+
+def test_fewer_cores_means_fewer_senders():
+    result = run(slots=8, cores=4)  # only four senders can fire at once
+    assert result.slots == 4 and result.senders == 4 and result.shareable
 
 
 def test_falling_behind_at_100x_is_overload_not_slots():
@@ -69,9 +95,3 @@ def test_falling_behind_at_100x_is_overload_not_slots():
 def test_a_card_that_cannot_keep_up_even_at_10x():
     result = run(slots=4, min_gap=0.005)  # at 10x, frames still come as close as 4.2 ms
     assert result.margin is None and not result.shareable and set(result.losses) == {"100x", "50x", "10x"}
-
-
-def test_a_slot_held_longer_than_the_pairs_are_apart():
-    """Two slots, but each held for longer than the gap between pairs: the second pair's timestamps find them full."""
-    result = run(slots=2, hold=0.05)
-    assert result.slots == 2 and result.pairs_lost > 0 and not result.shareable

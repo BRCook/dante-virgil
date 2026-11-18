@@ -182,9 +182,11 @@ def probe_slots(step: dict, run: Runner = _run, card=None, path: Path | None = N
     if not result.hardware:
         print(f"{interface} gave no hardware transmit timestamps", flush=True)
     else:
-        print(f"{interface}: {result.slots} transmit timestamp slots; {result.pairs_lost} of {2 * tsprobe.PAIRS} "
-              f"timestamps lost from simultaneous pairs; load {result.losses or 'not tested'}; "
-              f"{'shares safely' if result.shareable else 'cannot share'} ({result.seconds} s)", flush=True)
+        count = f"at least {result.slots}" if result.slots == result.senders else str(result.slots)
+        print(f"{interface}: {count} transmit timestamp slots ({result.senders} senders at once); "
+              f"{result.pairs_lost} of {2 * tsprobe.PAIRS} timestamps lost from simultaneous pairs; "
+              f"load {result.losses or 'not tested'}; {'shares safely' if result.shareable else 'cannot share'} "
+              f"({result.seconds} s)", flush=True)
 
 
 def hwstamp(generated: Path = GENERATED_DIR, run: Runner = _run) -> int:
