@@ -46,6 +46,19 @@ class Slots:
     # From a probe: whether sharing passed the contention and load tests, and at what multiple of the real rates.
     shareable: bool | None = None
     margin: int | None = None
+    # How many senders the probe used: a count equal to this means "at least this many".
+    senders: int | None = None
+
+    @property
+    def at_least(self) -> bool:
+        return self.senders is not None and self.count is not None and self.count >= self.senders
+
+    @property
+    def count_text(self) -> str:
+        """The count as shown: "4", "10+" (at least ten), or "unknown"."""
+        if self.count is None:
+            return "unknown"
+        return f"{self.count}+" if self.at_least else str(self.count)
 
     @property
     def effective(self) -> int:
@@ -65,16 +78,17 @@ class Slots:
         if self.count == 0:
             return "No hardware transmit timestamps (probed)"
         if self.source == "probe" and self.count >= 2 and self.shareable is not None:
+            count = f"At least {self.count}" if self.at_least else str(self.count)
             if self.shareable:
-                return f"{self.count} transmit timestamp slots (probed; shared safely at {self.margin}× normal load)"
-            return f"{self.count} transmit timestamp slots (probed), but sharing lost timestamps under test"
+                return f"{count} transmit timestamp slots (probed; shared safely at {self.margin}× normal load)"
+            return f"{count} transmit timestamp slots (probed), but sharing lost timestamps under test"
         noun = "slot" if self.count == 1 else "slots"
         why = {"evidence": "seen losing timestamps", "probe": "probed"}.get(self.source, self.source)
         return f"{self.count} transmit timestamp {noun} ({why})"
 
     def as_dict(self) -> dict:
-        return {"count": self.count, "source": self.source, "can_share": self.can_share, "margin": self.margin,
-                "description": self.describe()}
+        return {"count": self.count, "count_text": self.count_text, "source": self.source, "can_share": self.can_share,
+                "margin": self.margin, "description": self.describe()}
 
 
 def card_key(interface: str, driver: str | None, release: str | None = None) -> str:
@@ -124,7 +138,8 @@ def slots_for(interface: str, driver: str | None, release: str | None = None,
     if isinstance(probed, dict):
         if not probed.get("hardware"):
             return Slots(0, "probe", shareable=False)
-        return Slots(probed.get("slots"), "probe", shareable=bool(probed.get("shareable")), margin=probed.get("margin"))
+        return Slots(probed.get("slots"), "probe", shareable=bool(probed.get("shareable")), margin=probed.get("margin"),
+                     senders=probed.get("senders"))
     return Slots(None, "unknown")
 
 

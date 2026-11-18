@@ -144,9 +144,17 @@ Neither change touches ptp4l (see above).
 
 ### Setting Up From Scratch
 
-At boot, or after the PTP interface changes, Virgil sets the timing services up from scratch. It stops everything, then (on a follower) steps the system clock to the leader's time with a one-off `chronyd -q`, sets the PHC from the system clock, and starts the services again. A connected Dante device sees one re-lock while this happens, since its grandmaster disappears and comes back.
+A *setup from scratch* stops the timing services, sets the clocks again, and starts the services afresh. Virgil does one whenever the timing services aren't already running when it needs them, or when a change means they can't carry on as they are:
 
-Before the services start again, Virgil may also probe the PTP interface's transmit timestamp slots (see [Transmit Timestamp Slots](#transmit-timestamp-slots)). Every setup ends by saving the system time to the machine's hardware clock (`hwclock --systohc`). Clock Boxes are designed to run without internet access, so on the next boot, that saved time is the best starting point they have.
+- **after any reboot**, since nothing is running yet;
+- **when `virgild` starts and finds the timing services stopped** (stopped by hand, or crashed);
+- **when timing is started again after "Stop timing"**;
+- **when the PTP interface, or its NIC profile, changes**, since a different card has a different PHC;
+- **on each follower, after "Sync time"** (see [Setting the Time](#setting-the-time)).
+
+Restarting `virgild` on its own (after an update, a crash, or saving interfaces in the web UI) is *not* a setup from scratch, as long as the timing services are still running. `virgild` reads how they were set up (from a record in `/run/dante-virgil/`, which only lasts until the next boot) and carries on from there, so the Dante devices notice nothing. Changing roles, the trim and other settings is applied to the running services too.
+
+A setup from scratch stops everything, then (on a follower) steps the system clock to the leader's time with a one-off `chronyd -q`, sets the PHC from the system clock, and starts the services again. A connected Dante device sees one re-lock while this happens, since its grandmaster disappears and comes back. Before the services start again, Virgil may also probe the PTP interface's transmit timestamp slots (see [Transmit Timestamp Slots](#transmit-timestamp-slots)). Every setup ends by saving the system time to the machine's hardware clock (`hwclock --systohc`). Clock Boxes are designed to run without internet access, so on the next boot, that saved time is the best starting point they have.
 
 ### Software Timestamping
 
@@ -350,8 +358,8 @@ Virgil plans around what it has *measured* about each card's transmit timestamp 
 Virgil measures a card by probing it, during a setup from scratch (see [Setting Up From Scratch](#setting-up-from-scratch)). At that point ptp4l is stopped and the Dante devices are re-locking anyway, so nothing depends on the card for the few seconds the probe takes. The probe sends small test frames, each asking the card for a hardware transmit timestamp, and counts how many timestamps come back:
 
 1. **Hardware timestamps at all:** one frame. If no timestamp comes back, the card can't timestamp what it sends, and there's nothing more to measure.
-2. **Slots:** bursts of 64 frames back to back, five times. A card can only hold as many timestamps at once as it has slots, so the most that come back from any one burst is the number of slots.
-3. **Contention:** two senders, standing in for ptp4l and the PTPv1 grandmaster, each sending a frame at the same moment, 50 times. This is sharing's worst case, made certain rather than left to chance. A card that can't share loses a timestamp from nearly every pair; one that can loses none. This test decides whether sharing is possible at all.
+2. **Slots:** several sender processes, one per CPU core (up to ten), each pinned to its own core, wait for the same instant on the system's monotonic clock, then each send one frame. That asks the card for that many timestamps at once, so the number that come back is the number of slots — up to the number of senders. Twenty such rounds are run, and the median is the count, so a round thrown off by the operating system doesn't skew it. If every sender gets its timestamp, all the probe can say is that the card has *at least* that many slots, and it says so ("10+").
+3. **Contention:** two of those pinned processes, standing in for ptp4l and the PTPv1 grandmaster (which are separate programs, and can send at the same moment on different cores), each send a frame at the same instant, 50 times. This is sharing's worst case, made certain rather than left to chance. A card that can't share loses a timestamp from nearly every pair; one that can loses none. This test decides whether sharing is possible at all. On a machine with a single core, the two senders share it, so their frames go out back to back rather than together; a slot stays occupied until the driver collects its timestamp, so a card that can't share still loses timestamps.
 4. **Load,** only if the contention test passed: the two senders at 100 times their real rates (ptp4l's 8 Syncs a second, and PTPv1's 4), independently, for one second. If any timestamps go missing, the test runs again at 50 times the real rates for two seconds, then at 10 times for five, stopping at the first that loses nothing. Losses at 100 times that vanish at 50 times are the card (or the CPU) falling behind on sheer volume, rather than running out of slots. The level that passes is the card's margin; a card that loses timestamps even at 10 times can't share.
 
 The test frames are plain Ethernet frames with the EtherType reserved for local experiments (`0x88B5`), sent to an unused, locally administered address. They aren't IP or PTP, so Dante devices ignore them, and switches discard them. In the worst case, the probe takes about ten seconds.

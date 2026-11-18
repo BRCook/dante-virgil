@@ -48,3 +48,11 @@ def test_watching_for_lost_timestamps():
 def test_ptpv1_leaves_transmit_slots_alone_when_it_must():
     assert timestamping_flags(True) & TX_HARDWARE and not timestamping_flags(False) & TX_HARDWARE
     assert timestamping_flags(True) ^ timestamping_flags(False) == TX_HARDWARE  # nothing else changes
+
+
+def test_a_count_the_probe_couldnt_exceed_is_at_least():
+    slots = timestamping.Slots(10, "probe", shareable=True, margin=100, senders=10)
+    assert slots.count_text == "10+" and slots.at_least
+    assert slots.describe() == "At least 10 transmit timestamp slots (probed; shared safely at 100× normal load)"
+    exact = timestamping.Slots(4, "probe", shareable=True, margin=100, senders=10)
+    assert exact.count_text == "4" and exact.describe().startswith("4 transmit timestamp slots")

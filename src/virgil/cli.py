@@ -97,7 +97,7 @@ def cmd_interfaces(args: argparse.Namespace) -> int:
                 "up" if i.link_up else "down",
                 i.mode.value if i.physical else "virtual",
                 (ts.phc_device if ts else None) or "-",
-                (str(slots[i.name].count) if slots[i.name].count is not None else "unknown") if hardware else "-",
+                slots[i.name].count_text if hardware else "-",
                 profile.status.value if profile else ("untested" if i.ptp_capable else "-"),
             )
         )
