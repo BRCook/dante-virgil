@@ -1160,17 +1160,17 @@ def test_ptpv1_waits_then_serves_where_nothing_bridges(tmp_path, monkeypatch):
     async def scenario():
         await a.check_ptpv1(100.0)
         first = a.ptpv1_server
-        alive(129.0)
-        await a.check_ptpv1(129.0)  # not held for 30 s yet
+        alive(114.0)
+        await a.check_ptpv1(114.0)  # not held for 15 s yet
         second = a.ptpv1_server
-        alive(131.0)
-        await a.check_ptpv1(131.0)
+        alive(116.0)
+        await a.check_ptpv1(116.0)
         return first, second, a.ptpv1_server
 
     first, second, third = asyncio.run(scenario())
     assert first is None and second is None and third is not None and third.running
     assert third.mac == "8c:a6:82:71:3b:b6" and third.address == "192.168.20.212"
-    assert a.serving(131.0)["v1"] is True
+    assert a.serving(116.0)["v1"] is True
 
 
 def test_ptpv1_stands_by_for_a_bridging_device(tmp_path, monkeypatch):

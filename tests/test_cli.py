@@ -509,7 +509,7 @@ def test_config_set_offers_a_missing_stanza(config_path, monkeypatch, capsys, tm
 
     monkeypatch.setattr(files_module, "atomic_write", lambda path, data, mode=0o640: written.append(json.loads(data)))
     assert _set(config_path, "mgmt_interface", "enp1s0", "--yes") == 0
-    assert "isn't set up to come up" in capsys.readouterr().out
+    assert "isn't set up in the OS" in capsys.readouterr().out
     assert written[-1]["add"] == ["enp1s0"] and started == ["dante-virgil-dhcpnames.service"]
 
 

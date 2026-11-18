@@ -119,6 +119,9 @@ def parse(frame: bytes, outgoing: bool = False) -> PtpPacket | None:
     return PtpPacket(source, outgoing, 2, message_type, clock_identity, grandmaster)
 
 
+# How long a device can go without a bridging PTPv1 Sync before it no longer counts as bridging.
+BRIDGING_SILENCE = 15.0
+
 # PTPv1's control values, and the flag a boundary clock sets.
 V1_SYNC, V1_DELAY_REQ = 0, 1
 V1_BOUNDARY_CLOCK = 0x04
@@ -195,8 +198,12 @@ class PtpState:
             device.follows_this_virgil = True
             device.clock_identity = packet.clock_identity
 
-    def bridging(self, now: float, within: float = 30.0) -> list[str]:
-        """Local devices bridging this Virgil's PTPv2 into PTPv1, as a Wing does."""
+    def bridging(self, now: float, within: float = BRIDGING_SILENCE) -> list[str]:
+        """Local devices bridging this Virgil's PTPv2 into PTPv1, as a Wing does.
+
+        A bridging device sends PTPv1 Syncs four times a second, so this much silence is
+        dozens of missed Syncs: it has stopped bridging, rather than dropped a few.
+        """
         return sorted(a for a, d in self.devices.items() if d.v1_bridging_at and now - d.v1_bridging_at <= within)
 
     def ptpv1_heard(self, now: float, within: float = 30.0) -> bool:

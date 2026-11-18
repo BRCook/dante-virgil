@@ -5,18 +5,22 @@
 // Relies on app.js for el(), replace(), UNITS and the chosen unit.
 
 const CHARTS = [
-  { id: "offset", title: "Clock offset from the leader", kind: "time", signed: true },
-  { id: "phc", title: "PHC offset from system clock", kind: "time", signed: true },
-  { id: "latency", title: "Receive latency", kind: "time", wide: true },
+  // Time charts start in a unit that suits them; null follows the page's Units setting.
+  { id: "offset", title: "Clock offset from the leader", kind: "time", signed: true, unit: null },
+  { id: "phc", title: "PHC offset from system clock", kind: "time", signed: true, unit: null },
+  { id: "latency", title: "Receive latency", kind: "time", wide: true, unit: "ms" },
   { id: "late", title: "Late packets", kind: "rate" },
   { id: "console", title: "Console clocks", kind: "ppm", signed: true },
   { id: "trim", title: "Trim", kind: "ppm", fit: true },
-  { id: "rtt", title: "Link round trip", kind: "time" },
-  { id: "jitter", title: "Link jitter", kind: "time" },
+  { id: "rtt", title: "Link round trip", kind: "time", unit: "ms" },
+  { id: "jitter", title: "Link jitter", kind: "time", unit: "us" },
   { id: "loss", title: "Link packet loss", kind: "percent" },
 ];
 const WINDOWS = [[30, "30 s"], [60, "1 min"], [120, "2 min"], [300, "5 min"], [600, "10 min"]];
-const SERIES_COLOURS = ["#4c78a8", "#2a9d8f", "#9c6ade", "#e07a5f", "#56b4e9", "#8d99ae", "#b07aa1", "#59a14f"];
+// Consoles and Clock Boxes draw from separate sets, each ordered so neighbours contrast, so two consoles (or two
+// Clock Boxes) never end up in near-identical colours, whatever they're called.
+const CONSOLE_COLOURS = ["#9c6ade", "#e07a5f", "#59a14f", "#b07aa1", "#edc948", "#ff9da7"];
+const VIRGIL_COLOURS = ["#4c78a8", "#2a9d8f", "#56b4e9", "#8d99ae", "#76b7b2", "#bab0ac"];
 
 let graphWindow = 300;
 try { graphWindow = Number(localStorage.getItem("virgil-graph-window")) || 300; } catch { /* private browsing */ }
@@ -27,17 +31,42 @@ function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-function formatValue(kind, value) {
+// Each time chart's unit: the one chosen for it on this browser, else its own default, else the page's.
+const GRAPH_DIGITS = { ns: 0, us: 2, ms: 3 };
+const UNIT_ORDER = ["ns", "us", "ms"];
+
+function chartUnit(chart) {
+  try {
+    const chosen = localStorage.getItem(`virgil-graph-unit-${chart.id}`);
+    if (UNITS[chosen]) return chosen;
+  } catch { /* private browsing */ }
+  return chart.unit || unit;
+}
+
+function nextUnit(chart) {
+  const following = UNIT_ORDER[(UNIT_ORDER.indexOf(chartUnit(chart)) + 1) % UNIT_ORDER.length];
+  try { localStorage.setItem(`virgil-graph-unit-${chart.id}`, following); } catch { /* private browsing */ }
+}
+
+function formatTime(chart, ns) {
+  const key = chartUnit(chart);
+  const digits = GRAPH_DIGITS[key];
+  const number = new Intl.NumberFormat("en", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return `${ns < 0 ? "-" : ""}${number.format(Math.abs(ns) / UNITS[key].scale)} ${UNITS[key].label}`;
+}
+
+function formatValue(chart, value) {
+  const kind = chart.kind;
   if (value === null || value === undefined || Number.isNaN(value)) return "–";
-  if (kind === "time") return `${value < 0 ? "-" : ""}${magnitude(value)}`;
+  if (kind === "time") return formatTime(chart, value);
   if (kind === "ppm") return `${value >= 0 ? "+" : ""}${value.toFixed(3)} ppm`;
   if (kind === "percent") return `${value.toFixed(1)}%`;
   return `${value.toFixed(value < 10 ? 1 : 0)}/s`;
 }
 
-function scaled(kind, value) {
-  // Values on the axis, in the chosen time unit for times.
-  return kind === "time" ? value / UNITS[unit].scale : value;
+function scaled(chart, value) {
+  // Values on the axis, in the chart's own time unit for times.
+  return chart.kind === "time" ? value / UNITS[chartUnit(chart)].scale : value;
 }
 
 function niceStep(span) {
@@ -66,7 +95,7 @@ function drawChart(canvas, chart, series) {
 
   let low = Infinity, high = -Infinity;
   for (const s of series) for (const [, v] of s.points) {
-    const y = scaled(chart.kind, v);
+    const y = scaled(chart, v);
     low = Math.min(low, y); high = Math.max(high, y);
   }
   if (!Number.isFinite(low)) return;
@@ -106,7 +135,7 @@ function drawChart(canvas, chart, series) {
     g.lineWidth = s.style === "line" ? 1.6 : 1.3;
     g.setLineDash({ setting: [6, 4], average: [1.5, 3], line: [] }[s.style]);
     g.beginPath();
-    s.points.forEach(([t, v], i) => (i ? g.lineTo(x(t), y(scaled(chart.kind, v))) : g.moveTo(x(t), y(scaled(chart.kind, v)))));
+    s.points.forEach(([t, v], i) => (i ? g.lineTo(x(t), y(scaled(chart, v))) : g.moveTo(x(t), y(scaled(chart, v)))));
     g.stroke();
   });
   g.restore();
@@ -136,8 +165,16 @@ function renderGraphs() {
   // Each series keeps its colour by name across charts and refreshes.
   // A console's worst, average and setting lines share its colour, and differ in style.
   const base = (label) => label.replace(/ (setting|worst|average)$/, "");
+  // A console's series are labelled "<console> (<Clock Box>)"; everything else belongs to a Clock Box or the link.
+  const isConsole = (name) => /\(.+\)$/.test(name);
   const names = [...new Set(graphData.series.map((s) => base(s.label)))].sort();
-  const colourOf = (label) => SERIES_COLOURS[names.indexOf(base(label)) % SERIES_COLOURS.length];
+  const consoles = names.filter(isConsole);
+  const others = names.filter((n) => !isConsole(n));
+  const colourOf = (label) => {
+    const name = base(label);
+    return isConsole(name) ? CONSOLE_COLOURS[consoles.indexOf(name) % CONSOLE_COLOURS.length]
+      : VIRGIL_COLOURS[others.indexOf(name) % VIRGIL_COLOURS.length];
+  };
   const styleOf = (key) => (key.startsWith("limit/") ? "setting" : key.startsWith("average/") ? "average" : "line");
 
   const controls = el("div", { class: "row graph-windows", role: "group", "aria-label": "Graph window" },
@@ -166,7 +203,7 @@ function renderGraphs() {
       legend.replaceChildren(...when, ...series.map((s) => {
         const value = at === undefined ? (s.points.length ? s.points[s.points.length - 1][1] : null) : valueAt(s.points, at);
         return el("li", {}, el("span", { class: `swatch ${s.style}`, style: `--swatch:${s.colour}` }),
-          `${s.label} `, el("span", { class: "legend-value" }, formatValue(chart.kind, value)));
+          `${s.label} `, el("span", { class: "legend-value" }, formatValue(chart, value)));
       }));
     };
     canvas.addEventListener("pointermove", (event) => {
@@ -181,7 +218,13 @@ function renderGraphs() {
     // A chart with many lines gets a row to itself, with its legend in columns.
     const wide = chart.wide || series.length > 4;
     const card = el("figure", { class: wide ? "graph-card wide" : "graph-card" },
-      el("figcaption", {}, chart.title, el("span", { class: "graph-unit" }, `, ${unitLabel(chart.kind)}`)), canvas, legend);
+      el("figcaption", {}, chart.title, ", ", chart.kind === "time"
+        ? el("button", {
+          class: "unit-switch", type: "button",
+          title: "Change this chart's unit", "aria-label": `${chart.title}: in ${UNITS[chartUnit(chart)].label}. Change unit`,
+          onclick: () => { nextUnit(chart); renderGraphs(); },
+        }, UNITS[chartUnit(chart)].label)
+        : el("span", { class: "graph-unit" }, unitLabel(chart.kind))), canvas, legend);
     requestAnimationFrame(() => drawChart(canvas, chart, series));
     return card;
   });
