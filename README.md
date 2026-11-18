@@ -64,7 +64,7 @@ The background, and why any of this works, is in [wireless-dante](https://github
 | Consoles that can do **PTPv2**, or Dante devices that do PTPv1 | Shown on Virgil's **Consoles** page | Virgil can turn native PTPv2 on if the console supports it, but can use PTPv1 if necessary. |
 | Internet access while installing | | Internet access is not required for regular use, **only** for installation. |
 
-Virgil's PTP is not immune to the IGMP issues that regular Dante clocks face. You should be familiar with IGMP snooping and queriers and multicast handling before using Virgil. Virgil is not a replacement for Dante, it is an *extension* of it.
+Virgil's PTP is not immune to the multicast handling issues that regular Dante clocks face. You should be familiar with IGMP snooping and queriers and how your network infrastructure handles multicast traffic before using Virgil. Virgil is not a replacement for Dante, it is an *extension* of it.
 
 ## Install
 
