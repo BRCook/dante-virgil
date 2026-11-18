@@ -436,13 +436,19 @@ function ptpv1Section(can) {
   if (!serving) return [];
   const parts = [el("h3", {}, "PTPv1")];
   const select = el("select", { "aria-label": "Serve PTPv1", disabled: !can });
-  for (const [value, label] of [["fallback", "When no device bridges PTPv2 into PTPv1"], ["always", "Always"], ["off", "Off"]]) {
+  for (const [value, label] of [["fallback", "When no device bridges PTPv2 into PTPv1"], ["always", "Always"],
+    ["only", "Instead of PTPv2"], ["off", "Off"]]) {
     select.append(el("option", { value }, label));
   }
   select.value = serving.v1_mode;
   select.addEventListener("change", () => act("/api/v1/ptpv1", { mode: select.value }, "PTPv1 setting saved"));
   parts.push(el("div", { class: "row" }, el("label", { class: "field" }, "Serve PTPv1", select)));
-  const facts = [serving.v1 ? `Serving PTPv1: ${serving.v1_reason}` : `Standing by: ${serving.v1_reason}`];
+  const facts = [serving.switching ? "Switching over: the new protocol starts first, and the old one stops once "
+    + "the Dante devices have moved to it."
+    : serving.v1 ? `Serving PTPv1: ${serving.v1_reason}` : `Standing by: ${serving.v1_reason}`];
+  if (serving.v1_mode === "only" && !serving.switching) {
+    facts.push("ptp4l isn't running, so this Virgil serves no PTPv2. Dante devices with PTPv2 on will be warned about.");
+  }
   const stamps = serving.v1_timestamps;
   if (serving.v1 && stamps && stamps.send !== "none yet" && stamps.receive !== "none yet"
       && !(stamps.send === "hardware" && stamps.receive === "hardware")) {
@@ -450,7 +456,7 @@ function ptpv1Section(can) {
       : `Using ${stamps.send} timestamps when sending, and ${stamps.receive} timestamps when receiving`);
   }
   const slots = (status.ptp || {}).tx_slots;
-  if (slots && !slots.can_share && serving.v1_mode !== "off") {
+  if (slots && !slots.can_share && serving.v1_mode !== "off" && serving.v1_mode !== "only") {
     facts.push(`${status.ptp.interface} ${slots.reason}, so while ptp4l is running, PTPv1 takes its transmit timestamps `
       + "from the kernel.");
   }

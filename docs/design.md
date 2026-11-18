@@ -68,6 +68,7 @@ The actual timekeeping is done by three standard programs: **chrony** (NTP), **p
 | `dante-virgil-trim` | `virgil-root trim`, which changes a leader's PHC rate without restarting anything. |
 | `dante-virgil-settime` | `virgil-root settime`, which steps a leader's system clock and PHC together (see [Setting the Time](#setting-the-time)). |
 | `dante-virgil-dhcpnames` | `virgil-root dhcpnames`, which tidies the network configuration (see [Networking](#networking)). |
+| `dante-virgil-hwstamp` | `virgil-root hwstamp`, which turns hardware timestamping on when ptp4l won't be running to do it (see [Serving PTPv1 Instead of PTPv2](#serving-ptpv1-instead-of-ptpv2)). |
 | `dante-virgil-netaudio` | netaudio's daemon, which Virgil uses to talk to the Dante devices (see [Dante Devices](#dante-devices)). It listens on loopback only. |
 
 ### Files
@@ -393,8 +394,22 @@ The `ptpv1` setting chooses when Virgil serves PTPv1:
 - **`fallback`** (the default) serves PTPv1 only when nothing local can bridge this Virgil's PTPv2 into PTPv1. Virgil stands by while a local Dante device is bridging (seen within the last 15 seconds), while netaudio shows a local Dante device with PTPv2 or AES67 on (such a device could bridge, and would go passive if Virgil served instead), and while no local Dante device uses PTPv1 at all. After `virgild` starts, it watches the network for 20 seconds before deciding anything.
 - **`always`** serves PTPv1 regardless.
 - **`off`** never serves PTPv1.
+- **`only`** serves PTPv1 *instead of* PTPv2: ptp4l doesn't run at all (see [Serving PTPv1 Instead of PTPv2](#serving-ptpv1-instead-of-ptpv2)).
 
 Every time Virgil starts or stops serving PTPv1, every PTPv1 device on its side has to notice, and then choose a new PTPv1 leader. Both Virgil leaders serve the same clock, so the time doesn't jump, but every Dante device still has to change course and settle again. Virgil therefore avoids switching on a whim: under `fallback`, it re-checks every five seconds whether it should be serving PTPv1, but only switches once the answer has been "yes" or "no" for 15 seconds without a break. If a bridging device reboots, for example, Virgil doesn't step in the moment it stops bridging — Virgil re-classifies the device as non-bridging after 15 seconds of silence, and then only decides to change PTPv1 modes once that state holds for another 15 seconds, so Virgil steps in after about half a minute. If the console comes back before then, the pending switch is simply dropped, and its Dante devices never notice it was gone. A change made from the web UI applies straight away, since we assume you know what you're doing.
+
+### Serving PTPv1 Instead of PTPv2
+
+Some deployments have no Dante devices that can speak PTPv2 at all. There, ptp4l serves nobody, and only takes the card's transmit timestamp slots away from PTPv1. The `only` setting ("Instead of PTPv2" in the web UI) turns ptp4l off, and leaves PTPv1 to serve on its own.
+
+Nothing else changes. ptp4l normally turns the card's hardware timestamping on when it starts, so without it, `virgil-root hwstamp` does that instead (run by `dante-virgil-hwstamp`, after a setup from scratch, and whenever ptp4l stops). With the card's transmit timestamp slots to itself, PTPv1 uses its hardware transmit timestamps, however many slots the card has. PTPv1 also serves straight away, without the usual 20 seconds of watching, and names the PTP interface's MAC address as the grandmaster (normally it learns that from ptp4l's announcements).
+
+Switching into or out of `only` mode is *make before break*. PTPv1 and PTPv2 both serve the same PHC, so they agree on the time from the first message, and the switch doesn't need a setup from scratch:
+
+- **Into `only` mode:** PTPv1 starts first, alongside ptp4l, and Virgil waits until the Dante devices follow it (up to 10 seconds, if any PTPv1 devices are present), then a few seconds more. Only then does ptp4l stop, and PTPv1 take over the card's transmit timestamps.
+- **Out of `only` mode:** ptp4l starts first, and Virgil waits until its first Announce goes out, then a few seconds more, so the Dante devices have heard it. Only then does PTPv1 go back to sharing (if the card can), and the usual rules decide whether it carries on serving.
+
+Starting or stopping ptp4l touches nothing else: chrony and phc2sys carry on as they were.
 
 ## Automatic Trim
 
@@ -553,7 +568,7 @@ Each Virgil has one configuration file, `/etc/dante-virgil/virgil.toml`. The web
 | `trim_ppb` | 0 | The PHC's rate while this Virgil leads, in parts per billion.|
 | `auto_trim` | true | Whether to steer the trim towards the Dante devices' preferred rate while leading (see [Automatic Trim](#automatic-trim)). |
 | `ntp_hwtimestamp` | true | Whether chrony may use hardware timestamps on the management interface, where it's safe (see [Hardware Timestamps for NTP](#hardware-timestamps-for-ntp)). |
-| `ptpv1` | `fallback` | When to serve PTPv1: `fallback`, `always` or `off` (see [When It Serves](#when-it-serves)). |
+| `ptpv1` | `fallback` | When to serve PTPv1: `fallback`, `always`, `off`, or `only` (instead of PTPv2) (see [When It Serves](#when-it-serves)). |
 | `probe_timestamps` | true | Whether to probe the PTP interface's transmit timestamp slots during a setup from scratch (see [Transmit Timestamp Slots](#transmit-timestamp-slots)). |
 | `observe_only` | false | Only take part in the election as an observer; roles are then set by hand with `virgilctl role`. Meant for testing. |
 | `web_password` | none | The web UI's password, as a scrypt hash. |

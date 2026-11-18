@@ -1,0 +1,7 @@
+[Unit]
+Description=Virgil: turn on hardware timestamping when ptp4l isn't running to do it
+Documentation=https://github.com/BRCook/dante-virgil
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dante-virgil/venv/bin/virgil-root hwstamp

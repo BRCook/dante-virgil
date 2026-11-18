@@ -430,3 +430,17 @@ def test_settime_with_the_real_runner_reports_success(tmp_path, monkeypatch):
     request = tmp_path / "settime.json"
     request.write_text(json.dumps({"delta": 5.0}))
     assert settime(request, generated, set_clock=lambda t: None) == 0
+
+
+def test_the_probe_names_the_interface_once_on_a_profiled_card(tmp_path):
+    plan = json.loads((_prepare(tmp_path, _follower("enp191s0")) / "plan.json").read_text())  # the RTL8126
+    assert plan["probe"] == {"interface": "enp191s0", "hwstamp": ["-t", "1", "-r", "12"]}
+
+
+def test_without_ptp4l_the_plan_turns_timestamping_on_itself(tmp_path):
+    (tmp_path / "plain").mkdir()
+    (tmp_path / "profiled").mkdir()
+    plan = json.loads((_prepare(tmp_path / "plain", _leader(serve_ptpv2=False)) / "plan.json").read_text())
+    assert plan["hwstamp"] == ["/usr/sbin/hwstamp_ctl", "-i", "enp1s0", "-t", "1", "-r", "1"]
+    plan = json.loads((_prepare(tmp_path / "profiled", _leader("enp191s0", serve_ptpv2=False)) / "plan.json").read_text())
+    assert plan["hwstamp"] == ["/usr/sbin/hwstamp_ctl", "-i", "enp191s0", "-t", "1", "-r", "12"]  # its profile's

@@ -1341,3 +1341,72 @@ def test_software_only_ptpv1_is_warned_about(tmp_path, monkeypatch):
     asyncio.run(a.check_ptpv1(100.0, settle=0))
     a.ptpv1_server.timestamps = lambda: {"send": "software", "receive": "software"}
     assert any("software timestamps only" in w for w in a.ptp_warnings(100.0))
+
+
+def test_ptpv1_only_serves_at_once_with_the_cards_own_mac(tmp_path, monkeypatch):
+    a = _ptpv1_virgil(tmp_path, monkeypatch, mode="only")
+    a.ptp.own_identity = a.ptp.own_announced_at = None  # no ptp4l, so nothing announced
+    a.ptp_watch_started = 99.0
+    a.ptp_mac = lambda: "8c:a6:82:71:3b:b6"
+    assert a.wants_ptpv2() is False
+    assert a.ptpv1_wanted(100.0) == (True, "PTPv1 only, instead of PTPv2")  # no 20 s wait, no PTPv2 needed
+
+
+def test_ptpv1_has_the_slots_to_itself_without_ptp4l(tmp_path, monkeypatch):
+    from virgil import timestamping
+
+    a = _ptpv1_virgil(tmp_path, monkeypatch, mode="only")
+    a.ptp.own_announced_at = None
+    a.ptp_slots = lambda: timestamping.Slots(1, "probe", shareable=False)
+    assert a.ptpv1_hardware_tx() is True  # one slot, but ptp4l isn't using it
+    a.ptp_slots = lambda: timestamping.Slots(0, "probe", shareable=False)
+    assert a.ptpv1_hardware_tx() is False  # no hardware transmit timestamps at all
+
+
+def test_switching_into_ptpv1_only_makes_before_it_breaks(tmp_path, monkeypatch):
+    from virgil import timestamping
+
+    a = _ptpv1_virgil(tmp_path, monkeypatch, mode="fallback")
+    a.config.ptpv1 = "only"
+    a.ptp_mac = lambda: "8c:a6:82:71:3b:b6"
+    a.ptp_slots = lambda: timestamping.Slots(1, "probe", shareable=False)
+    order = []
+
+    class Timing:
+        request = replace_request = None
+
+        def poke(self):
+            order.append(("ptp4l wanted", a.serve_ptpv2_wanted))
+            self.request = type("Request", (), {"serve_ptpv2": a.serve_ptpv2_wanted})()
+
+    a.timing = Timing()
+    a.ptp.own_announced_at = time.monotonic()  # ptp4l is serving to begin with
+
+    async def scenario():
+        await a.switch_ptpv1_mode(True, settle=0, follow_wait=0)
+        order.append(("PTPv1 hardware tx", a.ptpv1_server.hardware_tx))
+
+    asyncio.run(scenario())
+    assert a.ptpv1_server is not None and a.ptpv1_server.running  # PTPv1 started first...
+    assert order == [("ptp4l wanted", False), ("PTPv1 hardware tx", True)]  # ...then ptp4l stopped, then the slot
+    assert a.serving()["v1"] is True
+
+
+def test_switching_back_waits_for_ptp4l_to_announce(tmp_path, monkeypatch):
+    a = _ptpv1_virgil(tmp_path, monkeypatch, mode="only")
+    a.config.ptpv1 = "fallback"
+    a.serve_ptpv2_wanted = False
+    a.ptp.own_announced_at = None
+    a.ptp_mac = lambda: "8c:a6:82:71:3b:b6"
+    announced = []
+
+    class Timing:
+        request = None
+
+        def poke(self):
+            announced.append(True)  # ptp4l starts, and its first Announce goes out
+            a.ptp.own_announced_at = time.monotonic()
+
+    a.timing = Timing()
+    asyncio.run(a.switch_ptpv1_mode(False, settle=0))
+    assert a.serve_ptpv2_wanted is True and announced == [True] and a.serving()["v2"] is True

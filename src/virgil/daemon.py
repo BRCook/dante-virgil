@@ -174,6 +174,9 @@ class Daemon:
     ptpv1_server: ptpv1_module.Server | None = field(default=None, init=False)
     ptpv1_reason: str = field(default="watching the network before deciding", init=False)
     ptpv1_pending: tuple | None = field(default=None, init=False)
+    # Whether ptp4l should serve PTPv2. Off in the "only" PTPv1 mode; switched in step with PTPv1 (see switch_ptpv1_mode).
+    serve_ptpv2_wanted: bool | None = field(default=None, init=False)
+    ptpv1_switching: asyncio.Task | None = field(default=None, init=False)
     # Where evidence about cards' transmit timestamp slots is kept, and what was seen this session.
     timestamping_path: Path = field(default=timestamping.EVIDENCE_PATH, init=False)
     slots_watch: timestamping.Watch = field(default_factory=timestamping.Watch, init=False)
@@ -257,7 +260,7 @@ class Daemon:
             return TimingRequest(Role.LEADER, config.ptp_interface, None, tuple(networks),
                                  config.trim_ppb, config.nic_profile is not None,
                                  ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
-                                 probe_timestamps=config.probe_timestamps)
+                                 probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2())
         addresses = self.addresses_for(target.leader_id) if target.leader_id else []
         if not addresses:
             return None
@@ -265,7 +268,7 @@ class Daemon:
         return TimingRequest(Role.FOLLOWER, config.ptp_interface, leader, tuple(networks or [leader]),
                              config.trim_ppb, config.nic_profile is not None,
                              ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
-                             probe_timestamps=config.probe_timestamps)
+                             probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2())
 
     def on_applied(self, target: Target | None) -> None:
         """The timing services now match the election's decision."""
@@ -312,10 +315,15 @@ class Daemon:
         mtime = self.config_path.stat().st_mtime
         if mtime == self.config_mtime:
             return False
-        old_password = self.config.web_password
+        old_password, old_ptpv1 = self.config.web_password, self.config.ptpv1
         self.config = config_file.load(self.config_path)
         if self.web is not None and self.config.web_password != old_password:
             self.web.sessions.end_all()
+        if self.config.ptpv1 != old_ptpv1:
+            try:
+                self.change_ptpv1_mode(old_ptpv1, self.config.ptpv1)  # as from the web UI: make before break
+            except RuntimeError:
+                pass  # no event loop running (reloaded outside virgild's loop, as in some tests)
         self.config_mtime = mtime
         self._trust_members()
         log.info("Reloaded the config")
@@ -687,6 +695,38 @@ class Daemon:
         names = {d.address: d.name for d in self.consoles.devices.values()} if self.consoles else {}
         return " and ".join(names.get(a, a) for a in addresses)
 
+    def wants_ptpv2(self) -> bool:
+        """Whether ptp4l should be serving PTPv2: always, except in the "only" PTPv1 mode."""
+        if self.serve_ptpv2_wanted is None:
+            self.serve_ptpv2_wanted = self.config.ptpv1 != "only"
+        return self.serve_ptpv2_wanted
+
+    def ptp_mac(self) -> str | None:
+        """The PTP interface's MAC: the grandmaster identity PTPv1 announces. ptp4l's, if it's serving."""
+        own = mac_of_identity(self.ptp.own_identity)
+        if own is not None:
+            return own
+        try:
+            return Path(f"/sys/class/net/{self.config.ptp_interface}/address").read_text().strip().lower() or None
+        except (OSError, TypeError):
+            return None
+
+    def ptp4l_running(self) -> bool:
+        """Whether ptp4l is (or is about to be) running: from what virgild asked for, not from its last Announce,
+        which lingers for a few seconds after it stops."""
+        if self.wants_ptpv2():
+            return True
+        if self.timing is not None:
+            return self.timing.request is not None and self.timing.request.serve_ptpv2
+        return self.serving_ptpv2(time.monotonic())  # not managing the timing services: go by what's heard
+
+    def ptpv1_hardware_tx(self) -> bool:
+        """Whether PTPv1 should use the card's transmit timestamps: when it has them to itself, or can share them."""
+        slots = self.ptp_slots()
+        if self.ptp4l_running():
+            return slots.can_share
+        return slots.count != 0  # ptp4l isn't using them: any card with hardware transmit timestamps will do
+
     def ptpv1_wanted(self, now: float) -> tuple[bool, str]:
         """Whether this Virgil should serve PTPv1, and why, following the ptpv1 setting."""
         mode = self.config.ptpv1
@@ -696,6 +736,10 @@ class Daemon:
             return False, "there's no PTP interface to serve on"
         if not self.ptp_addresses:
             return False, f"{self.config.ptp_interface} has no IPv4 address"
+        if mode == "only":
+            if self.ptp_mac() is None:
+                return False, f"couldn't read {self.config.ptp_interface}'s MAC address"
+            return True, "PTPv1 only, instead of PTPv2"
         if not self.serving_ptpv2(now) or mac_of_identity(self.ptp.own_identity) is None:
             return False, "this Virgil isn't serving PTPv2, so there's no clock to serve"
         if mode == "always":
@@ -776,10 +820,8 @@ class Daemon:
             return
         self.ptpv1_pending = None
         if wanted:
-            mac = mac_of_identity(self.ptp.own_identity)
-            # ptp4l is running too, so the card's transmit timestamps are only used if it can share them.
-            server = ptpv1_module.Server(self.config.ptp_interface, self.ptp_addresses[0], mac,
-                                         hardware_tx=self.ptp_slots().can_share)
+            server = ptpv1_module.Server(self.config.ptp_interface, self.ptp_addresses[0], self.ptp_mac(),
+                                         hardware_tx=self.ptpv1_hardware_tx())
             try:
                 server.start()
             except OSError as error:
@@ -792,6 +834,54 @@ class Daemon:
             await self.ptpv1_server.stop()
             self.ptpv1_server = None
             log.info("Stopped serving PTPv1: %s", reason)
+
+    def change_ptpv1_mode(self, old: str, new: str) -> None:
+        """React to a new ptpv1 setting. Into or out of "only", PTPv1 and ptp4l swap over in the background."""
+        self.ptpv1_pending = None
+        if (old == "only") == (new == "only"):
+            asyncio.ensure_future(self.check_ptpv1(settle=0))
+            return
+        if self.ptpv1_switching is not None and not self.ptpv1_switching.done():
+            self.ptpv1_switching.cancel()
+        self.ptpv1_switching = asyncio.ensure_future(self.switch_ptpv1_mode(new == "only"))
+
+    async def _wait_for(self, done, timeout: float, step: float = 0.5) -> bool:
+        deadline = time.monotonic() + timeout
+        while not done():
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(step)
+        return True
+
+    async def switch_ptpv1_mode(self, only: bool, settle: float = 3.0, follow_wait: float = 10.0) -> None:
+        """Swap between PTPv2 (with PTPv1 as the setting says) and PTPv1 only, without a gap.
+
+        Both serve the same PHC, so the time doesn't jump: the new protocol starts, the Dante devices move over
+        to it, and only then does the old one stop. Nothing is set up from scratch.
+        """
+        if only:
+            await self.check_ptpv1(settle=0)  # PTPv1 first, alongside ptp4l
+            if self.ptpv1_server is not None and self.ptp.ptpv1_heard(time.monotonic()):
+                await self._wait_for(lambda: bool(self.ptpv1_server.current_followers()), follow_wait)
+            await asyncio.sleep(settle)
+            self.serve_ptpv2_wanted = False
+            if self.timing is not None:
+                self.timing.poke()
+                await self._wait_for(lambda: self.timing.request is not None
+                                     and not self.timing.request.serve_ptpv2, 60.0)
+            if self.ptpv1_server is not None:
+                self.ptpv1_server.set_hardware_tx(self.ptpv1_hardware_tx())  # the slots are PTPv1's now
+            log.info("Serving PTPv1 only: ptp4l has stopped")
+        else:
+            self.serve_ptpv2_wanted = True
+            if self.timing is not None:
+                self.timing.poke()
+            await self._wait_for(lambda: self.serving_ptpv2(time.monotonic()), 60.0)
+            await asyncio.sleep(settle)  # time for the devices to hear ptp4l before PTPv1 might step back
+            if self.ptpv1_server is not None:
+                self.ptpv1_server.set_hardware_tx(self.ptpv1_hardware_tx())  # sharing again: only if the card can
+            await self.check_ptpv1(settle=0)
+            log.info("Serving PTPv2 again")
 
     async def watch_ptpv1(self) -> None:
         tick = 0
@@ -862,6 +952,7 @@ class Daemon:
                                  console_healthy=console_healthy)
         self.consoles = Consoles(client, local, lambda: self.config.devices,
                                  on_latency_history=self.on_latency_history,
+                                 serving_ptpv2=self.wants_ptpv2,
                                  clock_identity=clock_identity, own_identity=lambda: self.ptp.own_identity,
                                  member_identities=member_identities)
 
@@ -1385,6 +1476,7 @@ class Daemon:
                     "v1_mode": self.config.ptpv1,
                     "v1_timestamps": self.ptpv1_server.timestamps() if self.ptpv1_server else None,
                     "v1_hardware_tx": self.ptpv1_server.hardware_tx if self.ptpv1_server else None,
+                    "switching": self.ptpv1_switching is not None and not self.ptpv1_switching.done(),
                     "v1_followers": self.ptpv1_server.current_followers() if self.ptpv1_server else [],
                 },
                 "ptp": {
