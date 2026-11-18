@@ -42,8 +42,15 @@ SYNC_BODY = struct.Struct("!IIhh x B 6s H H 3x B 4s 2x h x B x B 3x b 2x h 2x H 
 DELAY_RESP_BODY = struct.Struct("!II x B 6s H H")
 
 SO_TIMESTAMPING, SCM_TIMESTAMPING, SO_BINDTODEVICE = 37, 37, 25
-TIMESTAMPING = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 6) | (1 << 11)
-# TX_HARDWARE | TX_SOFTWARE | RX_HARDWARE | RX_SOFTWARE | SOFTWARE | RAW_HARDWARE | OPT_TSONLY
+TX_HARDWARE, TX_SOFTWARE, RX_HARDWARE, RX_SOFTWARE, SOFTWARE, RAW_HARDWARE, OPT_TSONLY = (
+    1 << 0, 1 << 1, 1 << 2, 1 << 3, 1 << 4, 1 << 6, 1 << 11)
+
+
+def timestamping_flags(hardware_tx: bool) -> int:
+    """What to ask the kernel for. Without hardware_tx, the card's transmit timestamp slots are left to ptp4l:
+    sending is timed by the kernel, but packets the card receives (which don't use the slots) still get its time."""
+    flags = TX_SOFTWARE | RX_HARDWARE | RX_SOFTWARE | SOFTWARE | RAW_HARDWARE | OPT_TSONLY
+    return flags | TX_HARDWARE if hardware_tx else flags
 
 
 def header(control: int, sequence: int, uuid: bytes, flags: int) -> bytes:
@@ -103,8 +110,10 @@ def timestamp(data: bytes) -> tuple[Stamp | None, str]:
 class Server:
     """A PTPv1 grandmaster on one interface, run by virgild."""
 
-    def __init__(self, interface: str, address: str, mac: str):
+    def __init__(self, interface: str, address: str, mac: str, hardware_tx: bool = True):
         self.interface, self.address = interface, address
+        # Whether to ask the card for transmit timestamps: only when it can share them with ptp4l.
+        self.hardware_tx = hardware_tx
         self.uuid = bytes.fromhex(mac.replace(":", ""))
         self.sequence = 0
         self.stats: collections.Counter = collections.Counter()
@@ -124,17 +133,33 @@ class Server:
         s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 0)
         s.setblocking(False)
         if timestamps:
-            s.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPING, TIMESTAMPING)
+            s.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPING, timestamping_flags(self.hardware_tx))
         return s
+
+    def set_hardware_tx(self, hardware_tx: bool) -> None:
+        """Change whether sending is timed by the card, on a running grandmaster, without a gap in its messages."""
+        if hardware_tx == self.hardware_tx:
+            return
+        self.hardware_tx = hardware_tx
+        if self._event is not None:
+            self._event.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPING, timestamping_flags(hardware_tx))
+        log.info("PTPv1 now takes its transmit timestamps from %s", "the card" if hardware_tx else "the kernel")
 
     @property
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    def timestamps(self) -> str:
-        """Which timestamps it's using: hardware, software, or none yet."""
-        hardware, software = self.stats["hardware send times"], self.stats["software send times"]
+    @staticmethod
+    def _kind(hardware: int, software: int) -> str:
         return "hardware" if hardware and hardware >= software else "software" if software else "none yet"
+
+    def timestamps(self) -> dict[str, str]:
+        """Which timestamps it's using, for sending and for receiving: hardware, software, or none yet."""
+        return {
+            "send": self._kind(self.stats["hardware send times"], self.stats["software send times"]),
+            "receive": self._kind(self.stats["hardware arrival times"],
+                                  self.stats["software arrival times"] + self.stats["approximate arrival times"]),
+        }
 
     def start(self) -> None:
         if self.running:
@@ -164,13 +189,17 @@ class Server:
         log.info("Stopped serving PTPv1")
 
     async def _sent_at(self) -> tuple[Stamp | None, str]:
-        """When the last Sync really left: the NIC's time if it gives one within 20 ms, else the kernel's."""
+        """When the last Sync really left: the NIC's time if it gives one within 20 ms, else the kernel's.
+
+        Without hardware transmit timestamps, the kernel's is all that's coming, so there's no point waiting
+        for more once it's here (every Follow-Up would be late by the wait).
+        """
         best, kind = None, "none"
         for _ in range(40):
             try:
                 _, ancillary, _, _ = self._event.recvmsg(1, 512, socket.MSG_ERRQUEUE)
             except BlockingIOError:
-                if kind == "hardware":
+                if kind == "hardware" or (not self.hardware_tx and best is not None):
                     break
                 await asyncio.sleep(0.0005)
                 continue
@@ -179,7 +208,7 @@ class Server:
                     stamp, source = timestamp(data)
                     if stamp is not None and (best is None or source == "hardware"):
                         best, kind = stamp, source
-            if kind == "hardware":
+            if kind == "hardware" or (not self.hardware_tx and best is not None):
                 break
         return best, kind
 

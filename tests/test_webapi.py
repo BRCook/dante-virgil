@@ -429,3 +429,15 @@ def test_the_ptpv1_setting_from_the_page(virgil):
 
     statuses, mode = run(virgil, scenario)
     assert statuses == [200, 400] and mode == "off"
+
+
+def test_the_probe_setting_from_the_page(virgil):
+    async def scenario(daemon, session, base):
+        await _login(session, base)
+        async with session.post(f"{base}/api/v1/probe-timestamps", json={"enabled": False}, headers=HEADERS) as reply:
+            status = reply.status
+        async with session.post(f"{base}/api/v1/probe-timestamps", json={"enabled": "no"}, headers=HEADERS) as reply:
+            bad = reply.status
+        return status, bad, daemon.config.probe_timestamps
+
+    assert run(virgil, scenario) == (200, 400, False)

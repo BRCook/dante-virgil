@@ -318,3 +318,70 @@ def test_settime_refuses_nonsense(tmp_path, delta):
     request.write_text(json.dumps({"delta": delta}))
     moved = []
     assert settime(request, generated, Recorder(), set_clock=moved.append) == 1 and moved == []
+
+
+def test_the_plan_probes_a_hardware_interface_unless_told_not_to(tmp_path):
+    (tmp_path / "on").mkdir()
+    (tmp_path / "off").mkdir()
+    plan = json.loads((_prepare(tmp_path / "on", _leader()) / "plan.json").read_text())
+    assert plan["probe"] == {"interface": "enp1s0", "hwstamp": ["-t", "1", "-r", "1"]}
+    plan = json.loads((_prepare(tmp_path / "off", _leader(probe_timestamps=False)) / "plan.json").read_text())
+    assert plan["probe"] is None
+
+
+def test_the_probe_runs_once_per_card_and_never_fails_the_sync(tmp_path):
+    from virgil import timestamping, tsprobe
+    from tests.test_tsprobe import Clock, SimulatedCard
+
+    path = tmp_path / "timestamping-probe.json"
+    clock = Clock()
+    cards = []
+
+    class Card(SimulatedCard):
+        def __init__(self):
+            super().__init__(clock, slots=4)
+            cards.append(self)
+
+    # The probe uses the real clock; a simulated card that answers instantly keeps it quick.
+    import virgil.tsprobe as module
+
+    original = module.probe
+    module_probe = lambda card: original(card, clock=clock, sleep=clock.sleep)
+    try:
+        module.probe = module_probe
+        from virgil.rootctl import probe_slots
+
+        probe_slots({"interface": "enp1s0", "hwstamp": ["-t", "1"]}, Recorder(), Card(), path)
+        probe_slots({"interface": "enp1s0", "hwstamp": ["-t", "1"]}, Recorder(), Card(), path)  # cached: skipped
+    finally:
+        module.probe = original
+    assert len(cards) == 2 and cards[1].pending == [0, 0] and cards[1].last is None  # the second never sent a frame
+    saved = timestamping.load_probes(path)
+    assert len(saved) == 1 and next(iter(saved.values()))["slots"] == 4
+    slots = timestamping.slots_for("enp1s0", None, probe_path=path, path=tmp_path / "no-evidence.json")
+    assert slots.source == "probe" and slots.count == 4 and slots.can_share and slots.margin == 100
+
+
+def test_a_probe_that_cannot_run_leaves_the_card_unmeasured(tmp_path):
+    from virgil import timestamping
+    from virgil.rootctl import probe_slots
+
+    class Broken:
+        def send(self, which):
+            raise OSError("no such device")
+
+        def close(self):
+            pass
+
+    probe_slots({"interface": "enp1s0"}, Recorder(), Broken(), tmp_path / "probe.json")
+    assert timestamping.load_probes(tmp_path / "probe.json") == {}
+
+
+def test_evidence_beats_the_probe(tmp_path):
+    from virgil import timestamping
+
+    key = timestamping.card_key("enp1s0", "igc")
+    timestamping.save_probe(key, {"hardware": True, "slots": 4, "shareable": True, "margin": 100}, tmp_path / "p.json")
+    timestamping.save_evidence(key, "tx_hwtstamp_skipped rose", tmp_path / "e.json")
+    slots = timestamping.slots_for("enp1s0", "igc", path=tmp_path / "e.json", probe_path=tmp_path / "p.json")
+    assert slots == timestamping.Slots(1, "evidence") and not slots.can_share

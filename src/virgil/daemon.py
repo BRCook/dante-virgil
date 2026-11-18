@@ -35,6 +35,7 @@ from virgil.graphs import KEEP_SECONDS, WORST, Recorder, jitter
 from virgil.pinger import Pinger
 from virgil.recording import RECORDINGS, Session, stamp_now
 from virgil import ptpv1 as ptpv1_module
+from virgil import timestamping
 from virgil.ptpwatch import mac_of_identity
 from virgil.consoles import POLL_INTERVAL, Consoles, NetaudioClient
 from virgil.control import CONTROL_SOCKET, HANDOVER_PATH, LEAD_PATH
@@ -173,6 +174,11 @@ class Daemon:
     ptpv1_server: ptpv1_module.Server | None = field(default=None, init=False)
     ptpv1_reason: str = field(default="watching the network before deciding", init=False)
     ptpv1_pending: tuple | None = field(default=None, init=False)
+    # Where evidence about cards' transmit timestamp slots is kept, and what was seen this session.
+    timestamping_path: Path = field(default=timestamping.EVIDENCE_PATH, init=False)
+    slots_watch: timestamping.Watch = field(default_factory=timestamping.Watch, init=False)
+    slots_lost: str | None = field(default=None, init=False)
+    _slots_checked_at: float = field(default_factory=time.time, init=False)
     _graphed: dict = field(default_factory=lambda: {"clock": None, "polls": None}, init=False)
     # Members' graphs, fetched for the page: member ID to (when, series).
     _member_graphs: dict = field(default_factory=dict, init=False)
@@ -250,14 +256,16 @@ class Daemon:
                 log.warning("The management interface has no network, so no follower can sync to this Virgil")
             return TimingRequest(Role.LEADER, config.ptp_interface, None, tuple(networks),
                                  config.trim_ppb, config.nic_profile is not None,
-                                 ntp_hwtimestamp=self.ntp_hwtimestamp_interface())
+                                 ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
+                                 probe_timestamps=config.probe_timestamps)
         addresses = self.addresses_for(target.leader_id) if target.leader_id else []
         if not addresses:
             return None
         leader = addresses[0]
         return TimingRequest(Role.FOLLOWER, config.ptp_interface, leader, tuple(networks or [leader]),
                              config.trim_ppb, config.nic_profile is not None,
-                             ntp_hwtimestamp=self.ntp_hwtimestamp_interface())
+                             ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
+                             probe_timestamps=config.probe_timestamps)
 
     def on_applied(self, target: Target | None) -> None:
         """The timing services now match the election's decision."""
@@ -706,6 +714,48 @@ class Daemon:
             return False, "no PTPv1 devices here"
         return True, "no device here bridges this Virgil's PTPv2 into PTPv1"
 
+    def ptp_slots(self) -> timestamping.Slots:
+        """What Virgil believes about the PTP interface's transmit timestamp slots."""
+        interface = self.config.ptp_interface
+        found = get_interface(interface, timestamping=lambda name: None) if interface else None
+        return timestamping.slots_for(interface or "", found.driver if found else None, path=self.timestamping_path)
+
+    async def _command(self, *args: str) -> str:
+        try:
+            process = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE,
+                                                           stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await asyncio.wait_for(process.communicate(), 10)
+            return out.decode(errors="replace")
+        except (OSError, TimeoutError):
+            return ""
+
+    async def check_shared_timestamps(self) -> None:
+        """While ptp4l and PTPv1 share the card's transmit timestamps, watch for any going missing.
+
+        A rising skipped-timestamp counter, or ptp4l timing out, means the card can't really share: PTPv1
+        moves to the kernel's transmit timestamps straight away, and the card is treated as having one slot
+        from then on, even after a reboot.
+        """
+        server = self.ptpv1_server
+        since, self._slots_checked_at = self._slots_checked_at, time.time()
+        if server is None or not server.running or not server.hardware_tx:
+            self.slots_watch.baseline = None  # a fresh baseline when sharing starts again
+            return
+        interface = self.config.ptp_interface
+        reason = self.slots_watch.counters_rose(
+            timestamping.skipped_counters(await self._command("ethtool", "-S", interface)))
+        reason = reason or self.slots_watch.ptp4l_timed_out(await self._command(
+            "journalctl", "-u", "dante-virgil-ptp4l", "--since", f"@{int(since)}", "-o", "cat", "--no-pager"))
+        if reason is None:
+            return
+        found = get_interface(interface, timestamping=lambda name: None)
+        timestamping.save_evidence(timestamping.card_key(interface, found.driver if found else None), reason,
+                                   self.timestamping_path)
+        server.set_hardware_tx(False)
+        self.slots_lost = (f"{interface} lost a transmit timestamp while ptp4l and PTPv1 shared it ({reason}), "
+                           "so PTPv1 now takes its transmit timestamps from the kernel")
+        log.warning("%s", self.slots_lost)
+
     async def check_ptpv1(self, now: float | None = None, settle: float = PTPV1_SETTLE) -> None:
         """Start or stop serving PTPv1, once what's wanted has held for `settle` seconds.
 
@@ -727,7 +777,9 @@ class Daemon:
         self.ptpv1_pending = None
         if wanted:
             mac = mac_of_identity(self.ptp.own_identity)
-            server = ptpv1_module.Server(self.config.ptp_interface, self.ptp_addresses[0], mac)
+            # ptp4l is running too, so the card's transmit timestamps are only used if it can share them.
+            server = ptpv1_module.Server(self.config.ptp_interface, self.ptp_addresses[0], mac,
+                                         hardware_tx=self.ptp_slots().can_share)
             try:
                 server.start()
             except OSError as error:
@@ -742,10 +794,14 @@ class Daemon:
             log.info("Stopped serving PTPv1: %s", reason)
 
     async def watch_ptpv1(self) -> None:
+        tick = 0
         while True:
             await asyncio.sleep(5.0)
+            tick += 1
             try:
                 await self.check_ptpv1()
+                if tick % 6 == 0:  # every 30 seconds
+                    await self.check_shared_timestamps()
             except Exception:
                 log.exception("Couldn't decide about PTPv1")
 
@@ -908,6 +964,12 @@ class Daemon:
                 if quiet >= PTP_QUIET_AFTER:
                     warnings.append(f"No PTP has been heard on {interface} for {quiet:.0f} s. If a console is "
                                     "connected, check the switch's multicast settings")
+        if self.slots_lost:
+            warnings.append(self.slots_lost)
+        server = self.ptpv1_server
+        if server is not None and server.running and server.timestamps() == {"send": "software", "receive": "software"}:
+            warnings.append(f"PTPv1 on {interface} is using software timestamps only, so Dante devices following "
+                            "it will be noticeably less steady")
         return [w[:200] for w in warnings]
 
     def _ptp_link_up(self) -> bool | None:
@@ -1322,10 +1384,13 @@ class Daemon:
                     **self.serving(),
                     "v1_mode": self.config.ptpv1,
                     "v1_timestamps": self.ptpv1_server.timestamps() if self.ptpv1_server else None,
+                    "v1_hardware_tx": self.ptpv1_server.hardware_tx if self.ptpv1_server else None,
                     "v1_followers": self.ptpv1_server.current_followers() if self.ptpv1_server else [],
                 },
                 "ptp": {
                     "interface": self.config.ptp_interface,
+                    "tx_slots": self.ptp_slots().as_dict() if self.config.ptp_interface else None,
+                    "probe_timestamps": self.config.probe_timestamps,
                     "link_up": self._ptp_link_up(),
                     "has_address": bool(self.ptp_addresses),
                     "watching": self.ptp_watcher is not None,

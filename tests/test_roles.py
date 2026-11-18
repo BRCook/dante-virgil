@@ -140,3 +140,9 @@ def test_taking_the_lead_with_a_new_trim():
     assert transition(FOLLOWER, new) == [
         W, start(PREPARE), stop(PHC2SYS), start(TRIM), restart(CHRONY), start(PTP4L),
     ]
+
+
+def test_changing_the_probe_setting_restarts_nothing():
+    """Probing only happens during a setup from scratch, so the setting only needs the plan rewritten."""
+    assert transition(LEADER, replace(LEADER, probe_timestamps=False)) == [W, start(PREPARE)]
+    assert transition(FOLLOWER, replace(FOLLOWER, probe_timestamps=False)) == [W, start(PREPARE)]

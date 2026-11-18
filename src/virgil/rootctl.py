@@ -37,7 +37,7 @@ from virgil.generate import (
     trim_command,
 )
 from virgil.interfaces import Interface, Timestamping, get_interface
-from virgil.request import MAX_REQUEST_BYTES, REQUEST_PATH, RequestError, from_json
+from virgil.request import INTERFACE_NAME, MAX_REQUEST_BYTES, REQUEST_PATH, RequestError, from_json
 
 GENERATED_DIR = Path("/run/dante-virgil-generated")
 MAX_PLAN_BYTES = 64 * 1024
@@ -93,6 +93,9 @@ def prepare(
         "hwstamp": ["/usr/sbin/hwstamp_ctl", *hwstamp] if hwstamp else None,
         "trim": list(trim.args) if (trim := trim_command(setup)) else None,
         "phc": setup.phc if setup.hardware else None,
+        # Measuring the card's transmit timestamp slots, once ptp4l is stopped (see virgil.tsprobe).
+        "probe": {"interface": request.ptp_interface, "hwstamp": list(hwstamp or ("-t", "1", "-r", "1"))}
+        if request.probe_timestamps and setup.hardware else None,
     }
 
     atomic_write(generated / "ptp4l.conf", ptp4l_conf(setup, request.tuning).encode())
@@ -119,8 +122,9 @@ def _run(args: Sequence[str]) -> int:
     return subprocess.run(args).returncode
 
 
-def sync(generated: Path = GENERATED_DIR, run: Runner = _run) -> int:
-    for entry in _plan(generated)["sync"]:
+def sync(generated: Path = GENERATED_DIR, run: Runner = _run, probe_card=None, probe_path: Path | None = None) -> int:
+    plan = _plan(generated)
+    for entry in plan["sync"]:
         command = Command(tuple(entry["args"]), entry["may_fail"])
         status = run(command.args)
         if status != 0:
@@ -129,7 +133,52 @@ def sync(generated: Path = GENERATED_DIR, run: Runner = _run) -> int:
                 continue
             print(f"{command.args[0]} failed ({status})", file=sys.stderr)
             return status
+    if plan.get("probe"):
+        probe_slots(plan["probe"], run, probe_card, probe_path)
     return 0
+
+
+def probe_slots(step: dict, run: Runner = _run, card=None, path: Path | None = None) -> None:
+    """Measure the PTP interface's transmit timestamp slots, unless this card has been already.
+
+    Never fails the sync: a probe that can't run leaves the card unmeasured, and Virgil treats it as one slot.
+    """
+    from virgil import timestamping, tsprobe
+    from virgil.interfaces import get_interface
+
+    path = path or timestamping.PROBE_PATH
+    interface = step.get("interface")
+    if not isinstance(interface, str) or not INTERFACE_NAME.match(interface):
+        return
+    found = get_interface(interface, timestamping=lambda name: None)
+    key = timestamping.card_key(interface, found.driver if found else None)
+    if key in timestamping.load_probes(path):
+        print(f"{interface}'s transmit timestamp slots were probed before; not probing again", flush=True)
+        return
+    if card is None:
+        if found is None or not found.link_up:
+            print(f"Not probing {interface}'s transmit timestamp slots: it has no link", flush=True)
+            return
+        if run(["/usr/sbin/hwstamp_ctl", "-i", interface, *step.get("hwstamp", ["-t", "1", "-r", "1"])]) != 0:
+            print(f"Not probing {interface}'s transmit timestamp slots: couldn't turn hardware timestamping on",
+                  flush=True)
+            return
+    try:
+        probe_card = card or tsprobe.RawCard(interface)
+        try:
+            result = tsprobe.probe(probe_card)
+        finally:
+            probe_card.close()
+    except OSError as error:
+        print(f"Couldn't probe {interface}'s transmit timestamp slots: {error}", flush=True)
+        return
+    timestamping.save_probe(key, result.as_dict(), path)
+    if not result.hardware:
+        print(f"{interface} gave no hardware transmit timestamps", flush=True)
+    else:
+        print(f"{interface}: {result.slots} transmit timestamp slots; {result.pairs_lost} of {2 * tsprobe.PAIRS} "
+              f"timestamps lost from simultaneous pairs; load {result.losses or 'not tested'}; "
+              f"{'shares safely' if result.shareable else 'cannot share'} ({result.seconds} s)", flush=True)
 
 
 def hwstamp(generated: Path = GENERATED_DIR, run: Runner = _run) -> int:

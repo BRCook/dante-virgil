@@ -1107,9 +1107,13 @@ def test_no_time_setting_without_managing_timing(tmp_path):
 class _FakeServer:
     started = 0
 
-    def __init__(self, interface, address, mac):
+    def __init__(self, interface, address, mac, hardware_tx=True):
         self.interface, self.address, self.mac = interface, address, mac
+        self.hardware_tx = hardware_tx
         self.running = False
+
+    def set_hardware_tx(self, hardware_tx):
+        self.hardware_tx = hardware_tx
 
     def start(self):
         _FakeServer.started += 1
@@ -1119,7 +1123,7 @@ class _FakeServer:
         self.running = False
 
     def timestamps(self):
-        return "hardware"
+        return {"send": "hardware" if self.hardware_tx else "software", "receive": "hardware"}
 
     def current_followers(self):
         return []
@@ -1279,3 +1283,61 @@ def test_heartbeats_carry_each_virgils_console_settings(tmp_path):
 
     b.consoles = Consoles()
     assert b.heartbeat().device_settings == {"00:1d:c1:9f:77:fa": {"native_ptpv2": True, "aes67": False}}
+
+
+def test_ptpv1_only_takes_transmit_timestamps_from_a_card_that_can_share(tmp_path, monkeypatch):
+    from virgil import timestamping
+
+    for slots, expected in ((timestamping.Slots(4, "probe"), True), (timestamping.Slots(1, "probe"), False),
+                            (timestamping.Slots(None, "unknown"), False)):
+        a = _ptpv1_virgil(tmp_path / str(slots.count), monkeypatch, mode="always")
+        a.ptp_slots = lambda slots=slots: slots
+        asyncio.run(a.check_ptpv1(100.0, settle=0))
+        assert a.ptpv1_server.hardware_tx is expected
+
+
+def test_lost_timestamps_move_ptpv1_to_the_kernel_for_good(tmp_path, monkeypatch):
+    from virgil import timestamping
+
+    a = _ptpv1_virgil(tmp_path, monkeypatch, mode="always")
+    a.timestamping_path = tmp_path / "timestamping.json"
+    a.ptp_slots = lambda: timestamping.Slots(4, "probe")
+    asyncio.run(a.check_ptpv1(100.0, settle=0))
+    assert a.ptpv1_server.hardware_tx
+    readings = iter(["tx_hwtstamp_skipped: 0\n", "", "tx_hwtstamp_skipped: 2\n", ""])
+
+    async def command(*args):
+        return next(readings)
+
+    a._command = command
+    asyncio.run(a.check_shared_timestamps())  # the baseline
+    assert a.ptpv1_server.hardware_tx and a.slots_lost is None
+    asyncio.run(a.check_shared_timestamps())  # two skipped since
+    assert not a.ptpv1_server.hardware_tx
+    assert "lost a transmit timestamp while ptp4l and PTPv1 shared it" in a.slots_lost
+    assert any("lost a transmit timestamp" in w for w in a.ptp_warnings(100.0))
+    saved = timestamping.load_evidence(a.timestamping_path)
+    assert len(saved) == 1 and next(iter(saved.values()))["reason"] == "tx_hwtstamp_skipped rose"
+
+
+def test_ptp4l_timing_out_is_evidence_too(tmp_path, monkeypatch):
+    from virgil import timestamping
+
+    a = _ptpv1_virgil(tmp_path, monkeypatch, mode="always")
+    a.timestamping_path = tmp_path / "timestamping.json"
+    a.ptp_slots = lambda: timestamping.Slots(4, "probe")
+    asyncio.run(a.check_ptpv1(100.0, settle=0))
+
+    async def command(*args):
+        return "ptp4l[812]: port 1 (enp1s0): timed out while polling for tx timestamp\n" if args[0] == "journalctl" else ""
+
+    a._command = command
+    asyncio.run(a.check_shared_timestamps())
+    assert not a.ptpv1_server.hardware_tx and "ptp4l timed out" in a.slots_lost
+
+
+def test_software_only_ptpv1_is_warned_about(tmp_path, monkeypatch):
+    a = _ptpv1_virgil(tmp_path, monkeypatch, mode="always")
+    asyncio.run(a.check_ptpv1(100.0, settle=0))
+    a.ptpv1_server.timestamps = lambda: {"send": "software", "receive": "software"}
+    assert any("software timestamps only" in w for w in a.ptp_warnings(100.0))

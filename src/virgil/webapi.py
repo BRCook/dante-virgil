@@ -266,6 +266,14 @@ class WebApi:
         await self.daemon.check_ptpv1(settle=0)  # someone asked: no need to wait
         return web.json_response({"mode": mode, **self.daemon.serving()})
 
+    async def set_probe_timestamps(self, request: web.Request, body: dict) -> web.Response:
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            return _error("enabled must be true or false", 400)
+        self.daemon.config.probe_timestamps = enabled
+        self.daemon.save()
+        return web.json_response({"probe_timestamps": enabled})
+
     # Time
 
     async def sync_time(self, request: web.Request, body: dict) -> web.Response:
@@ -346,6 +354,7 @@ class WebApi:
             ("/api/v1/interfaces", self.choose_interfaces),
             ("/api/v1/time/sync", self.sync_time),
             ("/api/v1/ptpv1", self.set_ptpv1),
+            ("/api/v1/probe-timestamps", self.set_probe_timestamps),
             ("/api/v1/recording/start", self.start_recording),
             ("/api/v1/recording/stop", self.stop_recording),
             ("/api/v1/recording/note", self.recording_note),

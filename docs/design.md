@@ -78,7 +78,7 @@ The actual timekeeping is done by three standard programs: **chrony** (NTP), **p
 | `/etc/dante-virgil/tls/` | This Virgil's identity certificate and key (see [TLS](#tls)), plus `web/` for an imported web certificate. |
 | `/run/dante-virgil/` | Requests for `virgil-root`, the timing services' current state, and the control socket `virgilctl` uses to reach `virgild`. |
 | `/run/dante-virgil-generated/` | The configs `virgil-root prepare` generates. |
-| `/var/lib/dante-virgil/` | `events.jsonl` (the history of alerts, which survives reboots) and `recordings/` (logging sessions). |
+| `/var/lib/dante-virgil/` | `events.jsonl` (the history of alerts, which survives reboots), `recordings/` (logging sessions), `timestamping-probe.json` (each card's probe results) and `timestamping.json` (cards caught losing transmit timestamps); see [Transmit Timestamp Slots](#transmit-timestamp-slots). |
 | `/opt/dante-virgil/venv` | The Python environment Virgil runs from. |
 
 ### Ports
@@ -146,7 +146,7 @@ Neither change touches ptp4l (see above).
 
 At boot, or after the PTP interface changes, Virgil sets the timing services up from scratch. It stops everything, then (on a follower) steps the system clock to the leader's time with a one-off `chronyd -q`, sets the PHC from the system clock, and starts the services again. A connected Dante device sees one re-lock while this happens, since its grandmaster disappears and comes back.
 
-Every setup ends by saving the system time to the machine's hardware clock (`hwclock --systohc`). Clock Boxes are designed to run without internet access, so on the next boot, that saved time is the best starting point they have.
+Before the services start again, Virgil may also probe the PTP interface's transmit timestamp slots (see [Transmit Timestamp Slots](#transmit-timestamp-slots)). Every setup ends by saving the system time to the machine's hardware clock (`hwclock --systohc`). Clock Boxes are designed to run without internet access, so on the next boot, that saved time is the best starting point they have.
 
 ### Software Timestamping
 
@@ -343,6 +343,27 @@ The PTPv1 grandmaster runs inside `virgild` (the only instance where `virgild` i
 
 Sharing the card's timestamps isn't entirely free, though. When a program asks for an outgoing packet to be timestamped, the card keeps that timestamp in a *transmit timestamp slot* until the program collects it. The Intel i226 (with a recent kernel) has four slots, so ptp4l and the PTPv1 grandmaster can each have a packet waiting without getting in each other's way. Some cards have only one. On those (such as the Realtek RTL8126), a request made while the slot is full is simply ignored. If the ignored request is ptp4l's, ptp4l gives up with "timed out while polling for tx timestamp" and resets its port, which Dante devices see as their grandmaster disappearing. So, on a card with one slot, the PTPv1 grandmaster takes its transmit timestamps from the kernel instead. Timestamps for packets the card *receives* don't use the slots, however.
 
+### Transmit Timestamp Slots
+
+Virgil plans around what it has *measured* about each card's transmit timestamp slots, since the card itself doesn't report how many it has. Until a card has been measured, Virgil treats it as having one slot: the PTPv1 grandmaster leaves the card's transmit timestamps to ptp4l, and takes its own from the kernel. Virgil is built around PTPv2, so this prevents PTPv1 from overruling PTPv2.
+
+Virgil measures a card by probing it, during a setup from scratch (see [Setting Up From Scratch](#setting-up-from-scratch)). At that point ptp4l is stopped and the Dante devices are re-locking anyway, so nothing depends on the card for the few seconds the probe takes. The probe sends small test frames, each asking the card for a hardware transmit timestamp, and counts how many timestamps come back:
+
+1. **Hardware timestamps at all:** one frame. If no timestamp comes back, the card can't timestamp what it sends, and there's nothing more to measure.
+2. **Slots:** bursts of 64 frames back to back, five times. A card can only hold as many timestamps at once as it has slots, so the most that come back from any one burst is the number of slots.
+3. **Contention:** two senders, standing in for ptp4l and the PTPv1 grandmaster, each sending a frame at the same moment, 50 times. This is sharing's worst case, made certain rather than left to chance. A card that can't share loses a timestamp from nearly every pair; one that can loses none. This test decides whether sharing is possible at all.
+4. **Load,** only if the contention test passed: the two senders at 100 times their real rates (ptp4l's 8 Syncs a second, and PTPv1's 4), independently, for one second. If any timestamps go missing, the test runs again at 50 times the real rates for two seconds, then at 10 times for five, stopping at the first that loses nothing. Losses at 100 times that vanish at 50 times are the card (or the CPU) falling behind on sheer volume, rather than running out of slots. The level that passes is the card's margin; a card that loses timestamps even at 10 times can't share.
+
+The test frames are plain Ethernet frames with the EtherType reserved for local experiments (`0x88B5`), sent to an unused, locally administered address. They aren't IP or PTP, so Dante devices ignore them, and switches discard them. In the worst case, the probe takes about ten seconds.
+
+The result is saved in `/var/lib/dante-virgil/timestamping-probe.json`. Like the evidence below, it belongs to one card, on one driver, on one kernel, so a card is only probed again after a driver or kernel update. The probe can be turned off with the `probe_timestamps` setting (or "Probe timestamp slots at boot" in the web UI); a card that has never been probed stays unmeasured, and is treated as having one slot. If the probe can't run (because the PTP interface has no link, for example), the card stays unmeasured until the next setup from scratch. The probe never stops the timing services from starting.
+
+Once a card is known to have more than one slot, ptp4l and the PTPv1 grandmaster both use its transmit timestamps. Every 30 seconds, Virgil checks the driver's statistics (`ethtool -S`) for a rising count of skipped or timed-out transmit timestamps, and ptp4l's log for "timed out while polling for tx timestamp". Either one means the card couldn't keep up with both PTPv2 and PTPv1, so the PTPv1 grandmaster moves to software timestamps, and Virgil records the card in `/var/lib/dante-virgil/timestamping.json` as having one slot. That record outlasts reboots. It belongs to one card, on one driver, on one kernel, so after a driver or kernel update, the card gets measured again.
+
+The web UI shows each card's slots beside the PTP interface, along with where the figure came from. When the card has one slot (or hasn't been measured yet), the PTPv1 section explains that PTPv1 takes its transmit timestamps from the kernel while ptp4l is running. `virgilctl interfaces` shows the same in its TX SLOTS column.
+
+Timestamps for packets a card *receives* don't use the slots, so the PTPv1 grandmaster takes those from the card whenever it can. The RTL8126 is the exception: its NIC profile sets its receive filter to PTPv2 event messages only (`hwstamp_ctl -r 12`), so it doesn't timestamp received PTPv1 packets at all. On that card, the PTPv1 grandmaster uses the kernel's timestamps in both directions, and Virgil warns that PTPv1 is using software timestamps only.
+
 ### Measurements
 
 On the test bench, a Wing Compact followed Virgil's PTPv1 within seconds of it starting, with its PTPv2 port going passive (as expected). Here's its clock correction (how hard it was pulling its own clock to follow) on each path:
@@ -359,7 +380,7 @@ Hardware timestamps made PTPv1 usable, but PTPv2 was still about four times stea
 
 The `ptpv1` setting chooses when Virgil serves PTPv1:
 
-- **`fallback`** (the default) serves PTPv1 only when nothing local can bridge this Virgil's PTPv2 into PTPv1. Virgil stands by while a local Dante device is bridging (seen within the last 30 seconds), while netaudio shows a local Dante device with PTPv2 or AES67 on (such a device could bridge, and would go passive if Virgil served instead), and while no local Dante device uses PTPv1 at all. After `virgild` starts, it watches the network for 20 seconds before deciding anything.
+- **`fallback`** (the default) serves PTPv1 only when nothing local can bridge this Virgil's PTPv2 into PTPv1. Virgil stands by while a local Dante device is bridging (seen within the last 15 seconds), while netaudio shows a local Dante device with PTPv2 or AES67 on (such a device could bridge, and would go passive if Virgil served instead), and while no local Dante device uses PTPv1 at all. After `virgild` starts, it watches the network for 20 seconds before deciding anything.
 - **`always`** serves PTPv1 regardless.
 - **`off`** never serves PTPv1.
 
@@ -523,6 +544,7 @@ Each Virgil has one configuration file, `/etc/dante-virgil/virgil.toml`. The web
 | `auto_trim` | true | Whether to steer the trim towards the Dante devices' preferred rate while leading (see [Automatic Trim](#automatic-trim)). |
 | `ntp_hwtimestamp` | true | Whether chrony may use hardware timestamps on the management interface, where it's safe (see [Hardware Timestamps for NTP](#hardware-timestamps-for-ntp)). |
 | `ptpv1` | `fallback` | When to serve PTPv1: `fallback`, `always` or `off` (see [When It Serves](#when-it-serves)). |
+| `probe_timestamps` | true | Whether to probe the PTP interface's transmit timestamp slots during a setup from scratch (see [Transmit Timestamp Slots](#transmit-timestamp-slots)). |
 | `observe_only` | false | Only take part in the election as an observer; roles are then set by hand with `virgilctl role`. Meant for testing. |
 | `web_password` | none | The web UI's password, as a scrypt hash. |
 | `devices` | none | For each local Dante device, by MAC address: whether to enforce native PTPv2, and whether to enforce AES67. |
@@ -541,7 +563,7 @@ The web UI's API is on ports 443 and 8740. Reading is open to anyone who can rea
 | `GET /api/v1/time` | This Virgil's clock. |
 | `GET /api/v1/session`, `POST /api/v1/login`, `POST /api/v1/logout` | Logging in and out. |
 | `POST /api/v1/lead`, `/stop`, `/start` | Becoming leader, and stopping and starting the timing services. |
-| `POST /api/v1/trim`, `/auto-trim`, `/ptpv1` | Settings. |
+| `POST /api/v1/trim`, `/auto-trim`, `/ptpv1`, `/probe-timestamps` | Settings. |
 | `POST /api/v1/device` | A Dante device's enforce settings. With `virgil` set to another member's ID, the change is passed to that member. |
 | `GET`, `POST /api/v1/interfaces` | Listing and choosing interfaces. |
 | `POST /api/v1/group/create`, `/invite`, `/join` | Creating a group, inviting a Virgil into it, and joining one. |

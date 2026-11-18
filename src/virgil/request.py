@@ -57,6 +57,8 @@ class TimingRequest:
     tuning: Tuning = Tuning()
     # The management interface, if chrony should use its hardware timestamps.
     ntp_hwtimestamp: str | None = None
+    # Whether virgil-root may measure the PTP interface's transmit timestamp slots during a setup from scratch.
+    probe_timestamps: bool = True
 
 
 def to_json(request: TimingRequest) -> str:
@@ -161,6 +163,10 @@ def from_json(text: str | bytes) -> TimingRequest:
     if hwtimestamp is not None and (not isinstance(hwtimestamp, str) or not INTERFACE_NAME.match(hwtimestamp)):
         raise RequestError("ntp_hwtimestamp is not a valid interface name")
 
+    probe = data.get("probe_timestamps", True)
+    if not isinstance(probe, bool):
+        raise RequestError("probe_timestamps must be true or false")
+
     return TimingRequest(
         role=role,
         ptp_interface=interface,
@@ -170,4 +176,5 @@ def from_json(text: str | bytes) -> TimingRequest:
         use_nic_profile=use_profile,
         tuning=_tuning(data.get("tuning", {})),
         ntp_hwtimestamp=hwtimestamp,
+        probe_timestamps=probe,
     )
