@@ -320,6 +320,8 @@ class Consoles:
     # This Virgil's own grandmaster identity, and the other members' (identity to name).
     own_identity: Callable[[], str | None] = lambda: None
     member_identities: Callable[[], dict[str, str]] = dict
+    # Whether this Virgil serves PTPv2: in the "only" PTPv1 mode it doesn't, which changes the warnings.
+    serving_ptpv2: Callable[[], bool] = lambda: True
     # Given each device's new latency history, (Unix time, worst, average), for the graphs.
     on_latency_history: Callable[[DanteDevice, list[tuple[float, float, float]]], None] = lambda device, points: None
     _history_seen: dict[str, float] = field(default_factory=dict)
@@ -432,6 +434,15 @@ class Consoles:
         return warnings + self._ptp_warnings(device, now)
 
     def _ptp_warnings(self, device: DanteDevice, now: float) -> list[str]:
+        if not self.serving_ptpv2():
+            # PTPv1 only: PTPv2 being off is the point, and a device with it on has nothing to follow.
+            if device.ptpv2 or device.aes67:
+                return [f"{device.name} has PTPv2 on, but this Virgil only serves PTPv1, so it may make itself the "
+                        "PTPv2 grandmaster. Turn PTPv2 off on it, or serve PTPv2 too"]
+            since = self._ptpv2_since.setdefault(device.address, now)
+            if now - since >= FOLLOW_GRACE and not device.follows_this_virgil:
+                return [f"{device.name} isn't following this Virgil's PTPv1"]
+            return []
         if device.ptpv2 is False and device.aes67 is not True:
             self._ptpv2_since.pop(device.address, None)
             return [f"{device.name} has PTPv2 off, so it can't follow this Virgil"]

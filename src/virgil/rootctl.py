@@ -90,11 +90,16 @@ def prepare(
     plan = {
         "role": request.role.value,
         "sync": [{"args": list(c.args), "may_fail": c.may_fail} for c in sync_commands(setup, request.leader)],
-        "hwstamp": ["/usr/sbin/hwstamp_ctl", *hwstamp] if hwstamp else None,
+        # Without ptp4l (the "only" PTPv1 mode), something else has to turn hardware timestamping on.
+        "hwstamp": ["/usr/sbin/hwstamp_ctl", *hwstamp] if hwstamp
+        else ["/usr/sbin/hwstamp_ctl", "-i", request.ptp_interface, "-t", "1", "-r", "1"]
+        if not request.serve_ptpv2 and setup.hardware else None,
         "trim": list(trim.args) if (trim := trim_command(setup)) else None,
         "phc": setup.phc if setup.hardware else None,
         # Measuring the card's transmit timestamp slots, once ptp4l is stopped (see virgil.tsprobe).
-        "probe": {"interface": request.ptp_interface, "hwstamp": list(hwstamp or ("-t", "1", "-r", "1"))}
+        # The profile's own hwstamp_ctl settings, without its "-i <interface>", which probe_slots adds.
+        "probe": {"interface": request.ptp_interface,
+                  "hwstamp": list(setup.profile.hwstamp_ctl_args) if hwstamp else ["-t", "1", "-r", "1"]}
         if request.probe_timestamps and setup.hardware else None,
     }
 

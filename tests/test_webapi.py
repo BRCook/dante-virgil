@@ -441,3 +441,15 @@ def test_the_probe_setting_from_the_page(virgil):
         return status, bad, daemon.config.probe_timestamps
 
     assert run(virgil, scenario) == (200, 400, False)
+
+
+def test_choosing_ptpv1_only_from_the_page_starts_the_switch(virgil):
+    async def scenario(daemon, session, base):
+        await _login(session, base)
+        switches = []
+        daemon.change_ptpv1_mode = lambda old, new: switches.append((old, new))
+        async with session.post(f"{base}/api/v1/ptpv1", json={"mode": "only"}, headers=HEADERS) as reply:
+            status = reply.status
+        return status, switches, daemon.config.ptpv1
+
+    assert run(virgil, scenario) == (200, [("fallback", "only")], "only")

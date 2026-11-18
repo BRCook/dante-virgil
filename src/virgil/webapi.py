@@ -260,10 +260,9 @@ class WebApi:
         mode = body.get("mode")
         if mode not in PTPV1_MODES:
             return _error(f"mode must be one of {', '.join(PTPV1_MODES)}", 400)
-        self.daemon.config.ptpv1 = mode
+        old, self.daemon.config.ptpv1 = self.daemon.config.ptpv1, mode
         self.daemon.save()
-        self.daemon.ptpv1_pending = None
-        await self.daemon.check_ptpv1(settle=0)  # someone asked: no need to wait
+        self.daemon.change_ptpv1_mode(old, mode)  # someone asked: no need to wait for the usual hold
         return web.json_response({"mode": mode, **self.daemon.serving()})
 
     async def set_probe_timestamps(self, request: web.Request, body: dict) -> web.Response:

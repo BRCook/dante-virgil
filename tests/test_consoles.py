@@ -362,3 +362,16 @@ def test_a_console_following_this_virgils_ptpv1():
     """As in the test: the Wing's PTPv2 went passive, and it followed Box A's PTPv1."""
     summary = _poll(_wing("follower", "passive", [140, 166, 130, 113, 59, 182]))
     assert summary["v1"] == "following" and summary["v2"] == "passive" and summary["follows_this_virgil"]
+
+
+def test_warnings_in_ptpv1_only_mode():
+    from virgil.consoles import Consoles, DanteDevice
+
+    consoles = Consoles(None, lambda: {}, lambda: {}, serving_ptpv2=lambda: False)
+    wing = DanteDevice("Wing.local.", "WingCompact", "192.168.20.224", None, None, True, False, 0)
+    assert "this Virgil only serves PTPv1" in consoles._ptp_warnings(wing, 100.0)[0]
+    stagebox = DanteDevice("Box.local.", "StageBox", "192.168.20.230", None, None, False, False, 0)
+    stagebox.follows_this_virgil = True
+    assert consoles._ptp_warnings(stagebox, 100.0) == []  # PTPv2 off is the point here
+    stagebox.follows_this_virgil = False
+    assert consoles._ptp_warnings(stagebox, 200.0) == ["StageBox isn't following this Virgil's PTPv1"]

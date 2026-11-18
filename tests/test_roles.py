@@ -146,3 +146,26 @@ def test_changing_the_probe_setting_restarts_nothing():
     """Probing only happens during a setup from scratch, so the setting only needs the plan rewritten."""
     assert transition(LEADER, replace(LEADER, probe_timestamps=False)) == [W, start(PREPARE)]
     assert transition(FOLLOWER, replace(FOLLOWER, probe_timestamps=False)) == [W, start(PREPARE)]
+
+
+def test_switching_ptp4l_off_and_on_touches_nothing_else():
+    """The "only" PTPv1 mode: ptp4l stops (and timestamping is kept on), or starts again. chrony carries on."""
+    from virgil.roles import HWSTAMP
+
+    only = replace(LEADER, serve_ptpv2=False)
+    assert transition(LEADER, only) == [W, start(PREPARE), stop(PTP4L), start(HWSTAMP)]
+    assert transition(only, LEADER) == [W, start(PREPARE), start(PTP4L)]
+
+
+def test_setting_up_from_scratch_without_ptp4l():
+    from virgil.roles import HWSTAMP
+
+    steps = transition(None, replace(FOLLOWER, serve_ptpv2=False))
+    assert steps[-1] == start(HWSTAMP) and start(PTP4L) not in steps
+
+
+def test_a_role_change_leaves_ptp4l_off_in_ptpv1_only_mode():
+    from virgil.roles import HWSTAMP
+
+    steps = transition(replace(FOLLOWER, serve_ptpv2=False), replace(LEADER, serve_ptpv2=False))
+    assert start(PTP4L) not in steps and steps[-2:] == [stop(PTP4L), start(HWSTAMP)]

@@ -25,7 +25,7 @@ class ConfigError(Exception):
     pass
 
 
-PTPV1_MODES = ("fallback", "always", "off")
+PTPV1_MODES = ("fallback", "always", "off", "only")
 
 
 def _ptpv1_mode(value) -> str:
@@ -57,7 +57,7 @@ class Config:
     # Have chrony use the management interface's hardware timestamps, where it safely can.
     ntp_hwtimestamp: bool = True
     # Serving PTPv1 to Dante devices: "fallback" (only when no local device bridges this Virgil's
-    # PTPv2 into PTPv1), "always" or "off".
+    # PTPv2 into PTPv1), "always", "off", or "only" (instead of PTPv2: ptp4l doesn't run).
     ptpv1: str = "fallback"
     # Measure the PTP interface's transmit timestamp slots during a setup from scratch (see virgil.tsprobe).
     probe_timestamps: bool = True

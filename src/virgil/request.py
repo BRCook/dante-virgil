@@ -59,6 +59,9 @@ class TimingRequest:
     ntp_hwtimestamp: str | None = None
     # Whether virgil-root may measure the PTP interface's transmit timestamp slots during a setup from scratch.
     probe_timestamps: bool = True
+    # Whether ptp4l serves PTPv2. Without it (the "only" PTPv1 mode), virgil-root sets the card up for
+    # hardware timestamping itself, since ptp4l normally does.
+    serve_ptpv2: bool = True
 
 
 def to_json(request: TimingRequest) -> str:
@@ -167,6 +170,10 @@ def from_json(text: str | bytes) -> TimingRequest:
     if not isinstance(probe, bool):
         raise RequestError("probe_timestamps must be true or false")
 
+    serve_ptpv2 = data.get("serve_ptpv2", True)
+    if not isinstance(serve_ptpv2, bool):
+        raise RequestError("serve_ptpv2 must be true or false")
+
     return TimingRequest(
         role=role,
         ptp_interface=interface,
@@ -177,4 +184,5 @@ def from_json(text: str | bytes) -> TimingRequest:
         tuning=_tuning(data.get("tuning", {})),
         ntp_hwtimestamp=hwtimestamp,
         probe_timestamps=probe,
+        serve_ptpv2=serve_ptpv2,
     )

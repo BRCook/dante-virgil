@@ -20,6 +20,7 @@ PREPARE = "dante-virgil-prepare.service"
 SYNC = "dante-virgil-sync.service"
 CHRONY = "dante-virgil-chrony.service"
 PTP4L = "dante-virgil-ptp4l.service"
+HWSTAMP = "dante-virgil-hwstamp.service"
 PHC2SYS = "dante-virgil-phc2sys.service"
 TRIM = "dante-virgil-trim.service"
 
@@ -72,15 +73,19 @@ def transition(old: TimingRequest | None, new: TimingRequest | None) -> list[Ste
         steps += [_stop(PHC2SYS), _stop(PTP4L), _stop(CHRONY), _start(SYNC), _start(CHRONY)]
         if new.role is Role.FOLLOWER:
             steps.append(_start(PHC2SYS, block=False))
-        steps.append(_start(PTP4L))
+        steps.append(_start(PTP4L) if new.serve_ptpv2 else _start(HWSTAMP))
         return steps
 
     # The trim changes a leader's PHC rate in place, with nothing restarted.
     # A follower's rate belongs to phc2sys, so its trim only matters at the next sync.
     retrim = old.trim_ppb != new.trim_ppb and new.role is Role.LEADER
     # Probing only happens during a setup from scratch, so a change to it only needs the plan rewritten.
-    if replace(old, trim_ppb=new.trim_ppb, probe_timestamps=new.probe_timestamps) == new:
-        return steps + ([_start(TRIM)] if retrim else [])
+    # Starting or stopping ptp4l touches nothing else: the PHC it serves carries on regardless.
+    if replace(old, trim_ppb=new.trim_ppb, probe_timestamps=new.probe_timestamps, serve_ptpv2=new.serve_ptpv2) == new:
+        steps += [_start(TRIM)] if retrim else []
+        if old.serve_ptpv2 != new.serve_ptpv2:
+            steps += [_start(PTP4L)] if new.serve_ptpv2 else [_stop(PTP4L), _start(HWSTAMP)]
+        return steps
 
     if new.role is Role.LEADER:
         # The PHC keeps the rate phc2sys last gave it, so stopping phc2sys
@@ -97,7 +102,10 @@ def transition(old: TimingRequest | None, new: TimingRequest | None) -> list[Ste
             steps.append(_restart(PHC2SYS, block=False))
 
     # ptp4l is never restarted by a role change, only by a change to its own settings.
-    steps.append(_restart(PTP4L) if _changed(old, new, PTP4L_TUNING) else _start(PTP4L))
+    if not new.serve_ptpv2:
+        steps += [_stop(PTP4L), _start(HWSTAMP)]
+    else:
+        steps.append(_restart(PTP4L) if _changed(old, new, PTP4L_TUNING) and old.serve_ptpv2 else _start(PTP4L))
     return steps
 
 
