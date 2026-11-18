@@ -130,12 +130,23 @@ h1 { margin: 0; font-size: 1.9rem; line-height: 1.15; font-weight: 700; letter-s
 .graph-windows button { padding: 0.3rem 0.7rem; }
 /* Fixed columns, so related charts line up in rows: three on a wide screen, two on a medium one, one on a phone. */
 .graph-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2.25rem 2.75rem; margin-top: 0.75rem; }
-@media (min-width: 760px) { .graph-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (min-width: 1200px) { .graph-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 760px) { .graph-grid.cols-2, .graph-grid.cols-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1200px) { .graph-grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .graph-group { margin-top: 1.75rem; }
 .graph-group h3 { margin: 0; }
 
 /* This Virgil: running it on the left, setting it up on the right, on a wide screen. */
+/* Interfaces: each dropdown with a small table of facts underneath, one per line. */
+.interface-choice { margin: 0.4rem 0 0.9rem; }
+.interface-choice label.field { align-items: flex-start; }
+.interface-choice select { width: min(100%, 34rem); }
+/* A fixed label width, so the values in both interfaces' tables line up with each other. */
+.interface-facts { display: grid; grid-template-columns: 8rem minmax(0, 1fr); gap: 0.15rem 1rem;
+  margin: 0.45rem 0 0 0.15rem; font-size: 0.9rem; }
+.interface-facts .fact { display: contents; }
+.interface-facts dt { color: var(--muted); }
+.interface-facts dd { margin: 0; overflow-wrap: anywhere; }
+
 .this-columns { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 3.5rem; }
 @media (min-width: 1200px) {
   .this-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -210,8 +221,6 @@ select {
   border-radius: var(--radius-control); padding: 0.35rem 0.55rem; max-width: 100%;
 }
 label.field { display: flex; flex-direction: column; gap: 0.25rem; font-weight: 600; max-width: 100%; }
-.select-row { display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem; align-items: center; font-weight: 400; }
-.select-facts { display: inline-flex; gap: 0.75rem; color: var(--muted); font-size: 0.9rem; }
 .caution { color: var(--amber); font-weight: 600; }
 .command { overflow-x: auto; white-space: nowrap; margin: 0.2rem 0 0.6rem; }
 code { font-size: 0.85rem; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 0.05rem 0.3rem; }
