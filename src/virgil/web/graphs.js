@@ -235,8 +235,10 @@ function renderGraphs() {
     if (!groups.length || groups[groups.length - 1].name !== chart.group) groups.push({ name: chart.group, cards: [] });
     groups[groups.length - 1].cards.push(cards[index]);
   });
+  // Each row's charts share its width: as many columns as it has charts (besides full-width ones), at most three.
+  const columns = (cards) => Math.min(3, Math.max(1, cards.filter((card) => !card.classList.contains("wide")).length));
   replace("graphs", controls, ...groups.map((group) => el("section", { class: "graph-group" },
-    el("h3", {}, group.name), el("div", { class: "graph-grid" }, group.cards))));
+    el("h3", {}, group.name), el("div", { class: `graph-grid cols-${columns(group.cards)}` }, group.cards))));
 }
 
 async function loadGraphs() {

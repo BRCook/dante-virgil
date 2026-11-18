@@ -561,26 +561,31 @@ function interfaceLabel(i) {
 }
 
 function interfaceFacts(i, forPtp) {
-  // What's worth knowing about the chosen interface, beside its dropdown.
+  // What's worth knowing about the chosen interface, as a small table under its dropdown: [label, value, look, hover].
   if (!i) return [];
   const facts = [];
   if (forPtp) {
-    facts.push(i.timestamping === "hardware"
-      ? el("span", {}, "Hardware timestamping supported")
-      : el("span", { class: "caution" }, "Software timestamping only"));
+    facts.push(["Timestamping", i.timestamping === "hardware" ? "Hardware" : "Software only",
+      i.timestamping === "hardware" ? "" : "caution"]);
   }
   if (forPtp && i.tx_slots) {
-    facts.push(el("span", { class: i.tx_slots.can_share ? "" : "caution",
-      title: `${i.tx_slots.description}. ptp4l and Virgil's PTPv1 can only both use the card's transmit timestamps `
-        + "if it can hold more than one at a time." }, i.tx_slots.short));
+    const slots = i.tx_slots;
+    const value = slots.count === null ? "Unknown, so treated as 1"
+      : slots.count === 0 ? "None (no hardware transmit timestamps)"
+        : slots.short.replace(/ TX slots?/, "");
+    facts.push(["TX slots", value, slots.can_share ? "" : "caution",
+      `${slots.description}. ptp4l and Virgil's PTPv1 can only both use the card's transmit timestamps if it can `
+        + "hold more than one at a time."]);
   }
-  if (!i.link_up) facts.push(el("span", { class: "caution" }, "No link"));
-  if (i.configured === false) facts.push(el("span", { class: "caution",
-    title: "There's no setup for it in /etc/network/interfaces, so it won't come up, or get an address, after a reboot" },
-    "Interface not set up in OS"));
+  if (!i.link_up) facts.push(["Link", "None", "caution"]);
+  if (i.configured === false) {
+    facts.push(["Set up in OS", "No", "caution",
+      "There's no setup for it in /etc/network/interfaces, so it won't come up, or get an address, after a reboot"]);
+  }
   const lease = (status && status.dhcp_names || {})[forPtp ? "ptp" : "mgmt"];
-  if (lease) facts.push(el("span", { title: "The name this interface gives the DHCP server" }, `DHCP name ${lease}`));
-  return facts;
+  if (lease) facts.push(["DHCP name", lease, "", "The name this interface gives the DHCP server"]);
+  return facts.map(([label, value, look, hover]) => el("div", { class: "fact", title: hover || "" },
+    el("dt", {}, label), el("dd", { class: look || "" }, value)));
 }
 
 function interfacesSection(can) {
@@ -593,13 +598,12 @@ function interfacesSection(can) {
     if (!current) select.append(el("option", { value: "" }, "Choose…"));
     for (const i of options) select.append(el("option", { value: i.name }, interfaceLabel(i)));
     select.value = key in drafts ? drafts[key] : (current || "");
-    const facts = el("span", { class: "select-facts", "aria-live": "polite" }, interfaceFacts(byName(select.value), forPtp));
+    const facts = el("dl", { class: "interface-facts", "aria-live": "polite" }, interfaceFacts(byName(select.value), forPtp));
     select.addEventListener("change", () => {
       drafts[key] = select.value;
       facts.replaceChildren(...interfaceFacts(byName(select.value), forPtp));
     });
-    const row = el("div", { class: "row" },
-      el("label", { class: "field" }, label, el("span", { class: "select-row" }, select, facts)));
+    const row = el("div", { class: "interface-choice" }, el("label", { class: "field" }, label, select), facts);
     return { select, row };
   };
   const ptp = choose("ptp", "PTP (faces the console)",
