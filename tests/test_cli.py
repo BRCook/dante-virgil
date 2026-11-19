@@ -576,3 +576,11 @@ def test_events_include_the_groups(monkeypatch, capsys):
     assert cli.main(["events"]) == 0
     out = capsys.readouterr().out
     assert "JOINED      Virgil C joined the group" in out and "netaudio isn't running" in out
+
+
+def test_changing_a_shared_setting_stamps_it(config_path):
+    import time
+
+    before = time.time()
+    assert _set(config_path, "auto_trim", "false") == 0
+    assert config_file.load(config_path).auto_trim_changed >= before

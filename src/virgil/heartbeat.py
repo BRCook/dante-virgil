@@ -55,6 +55,8 @@ class Heartbeat:
     device_settings: dict[str, dict[str, bool]] = field(default_factory=dict)
     # A digest of its member list: a member whose own differs fetches this one, and merges it.
     members_digest: str | None = None
+    # The settings every member shares, each with when it was changed (see virgil.shared).
+    shared_settings: dict | None = None
 
     def encode(self) -> dict[str, Any]:
         return {
@@ -77,6 +79,7 @@ class Heartbeat:
             "serving": self.serving,
             "device_settings": self.device_settings,
             "members_digest": self.members_digest,
+            "shared_settings": self.shared_settings,
         }
 
     def view(self, heard_at: float) -> PeerView:
@@ -160,6 +163,14 @@ def decode(data: Any) -> Heartbeat:
     members_digest = data.get("members_digest")
     if members_digest is not None and not (isinstance(members_digest, str) and re.fullmatch(r"[0-9a-f]{16}", members_digest)):
         raise HeartbeatError("bad members_digest")
+    shared_settings = data.get("shared_settings")
+    if shared_settings is not None:
+        from virgil.shared import SharedError, parse
+
+        try:
+            parse(shared_settings)
+        except SharedError as error:
+            raise HeartbeatError(str(error)) from error
     return Heartbeat(
         id=virgil_id,
         name=name,
@@ -180,4 +191,5 @@ def decode(data: Any) -> Heartbeat:
         serving=serving,
         device_settings=device_settings,
         members_digest=members_digest,
+        shared_settings=shared_settings,
     )

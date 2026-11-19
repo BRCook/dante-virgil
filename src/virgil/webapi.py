@@ -142,6 +142,8 @@ class WebApi:
         enabled = body.get("enabled")
         if not isinstance(enabled, bool):
             return _error("enabled must be true or false", 400)
+        if enabled != self.daemon.config.auto_trim:
+            self.daemon.shared_setting_changed_here("auto_trim", enabled, "from its page")
         self.daemon.config.auto_trim = enabled
         if not enabled:
             self.daemon.trim_paused = None

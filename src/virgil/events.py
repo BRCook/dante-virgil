@@ -30,6 +30,7 @@ GROUP_LABELS = {
     "time": "TIME SET",
     "ptpv1": "PTPv1",
     "timing": "TIMING",
+    "settings": "SETTINGS",
 }
 
 

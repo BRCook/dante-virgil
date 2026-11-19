@@ -154,7 +154,6 @@ Other NICs with hardware timestamping should work, but I've only tested the i226
 
 ## Current limitations
 
-- Each Clock Box's settings are local to that Clock Box. Settings are not shared. Is this even desirable?
 - Only one radio hop has been tested. Multiple are possible with sufficient latency budget.
 
 ## Contributing and license
