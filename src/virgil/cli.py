@@ -195,6 +195,8 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         if value.lower() not in ("true", "false"):
             raise CliError(f"{key} must be true or false")
         setattr(config, key, value.lower() == "true")
+        if key == "auto_trim":
+            config.auto_trim_changed = time.time()  # shared across the group: the latest change wins
     config_file.save(config, args.config)
     print(f"Set {key}")
     if key in ("ptp_interface", "mgmt_interface"):
@@ -793,6 +795,7 @@ def cmd_password(args: argparse.Namespace) -> int:
     config = config_file.load(args.config)
     if args.clear:
         config.web_password = None
+        config.web_password_changed = time.time()  # shared across the group: the latest change wins
         config_file.save(config, args.config)
         print("Cleared the web password. The web UI is read-only until a new one is set.")
         return 0
@@ -802,6 +805,7 @@ def cmd_password(args: argparse.Namespace) -> int:
     if getpass.getpass("Again: ") != first:
         raise CliError("the passwords didn't match")
     config.web_password = hash_password(first)
+    config.web_password_changed = time.time()  # shared across the group: the latest change wins
     config_file.save(config, args.config)
     print("Set the web password. Anyone already logged in to the web UI will need to log in again.")
     return 0

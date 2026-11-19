@@ -338,6 +338,10 @@ function renderThisVirgil() {
         onchange: (event) => act("/api/v1/auto-trim", { enabled: event.target.checked },
           event.target.checked ? "Auto-trim on" : "Auto-trim off") }),
       "Adjust automatically")));
+  if (status.group) {
+    parts.push(el("p", { class: "hint" }, "Adjusting automatically is a group setting: changing it here changes it on "
+      + "every Virgil in the group, since leadership can move."));
+  }
   const last = auto.last;
   parts.push(el("p", { class: "hint" }, status.state !== "leader" ? "The trim is only used while this Virgil leads."
     : auto.paused ? `Auto-trim paused: ${auto.paused}`

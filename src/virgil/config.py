@@ -54,6 +54,8 @@ class Config:
     observe_only: bool = False
     # While leading, nudge the trim toward the consoles' own rate.
     auto_trim: bool = True
+    # When auto_trim was last changed: shared across the group, the latest change winning (see virgil.shared).
+    auto_trim_changed: float = 0.0
     # Have chrony use the management interface's hardware timestamps, where it safely can.
     ntp_hwtimestamp: bool = True
     # Serving PTPv1 to Dante devices: "fallback" (only when no local device bridges this Virgil's
@@ -63,6 +65,8 @@ class Config:
     probe_timestamps: bool = True
     # The web UI's password, as a scrypt hash. None means the web UI is read-only.
     web_password: str | None = None
+    # When the password was last changed: shared across the group too.
+    web_password_changed: float = 0.0
     devices: dict[str, DeviceSettings] = field(default_factory=dict)
     group: Group | None = None
 
@@ -133,6 +137,8 @@ def from_dict(data: dict[str, Any]) -> Config:
         ptpv1=_ptpv1_mode(data.get("ptpv1", "fallback")),
         probe_timestamps=_expect(data, "probe_timestamps", bool, optional=True) is not False,
         web_password=_expect(data, "web_password", str, optional=True),
+        auto_trim_changed=_time(data, "auto_trim_changed"),
+        web_password_changed=_time(data, "web_password_changed"),
         devices=devices,
         group=group,
     )
@@ -148,6 +154,8 @@ def to_dict(config: Config) -> dict[str, Any]:
     data["trim_ppb"] = config.trim_ppb
     data["observe_only"] = config.observe_only
     data["auto_trim"] = config.auto_trim
+    data["auto_trim_changed"] = config.auto_trim_changed
+    data["web_password_changed"] = config.web_password_changed
     data["ntp_hwtimestamp"] = config.ntp_hwtimestamp
     data["ptpv1"] = config.ptpv1
     data["probe_timestamps"] = config.probe_timestamps
@@ -172,6 +180,13 @@ def to_dict(config: Config) -> dict[str, Any]:
                 for virgil_id, entry in sorted(config.group.removed.items())
             }
     return data
+
+
+def _time(data: dict, key: str) -> float:
+    value = data.get(key, 0.0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{key} must be a time")
+    return float(value)
 
 
 def load(path: Path = DEFAULT_PATH) -> Config:

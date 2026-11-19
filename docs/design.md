@@ -159,7 +159,7 @@ A setup from scratch stops everything, then (on a follower) steps the system clo
 
 ### Software Timestamping
 
-A Virgil can use a PTP interface without hardware timestamping, but it's not a good idea. Such an interface has no PHC, so ptp4l serves the system clock directly (`-S`), and phc2sys doesn't run. This is only meant for testing. Software timestamps are taken whenever the kernel gets around to handling a packet, so they wobble by far more than a Dante device's clock can tolerate in live use. Will it work? Probably. However, any sort of load on the system that affects when the processor has time to stamp packets will cause significant jitter, which will not be pretty.
+A Virgil can use a PTP interface without hardware timestamping, but it's not a good idea. Such an interface has no PHC, so ptp4l serves the system clock directly (`-S`), and phc2sys doesn't run. This is only meant for testing. Software timestamps are taken whenever the kernel gets around to handling a packet, so they wobble by far more than a Dante device's clock can tolerate in live use. Will it work? Probably. However, any sort of load on the system that affects when the processor has time to stamp packets will cause significant jitter, which will not be pretty. For as long as a Virgil's PTP interface only has software timestamping, a warning will be displayed and distributed via heartbeat.
 
 ### Hardware Timestamps for NTP
 
@@ -258,6 +258,15 @@ If the Virgil being removed is the one you are working from, "Remove from group"
 
 A removed member's certificate can't be taken out of the group port's running TLS setup, so until `virgild` restarts, its connections still get as far as each request. Every request checks the sender against the current member list, though, so the connections are refused.
 
+### Shared Settings
+
+Most settings describe one Clock Box and do not need to be shared. Two settings are shared by the whole group:
+
+- **`auto_trim`** only matters on the leader, but leadership moves! If it were on in one Clock Box and off in another, auto-trim would quietly switch on and off whenever the lead changed hands.
+- **The web UI's password:** members already trust each other, so it makes sense to set it once for the whole group. Every Clock Box in a Virgil group will thus share the same web UI password. Note that when a Virgil leaves the group, it will keep the group password until changed by another group (or manually by you).
+
+These spread the same way as the member list: each setting records when it was last changed, heartbeats carry the changes, and a member that hears a newer change adopts it. A change made on any Clock Box therefore reaches every other within a second or so, including those that were offline at the time (once they're back). If two Clock Boxes had different passwords before sharing them (when one joins a group, for example), the more recently set password is adopted by the whole group. Every change goes into the event history (see [The Event History](#the-event-history)).
+
 ### TLS
 
 Each Virgil generates its own self-signed certificate (EC P-256) when it's installed.
@@ -306,6 +315,7 @@ Every Virgil sends a heartbeat to the group once a second, through the group API
   - `v1` and `v2`: whether it's serving each PTP version;
   - `v1_reason`: why it is or isn't serving PTPv1 (see [Serving PTPv1](#serving-ptpv1)).
 - `members_digest`: a short digest of its member list (see [Syncing Group Members](#syncing-group-members)).
+- `shared_settings`: the settings every member shares, as well as when it was changed (see [Shared Settings](#shared-settings)).
 - `device_settings`: its local Dante devices' enforce settings, by MAC address, each with `native_ptpv2` and `aes67` (see [Enforcing PTPv2 and AES67](#enforcing-ptpv2-and-aes67)).
 
 Every field is checked when the heartbeat arrives. Heartbeats are how every Virgil's web UI can show the whole group, rather than just itself.
@@ -497,7 +507,7 @@ Everything goes into `/var/lib/dante-virgil/events.jsonl` with one event per lin
 
 ### Reading and Changing
 
-Anyone who can reach a Virgil can read its web UI. Changing anything requires the password, which is set with `sudo virgilctl password` and stored as a scrypt hash. Until a password is set, the web UI is read-only.
+Anyone who can reach a Virgil can read its web UI. Changing anything requires the password, which is set with `sudo virgilctl password` (on any member: it's shared by the whole group; see [Shared Settings](#shared-settings)) and stored as a scrypt hash. Until a password is set, the web UI is read-only.
 
 Logging in gives a session cookie that lasts 12 hours. The cookie is marked `Secure`, `HttpOnly` and `SameSite=Strict`. After five wrong passwords in a minute from one address, further attempts from that address are refused (even with the right password) until the minute is up. Every change also needs an `X-Virgil-Request` header, so no other page can make changes on a logged-in user's behalf. Changing the password logs everyone out.
 
@@ -593,7 +603,7 @@ You could always plug the PTP interface of a Clock Box directly into a Dante dev
 
 ## Configuration
 
-Each Virgil has one configuration file, `/etc/dante-virgil/virgil.toml`. The web UI and `virgilctl` both edit it, and `virgild` reloads it within a couple of seconds of a change. Every setting applies to that Virgil only; nothing is shared across the group.
+Each Virgil has one configuration file, `/etc/dante-virgil/virgil.toml`. The web UI and `virgilctl` both edit it, and `virgild` reloads it within a couple of seconds of a change. Every setting applies to that Virgil only, except `auto_trim` and `web_password`, which are shared by the whole group (see [Shared Settings](#shared-settings)).
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -602,12 +612,13 @@ Each Virgil has one configuration file, `/etc/dante-virgil/virgil.toml`. The web
 | `ptp_interface`, `mgmt_interface` | none | The chosen interfaces (see [Choosing Interfaces](#choosing-interfaces)). |
 | `nic_profile` | none | The network card profile in use, if any. |
 | `trim_ppb` | 0 | The PHC's rate while this Virgil leads, in parts per billion.|
-| `auto_trim` | true | Whether to steer the trim towards the Dante devices' preferred rate while leading (see [Automatic Trim](#automatic-trim)). |
+| `auto_trim` | true | Whether to steer the trim towards the Dante devices' preferred rate while leading (see [Automatic Trim](#automatic-trim)). Shared by the group. |
 | `ntp_hwtimestamp` | true | Whether chrony may use hardware timestamps on the management interface, where it's safe (see [Hardware Timestamps for NTP](#hardware-timestamps-for-ntp)). |
 | `ptpv1` | `fallback` | When to serve PTPv1: `fallback`, `always`, `off`, or `only` (instead of PTPv2) (see [When It Serves](#when-it-serves)). |
 | `probe_timestamps` | true | Whether to probe the PTP interface's transmit timestamp slots during a setup from scratch (see [Transmit Timestamp Slots](#transmit-timestamp-slots)). |
 | `observe_only` | false | Only take part in the election as an observer; roles are then set by hand with `virgilctl role`. Meant for testing. |
-| `web_password` | none | The web UI's password, as a scrypt hash. |
+| `web_password` | none | The web UI's password, as a scrypt hash. Shared by the group. |
+| `auto_trim_changed`, `web_password_changed` | 0 | When each shared setting was last changed, so the latest change wins across the group. |
 | `devices` | none | For each local Dante device, by MAC address: whether to enforce native PTPv2, and whether to enforce AES67. |
 | `group` | none | The group's ID, and its members with their certificates. Set by creating or joining a group. |
 
@@ -682,9 +693,6 @@ Only consoles have been tested so far. Other Dante devices should be well-behave
 
 ## Known Limitations
 
-- **Groups of more than two Virgils** have only been tested in the test suite (three real `virgild`s talking over TLS), not on hardware.
-- **Settings are per Virgil.** Settings that ought to be the same across the group (such as chrony's tuning) aren't kept in step.
-- **Software timestamping** is only warned about when it's chosen. There's no lasting warning while a member uses it. There probably should be.
 - **Two radio hops** haven't been tested. Every follower follows the leader directly, even when that means crossing more than one link.
 - **Dante devices other than consoles** haven't been tested yet (see [Testing](#testing)).
 - **Realtek management interfaces** (with the `r8169` driver) have occasionally failed to come up after a soft reboot, until the power was cut. ASPM has been ruled out, and the cause isn't known yet. Not likely related to Virgil.

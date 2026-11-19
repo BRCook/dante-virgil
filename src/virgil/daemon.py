@@ -41,6 +41,7 @@ from virgil.ptpwatch import mac_of_identity
 from virgil.consoles import POLL_INTERVAL, Consoles, NetaudioClient
 from virgil.control import CONTROL_SOCKET, HANDOVER_PATH, LEAD_PATH, LEAVE_PATH, REMOVE_PATH
 from virgil import membership
+from virgil import shared
 from virgil.config import Config, DeviceSettings
 from virgil.consoles import normalise_mac
 from virgil.files import atomic_write
@@ -189,6 +190,7 @@ class Daemon:
     _members_fetched: dict = field(default_factory=dict, init=False)
     # Alerts and the group's events, in one history (see virgil.events).
     _event_log: EventLog | None = field(default=None, init=False)
+    _timestamping_seen: tuple | None = field(default=None, init=False)
     removed_notice: str | None = field(default=None, init=False)
     # Where evidence about cards' transmit timestamp slots is kept, and what was seen this session.
     timestamping_path: Path = field(default=timestamping.EVIDENCE_PATH, init=False)
@@ -329,7 +331,11 @@ class Daemon:
         if mtime == self.config_mtime:
             return False
         old_password, old_ptpv1 = self.config.web_password, self.config.ptpv1
+        old_shared = shared.snapshot(self.config)
         self.config = config_file.load(self.config_path)
+        for name, entry in shared.snapshot(self.config).items():
+            if entry["changed"] > old_shared[name]["changed"] and entry["value"] != old_shared[name]["value"]:
+                self.events.group("settings", f"This Virgil {shared.describe(name, entry['value'])} (with virgilctl)")
         if self.web is not None and self.config.web_password != old_password:
             self.web.sessions.end_all()
         if self.config.ptpv1 != old_ptpv1:
@@ -358,7 +364,8 @@ class Daemon:
                          {"active": True, "size": self.recording.size()}
                          if self.recording is not None and self.recording.active else None,
                          self.serving(), self.local_device_settings(),
-                         membership.digest(self.config.group) if self.config.group else None)
+                         membership.digest(self.config.group) if self.config.group else None,
+                         shared.snapshot(self.config) if self.config.group else None)
 
     # Graphs
 
@@ -640,6 +647,23 @@ class Daemon:
         if self._event_log is None:
             self._event_log = EventLog(self.events_path)
         return self._event_log
+
+    def adopt_shared_settings(self, theirs: dict, sender: str) -> None:
+        """Take on settings another member changed more recently (see virgil.shared)."""
+        old_password, before = self.config.web_password, shared.snapshot(self.config)
+        adopted = shared.adopt(self.config, theirs)
+        if shared.snapshot(self.config) == before:
+            return  # the usual case: nothing newer, and nothing to save
+        self.save()
+        for name, value in adopted:
+            self.events.group("settings", f"{self.name_of(sender)} {shared.describe(name, value)}")
+        if self.web is not None and self.config.web_password != old_password:
+            self.web.sessions.end_all()
+
+    def shared_setting_changed_here(self, name: str, value, how: str) -> None:
+        """A shared setting changed on this Virgil: stamp it, so it spreads, and record it."""
+        setattr(self.config, f"{name}_changed", time.time())
+        self.events.group("settings", f"This Virgil {shared.describe(name, value)} ({how})")
 
     def apply_member_list(self, data, source: str) -> list[tuple[str, str]]:
         """Merge another member's list into ours. Returns what changed."""
@@ -1233,6 +1257,15 @@ class Daemon:
 
     # PTP watching
 
+    def ptp_timestamping(self, now: float) -> Timestamping | None:
+        """The PTP interface's timestamping, checked at most once a minute (it takes a system call)."""
+        interface = self.config.ptp_interface
+        cached = self._timestamping_seen
+        if cached is None or cached[0] != interface or now - cached[1] >= 60.0:
+            found = get_interface(interface) if interface else None
+            self._timestamping_seen = (interface, now, found.mode if found and found.physical else None)
+        return self._timestamping_seen[2]
+
     def ptp_warnings(self, now: float | None = None) -> list[str]:
         now = time.monotonic() if now is None else now
         members = {}
@@ -1242,6 +1275,10 @@ class Daemon:
         explained = self.consoles.announcing_themselves() if self.consoles else set()
         warnings = self.ptp.leaks(members, explained)
         interface = self.config.ptp_interface
+        if interface and self.ptp_timestamping(now) is Timestamping.SOFTWARE:
+            # Lasting, not just when it's chosen: heartbeats carry it, so every page in the group shows it.
+            warnings.append(f"{interface} only has software timestamping, which isn't stable enough for live use. "
+                            "Use a network card with hardware timestamping")
         if interface and self.ptp_watcher is not None and self._ptp_link_up():
             if not self.ptp_addresses:
                 warnings.append(f"{interface} has no IPv4 address, so ptp4l can't send PTP to the console. "
@@ -1315,6 +1352,8 @@ class Daemon:
         self.peers[sender] = Peer(beat, time.monotonic(), request.remote)
         if sender not in self.adverts and request.remote:
             self.learned[sender] = request.remote
+        if beat.shared_settings:
+            self.adopt_shared_settings(shared.parse(beat.shared_settings), sender)
         if beat.members_digest and self.config.group and beat.members_digest != membership.digest(self.config.group):
             last = self._members_fetched.get(sender, 0.0)
             if time.monotonic() - last >= MEMBERS_FETCH_EVERY:
