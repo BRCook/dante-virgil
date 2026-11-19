@@ -45,7 +45,7 @@ from virgil.consoles import normalise_mac
 from virgil.files import atomic_write
 from virgil.election import Change, Election, State
 from virgil.generate import Role
-from virgil.group import GROUP_PORT, HEX_ID, PUBLIC_PORT, GroupError
+from virgil.group import GROUP_PORT, HEX_ID, PUBLIC_PORT, GroupError, outstanding_invites
 from virgil.heartbeat import HEARTBEAT_PATH, Heartbeat, HeartbeatError, decode
 from virgil.interfaces import Timestamping, get_interface, ipv4_addresses, ipv4_networks, is_link_local
 from virgil.request import TimingRequest
@@ -1644,7 +1644,8 @@ class Daemon:
                 "state": self.election.state.value,
                 "leader": self.name_of(self.election.leader),
                 "group": None if group is None else {"id": group.id, "members": members,
-                                                     "removed_notice": self.removed_notice},
+                                                     "removed_notice": self.removed_notice,
+                                                     "invites": outstanding_invites(group, time.time())},
                 "clock": self.clock,
                 "alerts": None if self.alerts is None else {
                     "supported": self.alerts.supported,

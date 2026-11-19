@@ -66,6 +66,15 @@ def _hash(secret: str) -> str:
     return hashlib.sha256(secret.encode()).hexdigest()
 
 
+def invite_id(key_or_secret: str, is_secret: bool = False) -> str:
+    """A short name for an outstanding invite, from its hash: enough to tell invites apart, nothing about the secret."""
+    return (_hash(key_or_secret) if is_secret else key_or_secret)[:12]
+
+
+def outstanding_invites(group: Group, now: float) -> list[dict[str, int | str]]:
+    return [{"id": invite_id(key), "expires": expires} for key, expires in sorted(group.invites.items()) if expires > now]
+
+
 def prune_invites(group: Group, now: float) -> None:
     for key, expires in list(group.invites.items()):
         if expires <= now:
