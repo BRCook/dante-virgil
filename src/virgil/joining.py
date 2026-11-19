@@ -15,6 +15,7 @@ from typing import Any
 import aiohttp
 
 from virgil.config import Config
+from virgil.membership import parse, snapshot
 from virgil.group import Group, GroupError, InviteToken, Member, redeem_invite
 from virgil.tls import TlsError, fingerprint
 
@@ -27,10 +28,6 @@ class JoinError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
         self.status = status
-
-
-def _members_json(config: Config) -> dict[str, dict[str, str]]:
-    return {virgil_id: {"name": m.name, "cert": m.cert} for virgil_id, m in config.group.members.items()}
 
 
 def join_request(config: Config, cert: str, secret: str) -> dict[str, str]:
@@ -62,32 +59,25 @@ def handle_join(config: Config, body: Any, now: float) -> dict[str, Any]:
     existing = config.group.members.get(virgil_id)
     if existing is not None and fingerprint(existing.cert) != fingerprint(cert):
         raise JoinError(409, "a different Virgil with the same Virgil ID is already a member")
-    config.group.members[virgil_id] = Member(name, cert)
-    return {"group_id": config.group.id, "members": _members_json(config)}
+    # Joining now beats any earlier removal of the same Virgil (see virgil.membership).
+    config.group.members[virgil_id] = Member(name, cert, now)
+    config.group.removed.pop(virgil_id, None)
+    return snapshot(config.group)
 
 
 def apply_join_response(config: Config, token: InviteToken, response: Any) -> None:
     """On the new Virgil: check the inviting Virgil's reply, and take on the group."""
     if not isinstance(response, dict) or response.get("group_id") != token.group_id:
         raise GroupError("the inviting Virgil replied about a different group")
-    members_data = response.get("members")
-    if not isinstance(members_data, dict) or config.id not in members_data:
+    try:
+        members, removed = parse(response, token.group_id)
+    except GroupError as error:
+        raise GroupError(f"the inviting Virgil sent a bad member list: {error}") from error
+    if config.id not in members:
         raise GroupError("the inviting Virgil didn't add this Virgil to the group")
-    members = {}
-    for virgil_id, member in members_data.items():
-        if not (isinstance(virgil_id, str) and VIRGIL_ID.match(virgil_id) and isinstance(member, dict)):
-            raise GroupError("the inviting Virgil sent a bad member list")
-        name, cert = member.get("name"), member.get("cert")
-        if not (isinstance(name, str) and isinstance(cert, str)):
-            raise GroupError("the inviting Virgil sent a bad member list")
-        try:
-            fingerprint(cert)
-        except TlsError as error:
-            raise GroupError(f"the inviting Virgil sent a bad certificate for {name}") from error
-        members[virgil_id] = Member(name, cert)
     if not any(fingerprint(m.cert) == token.fingerprint for m in members.values()):
         raise GroupError("the inviting Virgil isn't in its own member list")
-    config.group = Group(id=token.group_id, members=members)
+    config.group = Group(id=token.group_id, members=members, removed=removed)
 
 
 async def join(token: InviteToken, config: Config, cert: str, timeout: float = 10.0) -> None:

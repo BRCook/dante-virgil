@@ -53,6 +53,8 @@ class Heartbeat:
     serving: dict[str, Any] | None = None
     # Its own consoles' enforce settings, by MAC address, so every page can show and change them.
     device_settings: dict[str, dict[str, bool]] = field(default_factory=dict)
+    # A digest of its member list: a member whose own differs fetches this one, and merges it.
+    members_digest: str | None = None
 
     def encode(self) -> dict[str, Any]:
         return {
@@ -74,6 +76,7 @@ class Heartbeat:
             "recording": self.recording,
             "serving": self.serving,
             "device_settings": self.device_settings,
+            "members_digest": self.members_digest,
         }
 
     def view(self, heard_at: float) -> PeerView:
@@ -154,6 +157,9 @@ def decode(data: Any) -> Heartbeat:
         for mac, chosen in device_settings.items()
     ):
         raise HeartbeatError("bad device_settings")
+    members_digest = data.get("members_digest")
+    if members_digest is not None and not (isinstance(members_digest, str) and re.fullmatch(r"[0-9a-f]{16}", members_digest)):
+        raise HeartbeatError("bad members_digest")
     return Heartbeat(
         id=virgil_id,
         name=name,
@@ -173,4 +179,5 @@ def decode(data: Any) -> Heartbeat:
         recording=recording,
         serving=serving,
         device_settings=device_settings,
+        members_digest=members_digest,
     )

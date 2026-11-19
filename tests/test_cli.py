@@ -552,3 +552,18 @@ def test_ptpv1_timestamps_in_words():
 def test_probe_timestamps_setting(config_path):
     assert config_file.load(config_path).probe_timestamps is True
     assert _set(config_path, "probe_timestamps", "false") == 0 and config_file.load(config_path).probe_timestamps is False
+
+
+def test_group_remove_and_leave_ask_virgild(monkeypatch, capsys):
+    calls = []
+
+    async def control(method, path, socket_path, body=None):
+        calls.append((path, body))
+        return (200, {"removed": "Virgil C"}) if path.endswith("remove") else (200, {"left": True})
+
+    monkeypatch.setattr(cli, "_control", control)
+    assert cli.main(["group", "remove", "Virgil C", "--yes"]) == 0
+    assert cli.main(["group", "leave", "--yes"]) == 0
+    assert calls == [("/control/v1/remove", {"member": "Virgil C"}), ("/control/v1/leave", None)]
+    out = capsys.readouterr().out
+    assert "Removed Virgil C from the group" in out and "Left the group" in out

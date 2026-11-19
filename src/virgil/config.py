@@ -16,7 +16,7 @@ from typing import Any
 import tomli_w
 
 from virgil.files import atomic_write
-from virgil.group import Group, Member
+from virgil.group import Group, Member, Removed
 
 DEFAULT_PATH = Path("/etc/dante-virgil/virgil.toml")
 
@@ -102,13 +102,23 @@ def from_dict(data: dict[str, Any]) -> Config:
         for virgil_id, member in (_expect(group_data, "members", dict, optional=True) or {}).items():
             if not isinstance(member, dict):
                 raise ConfigError(f"group.members.{virgil_id} must be a table")
-            members[virgil_id] = Member(name=_expect(member, "name", str), cert=_expect(member, "cert", str))
+            changed = member.get("changed", 0.0)
+            if isinstance(changed, bool) or not isinstance(changed, (int, float)):
+                raise ConfigError(f"group.members.{virgil_id}.changed must be a time")
+            members[virgil_id] = Member(name=_expect(member, "name", str), cert=_expect(member, "cert", str),
+                                        changed=float(changed))
+        removed = {}
+        for virgil_id, entry in (_expect(group_data, "removed", dict, optional=True) or {}).items():
+            if not isinstance(entry, dict) or isinstance(entry.get("changed"), bool) \
+                    or not isinstance(entry.get("changed"), (int, float)):
+                raise ConfigError(f"group.removed.{virgil_id} must have a time")
+            removed[virgil_id] = Removed(float(entry["changed"]), entry.get("fingerprint"))
         invites = {}
         for key, expires in (_expect(group_data, "invites", dict, optional=True) or {}).items():
             if isinstance(expires, bool) or not isinstance(expires, int):
                 raise ConfigError("group.invites must map to expiry times")
             invites[key] = expires
-        group = Group(id=_expect(group_data, "id", str), members=members, invites=invites)
+        group = Group(id=_expect(group_data, "id", str), members=members, invites=invites, removed=removed)
 
     return Config(
         id=_expect(data, "id", str),
@@ -150,11 +160,16 @@ def to_dict(config: Config) -> dict[str, Any]:
         data["group"] = {
             "id": config.group.id,
             "members": {
-                virgil_id: {"name": member.name, "cert": member.cert}
+                virgil_id: {"name": member.name, "cert": member.cert, "changed": member.changed}
                 for virgil_id, member in sorted(config.group.members.items())
             },
             "invites": dict(sorted(config.group.invites.items())),
         }
+        if config.group.removed:
+            data["group"]["removed"] = {
+                virgil_id: {"changed": entry.changed, **({"fingerprint": entry.fingerprint} if entry.fingerprint else {})}
+                for virgil_id, entry in sorted(config.group.removed.items())
+            }
     return data
 
 

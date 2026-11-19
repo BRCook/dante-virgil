@@ -229,11 +229,34 @@ Joining a group uses a one-time invite token:
 
 1. On any member, `virgilctl group invite` (or "Make an invite" in the web UI) creates a token. The token contains the member's addresses, its certificate's fingerprint, and a random secret. The secret works once and expires after an hour.
 2. On the new Virgil, `virgilctl group join <token>` (or "Join group" in the web UI) connects to the member over TLS. Before sending anything, it checks that the member's certificate matches the fingerprint in the token, so the token can't be used to trick the new Virgil into joining an impostor. Then it sends the secret, along with its own certificate.
-3. The member checks the secret, adds the new Virgil to its member list, and replies with the member list and every member's certificate.
+3. The member checks the secret, adds the new Virgil to its member list, and replies with the member list and every member's certificate. It then tells every other member about the newcomer straight away (see [Syncing Group Members](#syncing-group-members)).
 
 A used or expired token is useless, so a token that leaks after use is harmless. A join is refused if a different Virgil with the same Virgil ID is already a member (as happens when a Clock Box's disk is cloned to make another). The first Virgil of a group creates it with `virgilctl group create`.
 
 The choice to use tokens rather than a password was deliberate: Virgil, when deployed, is a *critical piece of production infrastructure*. Under no circumstances should any device, Virgil or otherwise, be able to join a clocking group without an explicit invitation generated through human intervention on one of the existing group members.
+
+### Syncing Group Members
+
+Each Virgil keeps its own list of the group's members, and the group API only accepts members on that list. So every member has to agree on who's in the group, including members that were offline when someone joined or left.
+
+Every entry in the list therefore records when it last changed: a member (with its name and certificate), or a removal (with the removed Virgil's certificate fingerprint). Two lists are merged by keeping, for each Virgil, whichever entry changed most recently. A removal therefore beats the joining that came before it, and re-inviting a removed Virgil beats its removal. Clock Boxes all keep the same time (which is rather the point of them), so "most recently" is reliable here. If a member and a removal changed at exactly the same moment, the removal wins.
+
+Changes spread in two ways:
+
+- **Straight away:** the member making a change (accepting a newcomer, or removing someone) sends its list to every member currently online.
+- **Catching up:** every heartbeat carries a short digest of the sender's list. A member whose own digest differs will fetch the sender's list (at most every five seconds) and merge it into their own.
+
+Any member can change the list, just as any member can invite a newcomer.
+
+### Removing and Leaving
+
+"Remove from group" in the web UI and `sudo virgilctl group remove <name>` both remove another member. The removed Virgil is told to leave the group (while it still trusts the member removing it), and then every other member is informed of the departure. If the removed Virgil was the leader, the remaining members drop it from their election straight away, and elect a new leader within a few seconds.
+
+A Virgil that has been removed from a group but was not online at the time of its removal will return to find no other Virgils talking to it. After a minute of no group activity, it will reach out to the other Virgils in its (former) group and ask if has been kicked out. If they reply with yes, the web UI will offer to clear Virgil's group membership and forget its former groupmates.
+
+If the Virgil being removed is the one you are working from, "Remove from group" is replaced with "Leave group" in the web UI or `sudo virgilctl group leave`. Leaving is just like a removal, except instead of being told that it has been removed from the group, Virgil announces its departure.
+
+A removed member's certificate can't be taken out of the group port's running TLS setup, so until `virgild` restarts, its connections still get as far as each request. Every request checks the sender against the current member list, though, so the connections are refused.
 
 ### TLS
 
@@ -282,6 +305,7 @@ Every Virgil sends a heartbeat to the group once a second, through the group API
 - `serving`: what it's serving:
   - `v1` and `v2`: whether it's serving each PTP version;
   - `v1_reason`: why it is or isn't serving PTPv1 (see [Serving PTPv1](#serving-ptpv1)).
+- `members_digest`: a short digest of its member list (see [Syncing Group Members](#syncing-group-members)).
 - `device_settings`: its local Dante devices' enforce settings, by MAC address, each with `native_ptpv2` and `aes67` (see [Enforcing PTPv2 and AES67](#enforcing-ptpv2-and-aes67)).
 
 Every field is checked when the heartbeat arrives. Heartbeats are how every Virgil's web UI can show the whole group, rather than just itself.
@@ -586,18 +610,20 @@ The web UI's API is on ports 443 and 8740. Reading is open to anyone who can rea
 | `GET /api/v1/status` | Everything about this Virgil, and about its members (from their heartbeats) and their Dante devices. `virgilctl` and monitoring tools read this. |
 | `GET /api/v1/graphs?window=<seconds>` | The graphs, merged across the group. |
 | `GET /api/v1/time` | This Virgil's clock. |
+| `GET /api/v1/membership?id=<Virgil ID>` | Whether a Virgil is a member of this Virgil's group, or was removed from it. |
 | `GET /api/v1/session`, `POST /api/v1/login`, `POST /api/v1/logout` | Logging in and out. |
 | `POST /api/v1/lead`, `/stop`, `/start` | Becoming leader, and stopping and starting the timing services. |
 | `POST /api/v1/trim`, `/auto-trim`, `/ptpv1`, `/probe-timestamps` | Settings. |
 | `POST /api/v1/device` | A Dante device's enforce settings. With `virgil` set to another member's ID, the change is passed to that member. |
 | `GET`, `POST /api/v1/interfaces` | Listing and choosing interfaces. |
 | `POST /api/v1/group/create`, `/invite`, `/join` | Creating a group, inviting a Virgil into it, and joining one. |
+| `POST /api/v1/group/remove`, `/leave` | Removing another member, and leaving the group. |
 | `POST /api/v1/time/sync` | Setting the group's time (see [Setting the Time](#setting-the-time)). |
 | `POST /api/v1/recording/start`, `/stop`, `/note`, `GET /api/v1/recordings[/<name>]`, `POST /api/v1/recordings/delete` | Logging sessions. |
 
 ### Group
 
-The group API is on port 8741, and only accepts connections from other members (see [TLS](#tls)). Its paths are `/group/v1/heartbeat`, `/ping`, `/handover`, `/device`, `/graphs`, `/settime`, `/resync`, `/recording`, `/recordings/<name>` and `/recordings/delete`.
+The group API is on port 8741, and only accepts connections from other members (see [TLS](#tls)). Its paths are `/group/v1/heartbeat`, `/members`, `/ping`, `/handover`, `/device`, `/graphs`, `/settime`, `/resync`, `/recording`, `/recordings/<name>` and `/recordings/delete`.
 
 ### virgilctl
 
@@ -607,7 +633,7 @@ The group API is on port 8741, and only accepts connections from other members (
 | `interfaces` | List the interfaces, with their network cards, timestamping and profiles. |
 | `config show`, `config set <key> <value>` | Show or change a setting. Choosing an interface offers its network card's profile, and a missing stanza, where needed. |
 | `role lead`, `role stop`, `role show` | Make this Virgil the leader, stop it, or show its role. With `observe_only` set, `role leader` and `role follower` set the role by hand. |
-| `group create`, `invite`, `join <token>`, `show` | Manage the group. |
+| `group create`, `invite`, `join <token>`, `show`, `remove <name>`, `leave` | Manage the group. |
 | `device <device> [ptpv2\|aes67] [on\|off]` | Show or change a local Dante device's enforce settings. |
 | `trim [ppm]` | Show the trim and each Dante device's clock correction, or set the trim. |
 | `password [--clear]` | Set (or clear) the web UI's password. |
@@ -644,8 +670,7 @@ Only consoles have been tested so far. Other Dante devices should be well-behave
 
 ## Known Limitations
 
-- **Groups of more than two Virgils.** When a Virgil joins, only the member that invited it learns of it. With two Virgils, that's everyone; a third would only be trusted by the member that invited it. Members should learn of newcomers from each other's heartbeats.
-- **Removing a member** has no command. It means editing the member list in each remaining Virgil's configuration.
+- **Groups of more than two Virgils** have only been tested in the test suite (three real `virgild`s talking over TLS), not on hardware.
 - **Settings are per Virgil.** Settings that ought to be the same across the group (such as chrony's tuning) aren't kept in step.
 - **Software timestamping** is only warned about when it's chosen. There's no lasting warning while a member uses it. There probably should be.
 - **Two radio hops** haven't been tested. Every follower follows the leader directly, even when that means crossing more than one link.
