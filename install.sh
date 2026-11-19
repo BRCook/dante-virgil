@@ -72,9 +72,17 @@ fi
 # phc2sys has no query interface; virgild reads its reports from the journal.
 usermod -a -G systemd-journal "$SERVICE_USER"
 
+# requirements.txt is what gets installed, so it has to match pyproject.toml and uv.lock. If a step was
+# missed (uv lock, or uv export), refuse, rather than quietly install something stale.
+if ! python3 "$REPO/tools/check_requirements.py"; then
+    echo "Refusing to install: requirements.txt doesn't match pyproject.toml and uv.lock (see above)." >&2
+    exit 1
+fi
+
 # The virtual environment is only rebuilt when requirements.txt changes (or
 # Python does); otherwise only Virgil itself is reinstalled, which is quick.
 REQUIREMENTS_STAMP="$VENV/.requirements.sha256"
+REBUILT=""
 wanted_stamp="$(sha256sum "$REPO/requirements.txt" | cut -d' ' -f1) $(python3 --version)"
 if [[ -x "$VENV/bin/python" && -f "$REQUIREMENTS_STAMP" && "$(cat "$REQUIREMENTS_STAMP")" == "$wanted_stamp" ]]; then
     say "Updating Virgil in $VENV"
@@ -83,6 +91,7 @@ else
     python3 -m venv --clear "$VENV"
     "$VENV/bin/pip" install --quiet --no-deps --require-hashes -r "$REPO/requirements.txt"
     printf '%s\n' "$wanted_stamp" > "$REQUIREMENTS_STAMP"
+    REBUILT=1
 fi
 "$VENV/bin/pip" install --quiet --no-deps --force-reinstall "$REPO"
 ln -sf "$VENV/bin/virgilctl" /usr/local/bin/virgilctl
@@ -135,6 +144,13 @@ chmod 600 "$CONFIG_DIR/tls/key.pem"
 say "Starting virgild"
 systemctl enable dante-virgil.service >/dev/null 2>&1
 systemctl restart dante-virgil.service
+
+# A rebuilt environment may hold a new netaudio, but its service runs on its own, so restart it to use it.
+# That only pauses monitoring and alerts for a few seconds: netaudio isn't in the timing path.
+if [[ -n "$REBUILT" ]] && systemctl is-active --quiet dante-virgil-netaudio.service; then
+    say "Restarting netaudio, to use the version just installed"
+    systemctl restart dante-virgil-netaudio.service
+fi
 
 say "Done"
 STEP_NAME=""

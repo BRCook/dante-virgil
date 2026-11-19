@@ -24,10 +24,18 @@ def ca(tmp_path):
     folder = tmp_path / "ca"
     folder.mkdir()
     ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes"]
+    # Made as a real CA would be: Python 3.13 and later check certificates strictly, and refuse a CA that
+    # doesn't say it may sign certificates, or a certificate that doesn't say which key signed it.
     _run("openssl", "req", "-x509", *ec, "-keyout", "ca.key", "-out", "ca.pem", "-days", "30",
-         "-subj", "/CN=Highpass Test CA", cwd=folder)
+         "-subj", "/CN=Highpass Test CA", "-addext", "basicConstraints=critical,CA:TRUE",
+         "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-addext", "subjectKeyIdentifier=hash", cwd=folder)
     _run("openssl", "req", *ec, "-keyout", "leaf.key", "-out", "leaf.csr", "-subj", "/CN=virgil-a.lan", cwd=folder)
-    (folder / "ext").write_text("subjectAltName=DNS:virgil-a.lan,DNS:*.show.lan,IP:127.0.0.1,IP:10.10.100.253\n")
+    (folder / "ext").write_text("subjectAltName=DNS:virgil-a.lan,DNS:*.show.lan,IP:127.0.0.1,IP:10.10.100.253\n"
+                                "basicConstraints=CA:FALSE\n"
+                                "keyUsage=critical,digitalSignature\n"
+                                "extendedKeyUsage=serverAuth\n"
+                                "subjectKeyIdentifier=hash\n"
+                                "authorityKeyIdentifier=keyid:always\n")
     _run("openssl", "x509", "-req", "-in", "leaf.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
          "-out", "leaf.pem", "-days", "20", "-extfile", "ext", cwd=folder)
     (folder / "fullchain.pem").write_text((folder / "leaf.pem").read_text() + (folder / "ca.pem").read_text())
