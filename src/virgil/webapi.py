@@ -185,7 +185,7 @@ class WebApi:
         config = self.daemon.config
         if config.group is not None:
             return _error("this Virgil is already in a group", 409)
-        config.group = groups.create(config.id, config.name, self.daemon.identity.cert_pem)
+        config.group = groups.create(config.id, config.name, self.daemon.identity.cert_pem, time.time())
         self.daemon.save()
         self.daemon.group_changed()
         return web.json_response({"group_id": config.group.id})
@@ -273,6 +273,24 @@ class WebApi:
         self.daemon.save()
         return web.json_response({"probe_timestamps": enabled})
 
+    # Removing a member, and leaving
+
+    async def remove_member(self, request: web.Request, body: dict) -> web.Response:
+        virgil_id = body.get("id")
+        if not isinstance(virgil_id, str):
+            return _error("say which member to remove", 400)
+        try:
+            return web.json_response({"removed": await self.daemon.remove_member(virgil_id)})
+        except RuntimeError as error:
+            return _error(str(error), 409)
+
+    async def leave_group(self, request: web.Request, body: dict) -> web.Response:
+        try:
+            await self.daemon.leave_group()
+        except RuntimeError as error:
+            return _error(str(error), 409)
+        return web.json_response({"left": True})
+
     # Time
 
     async def sync_time(self, request: web.Request, body: dict) -> web.Response:
@@ -352,6 +370,8 @@ class WebApi:
             ("/api/v1/group/join", self.join),
             ("/api/v1/interfaces", self.choose_interfaces),
             ("/api/v1/time/sync", self.sync_time),
+            ("/api/v1/group/remove", self.remove_member),
+            ("/api/v1/group/leave", self.leave_group),
             ("/api/v1/ptpv1", self.set_ptpv1),
             ("/api/v1/probe-timestamps", self.set_probe_timestamps),
             ("/api/v1/recording/start", self.start_recording),

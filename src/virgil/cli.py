@@ -251,14 +251,14 @@ def _request_for(role: Role, args: argparse.Namespace) -> TimingRequest:
     return from_json(to_json(request))
 
 
-async def _control(method: str, path: str, socket_path: Path) -> tuple[int, dict]:
+async def _control(method: str, path: str, socket_path: Path, body: dict | None = None) -> tuple[int, dict]:
     """Talk to the local virgild over its control socket."""
     import aiohttp
 
     try:
         connector = aiohttp.UnixConnector(path=str(socket_path))
-        async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=10)) as session:
-            async with session.request(method, f"http://virgil{path}") as reply:
+        async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.request(method, f"http://virgil{path}", json=body) as reply:
                 return reply.status, await reply.json(content_type=None) or {}
     except PermissionError as error:
         raise PermissionError(error.errno, error.strerror, str(socket_path)) from error
@@ -443,7 +443,7 @@ def cmd_group_create(args: argparse.Namespace) -> int:
     if config.group is not None:
         raise CliError("this Virgil is already in a group")
     cert = tls.default_identity(args.tls_dir).cert_pem
-    config.group = groups.create(config.id, config.name, cert)
+    config.group = groups.create(config.id, config.name, cert, time.time())
     config_file.save(config, args.config)
     print(f"Created group {config.group.id}, with {config.name} as its first member")
     return 0
@@ -477,6 +477,31 @@ def cmd_group_join(args: argparse.Namespace) -> int:
     config_file.save(config, args.config)
     names = sorted(m.name for virgil_id, m in config.group.members.items() if virgil_id != config.id)
     print(f"Joined group {config.group.id}, with {', '.join(names)}")
+    return 0
+
+
+def cmd_group_remove(args: argparse.Namespace) -> int:
+    from virgil.control import REMOVE_PATH
+
+    if not confirm(f"Remove {args.member} from the group? Every member will stop trusting it.", default=False,
+                   assume_yes=args.yes):
+        return 0
+    status, body = asyncio.run(_control("POST", REMOVE_PATH, args.control, {"member": args.member}))
+    if status != 200:
+        raise CliError(body.get("error", f"virgild refused ({status})"))
+    print(f"Removed {body['removed']} from the group")
+    return 0
+
+
+def cmd_group_leave(args: argparse.Namespace) -> int:
+    from virgil.control import LEAVE_PATH
+
+    if not confirm("Leave the group? Every member will stop trusting this Virgil.", default=False, assume_yes=args.yes):
+        return 0
+    status, body = asyncio.run(_control("POST", LEAVE_PATH, args.control))
+    if status != 200:
+        raise CliError(body.get("error", f"virgild refused ({status})"))
+    print("Left the group. This Virgil carries on alone.")
     return 0
 
 
@@ -986,6 +1011,13 @@ def build_parser() -> argparse.ArgumentParser:
     join.add_argument("token")
     join.set_defaults(func=cmd_group_join)
     group_commands.add_parser("show", help="show the group's members").set_defaults(func=cmd_group_show)
+    remove = group_commands.add_parser("remove", help="remove another member from the group, for every member")
+    remove.add_argument("member", help="its name or Virgil ID")
+    remove.add_argument("--yes", action="store_true", help="don't ask")
+    remove.set_defaults(func=cmd_group_remove)
+    leave = group_commands.add_parser("leave", help="leave the group, and carry on alone")
+    leave.add_argument("--yes", action="store_true", help="don't ask")
+    leave.set_defaults(func=cmd_group_leave)
 
     return parser
 

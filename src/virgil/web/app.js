@@ -694,17 +694,31 @@ function renderGroup() {
         }
       } }, "Join group")));
   } else {
-    parts.push(el("ul", { class: "plain" }, group.members.map((m) => el("li", {},
+    if (group.removed_notice) {
+      parts.push(el("div", { class: "warning fault", role: "alert" }, `${group.removed_notice}. `,
+        "It no longer trusts this Virgil, so this Virgil can't take part. Leave the group to carry on alone."));
+    }
+    parts.push(el("ul", { class: "plain members" }, group.members.map((m) => el("li", {},
       el("strong", {}, m.name), " ",
       el("span", { class: "hint" },
         describeState(m.state, m.leader === status.name ? "this Virgil" : m.leader) +
         (m.addresses && m.addresses.length ? `, at ${m.addresses.join(", ")}` : "")),
-      silence(m.heard_ago)))));
+      silence(m.heard_ago), " ",
+      el("button", { class: "small", disabled: !can, onclick: async () => {
+        if (!confirm(`Remove ${m.name} from the group? Every member will stop trusting it, and it will carry on alone. `
+          + "It can only rejoin with a new invite.")) return;
+        await act("/api/v1/group/remove", { id: m.id }, `Removed ${m.name} from the group`);
+      } }, "Remove from group")))));
     if (group.members.length === 0) parts.push(el("p", { class: "hint" }, "No other members yet."));
     parts.push(el("div", { class: "row" }, el("button", { disabled: !can, onclick: async () => {
       const data = await act("/api/v1/group/invite", { minutes: 60 }, "Invite made");
       if (data) { lastInvite = data; renderGroup(); }
-    } }, "Make an invite")));
+    } }, "Make an invite"),
+    el("button", { disabled: !can, onclick: async () => {
+      if (!confirm("Leave the group? Every member will stop trusting this Virgil, and it will carry on alone. "
+        + "It can only rejoin with a new invite.")) return;
+      await act("/api/v1/group/leave", {}, "Left the group");
+    } }, "Leave group")));
     if (lastInvite) {
       const field = el("textarea", { readonly: true, "aria-label": "Invite token" });
       field.value = lastInvite.token;

@@ -147,6 +147,9 @@ h1 { margin: 0; font-size: 1.9rem; line-height: 1.15; font-weight: 700; letter-s
 .interface-facts dt { color: var(--muted); }
 .interface-facts dd { margin: 0; overflow-wrap: anywhere; }
 
+button.small { padding: 0.15rem 0.55rem; font-size: 0.85rem; }
+ul.members li { margin: 0.3rem 0; }
+
 .this-columns { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 3.5rem; }
 @media (min-width: 1200px) {
   .this-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }

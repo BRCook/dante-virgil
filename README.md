@@ -154,8 +154,6 @@ Other NICs with hardware timestamping should work, but I've only tested the i226
 
 ## Current limitations
 
-- **Two Clock Boxes only, for now.** A third can join a group, but only the Clock Box that invited it learns about it, so it won't work properly yet.
-- There's no way to remove a Clock Box from a group.
 - Each Clock Box's settings are local to that Clock Box. Settings are not shared. Is this even desirable?
 - Only one radio hop has been tested. Multiple are possible with sufficient latency budget.
 

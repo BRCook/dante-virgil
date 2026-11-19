@@ -38,6 +38,14 @@ class GroupError(Exception):
 class Member:
     name: str
     cert: str
+    # When this entry last changed (Unix time): the latest change wins when members' lists are merged.
+    changed: float = 0.0
+
+
+@dataclass
+class Removed:
+    changed: float
+    fingerprint: str | None = None  # the removed Virgil's certificate's, so it can be recognised
 
 
 @dataclass
@@ -46,10 +54,12 @@ class Group:
     members: dict[str, Member] = field(default_factory=dict)
     # Hash of each outstanding invite's secret, and when it expires (Unix time).
     invites: dict[str, int] = field(default_factory=dict)
+    # Members that have been removed, and when (see virgil.membership).
+    removed: dict[str, Removed] = field(default_factory=dict)
 
 
-def create(virgil_id: str, name: str, cert: str) -> Group:
-    return Group(id=secrets.token_hex(16), members={virgil_id: Member(name, cert)})
+def create(virgil_id: str, name: str, cert: str, now: float = 0.0) -> Group:
+    return Group(id=secrets.token_hex(16), members={virgil_id: Member(name, cert, now)})
 
 
 def _hash(secret: str) -> str:

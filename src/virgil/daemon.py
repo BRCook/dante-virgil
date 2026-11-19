@@ -38,13 +38,14 @@ from virgil import ptpv1 as ptpv1_module
 from virgil import timestamping
 from virgil.ptpwatch import mac_of_identity
 from virgil.consoles import POLL_INTERVAL, Consoles, NetaudioClient
-from virgil.control import CONTROL_SOCKET, HANDOVER_PATH, LEAD_PATH
+from virgil.control import CONTROL_SOCKET, HANDOVER_PATH, LEAD_PATH, LEAVE_PATH, REMOVE_PATH
+from virgil import membership
 from virgil.config import Config, DeviceSettings
 from virgil.consoles import normalise_mac
 from virgil.files import atomic_write
 from virgil.election import Change, Election, State
 from virgil.generate import Role
-from virgil.group import GROUP_PORT, PUBLIC_PORT
+from virgil.group import GROUP_PORT, HEX_ID, PUBLIC_PORT, GroupError
 from virgil.heartbeat import HEARTBEAT_PATH, Heartbeat, HeartbeatError, decode
 from virgil.interfaces import Timestamping, get_interface, ipv4_addresses, ipv4_networks, is_link_local
 from virgil.request import TimingRequest
@@ -93,6 +94,12 @@ RESTART_EXIT = 75
 PTP_QUIET_AFTER = 60.0
 GRAPHS_PATH = "/group/v1/graphs"
 DEVICE_PATH = "/group/v1/device"
+MEMBERS_PATH = "/group/v1/members"
+MEMBERSHIP_PATH = "/api/v1/membership"
+# Fetch a member's list at most this often, when its digest differs from ours.
+MEMBERS_FETCH_EVERY = 5.0
+# With no member heard for this long, ask them (on their public ports) whether this Virgil was removed.
+REMOVED_CHECK_AFTER = 60.0
 SETTIME_PATH = "/group/v1/settime"
 RESYNC_PATH = "/group/v1/resync"
 SETTIME_UNIT = "dante-virgil-settime.service"
@@ -177,6 +184,9 @@ class Daemon:
     # Whether ptp4l should serve PTPv2. Off in the "only" PTPv1 mode; switched in step with PTPv1 (see switch_ptpv1_mode).
     serve_ptpv2_wanted: bool | None = field(default=None, init=False)
     ptpv1_switching: asyncio.Task | None = field(default=None, init=False)
+    # Keeping the member list in step (see virgil.membership).
+    _members_fetched: dict = field(default_factory=dict, init=False)
+    removed_notice: str | None = field(default=None, init=False)
     # Where evidence about cards' transmit timestamp slots is kept, and what was seen this session.
     timestamping_path: Path = field(default=timestamping.EVIDENCE_PATH, init=False)
     slots_watch: timestamping.Watch = field(default_factory=timestamping.Watch, init=False)
@@ -344,7 +354,8 @@ class Daemon:
                          tuple(self.alerts.open_summaries()[:16]) if self.alerts else (),
                          {"active": True, "size": self.recording.size()}
                          if self.recording is not None and self.recording.active else None,
-                         self.serving(), self.local_device_settings())
+                         self.serving(), self.local_device_settings(),
+                         membership.digest(self.config.group) if self.config.group else None)
 
     # Graphs
 
@@ -617,6 +628,176 @@ class Daemon:
         log.warning("The leader's clock was set; resynchronising")
         self.timing.resync()
         return web.json_response({"resynchronising": True})
+
+    # The member list: kept in step across the group (see virgil.membership).
+
+    def apply_member_list(self, data, source: str) -> list[str]:
+        """Merge another member's list into ours. Returns what changed."""
+        group = self.config.group
+        if group is None:
+            return []
+        try:
+            members, removed = membership.parse(data, group.id)
+        except GroupError as error:
+            log.warning("Ignored a member list from %s: %s", source, error)
+            return []
+        changes = membership.merge(group, members, removed)
+        if changes:
+            self._member_list_changed(changes, source)
+        return changes
+
+    def _member_list_changed(self, changes: list[str], source: str) -> None:
+        self.save()
+        self._trust_members()
+        for change in changes:
+            log.info("Group: %s (learned from %s)", change, source)
+        for virgil_id in list(self.peers):
+            if virgil_id not in self.config.group.members:
+                del self.peers[virgil_id]  # a removed leader is lost at once, and the rest re-elect
+        if self.config.id not in self.config.group.members:
+            log.warning("This Virgil was removed from the group, so it's leaving it")
+            self._leave_locally()
+
+    def _leave_locally(self) -> None:
+        self.config.group = None
+        self.save()
+        self.peers.clear()
+        self.removed_notice = None
+        self.group_changed()
+
+    async def sync_members_from(self, virgil_id: str) -> None:
+        data = await self._member_call(virgil_id, "GET", MEMBERS_PATH, timeout=5)
+        if data is not None:
+            self.apply_member_list(data, self.name_of(virgil_id))
+
+    async def push_members(self, to: list[str] | None = None, group=None) -> list[str]:
+        """Tell members about our list straight away. Returns the names of those that took it."""
+        group = group or self.config.group
+        if group is None:
+            return []
+        targets = to if to is not None else self.member_ids()
+        data = membership.snapshot(group)
+        replies = await asyncio.gather(*(self._member_call(i, "POST", MEMBERS_PATH, data, timeout=5) for i in targets))
+        return [self.name_of(i) for i, reply in zip(targets, replies) if reply is not None]
+
+    async def remove_member(self, virgil_id: str) -> str:
+        """Remove another member: tell it (while it still trusts us), then everyone else."""
+        group = self.config.group
+        if group is None:
+            raise RuntimeError("this Virgil isn't in a group")
+        if virgil_id == self.config.id:
+            raise RuntimeError("a Virgil can't remove itself; it can leave the group instead")
+        if virgil_id not in group.members:
+            raise RuntimeError("that Virgil isn't a member of this group")
+        name = group.members[virgil_id].name
+        updated = copy.deepcopy(group)
+        membership.remove(updated, virgil_id, time.time())
+        told = await self.push_members([virgil_id], updated)  # so it leaves, if it can be reached
+        self._member_list_changed(membership.merge(group, updated.members, updated.removed), "this Virgil")
+        others = await self.push_members()
+        log.info("Removed %s from the group (%s told it; %s told)", name, "it was" if told else "nobody",
+                 ", ".join(others) or "no other member")
+        return name
+
+    async def leave_group(self) -> None:
+        """Leave the group: a removal of ourselves, told to everyone, then carrying on alone."""
+        group = self.config.group
+        if group is None:
+            raise RuntimeError("this Virgil isn't in a group")
+        updated = copy.deepcopy(group)
+        membership.remove(updated, self.config.id, time.time())
+        told = await self.push_members(group=updated)
+        log.info("Left the group (told %s)", ", ".join(told) or "no member")
+        self._leave_locally()
+
+    async def group_members_get(self, request: web.Request) -> web.Response:
+        sender = self._member_for_certificate(request)
+        if sender is None or sender == self.config.id:
+            raise web.HTTPForbidden()
+        return web.json_response(membership.snapshot(self.config.group))
+
+    async def group_members_post(self, request: web.Request) -> web.Response:
+        sender = self._member_for_certificate(request)
+        if sender is None or sender == self.config.id:
+            raise web.HTTPForbidden()
+        try:
+            data = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        return web.json_response({"changes": self.apply_member_list(data, self.name_of(sender))})
+
+    async def membership_api(self, request: web.Request) -> web.Response:
+        """Public: whether a Virgil is a member, or was removed. A removed Virgil that was offline asks this."""
+        virgil_id = request.query.get("id", "")
+        group = self.config.group
+        if group is None or not HEX_ID.match(virgil_id):
+            return web.json_response({"member": False, "removed": False})
+        removed = group.removed.get(virgil_id)
+        return web.json_response({"member": virgil_id in group.members, "removed": removed is not None,
+                                  "changed": removed.changed if removed else None})
+
+    async def check_still_member(self) -> None:
+        """Hearing no member for a while: ask them, on their public ports, whether this Virgil was removed.
+
+        Each answer comes over TLS checked against that member's pinned certificate, so nobody else can fake it.
+        """
+        group = self.config.group
+        if group is None or not self.member_ids():
+            self.removed_notice = None
+            return
+        now = time.monotonic()
+        if any(now - p.heard_at < REMOVED_CHECK_AFTER for p in self.peers.values()):
+            self.removed_notice = None
+            return
+        own = group.members.get(self.config.id)
+        for virgil_id in self.member_ids():
+            addresses = self.addresses_for(virgil_id)
+            advert = self.adverts.get(virgil_id)
+            if not addresses:
+                continue
+            context = ssl.create_default_context(cadata=group.members[virgil_id].cert)
+            context.check_hostname = False
+            url = f"https://{addresses[0]}:{advert.public_port if advert else PUBLIC_PORT}{MEMBERSHIP_PATH}?id={self.config.id}"
+            try:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                    async with session.get(url, ssl=context) as reply:
+                        answer = await reply.json()
+            except (aiohttp.ClientError, TimeoutError, OSError, ValueError):
+                continue
+            if answer.get("removed") and (own is None or (answer.get("changed") or 0) >= own.changed):
+                self.removed_notice = f"{group.members[virgil_id].name} says this Virgil was removed from the group"
+                return
+        self.removed_notice = None
+
+    async def watch_membership(self) -> None:
+        while True:
+            await asyncio.sleep(30.0)
+            try:
+                await self.check_still_member()
+            except Exception:
+                log.exception("Couldn't check this Virgil's membership")
+
+    async def control_remove(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+            target = str(body.get("member", ""))
+        except (ValueError, AttributeError):
+            return web.json_response({"error": "say which member to remove"}, status=400)
+        group = self.config.group
+        matches = [i for i, m in (group.members.items() if group else []) if target in (i, m.name)]
+        if len(matches) != 1:
+            return web.json_response({"error": f"no single member called {target}"}, status=404)
+        try:
+            return web.json_response({"removed": await self.remove_member(matches[0])})
+        except RuntimeError as error:
+            return web.json_response({"error": str(error)}, status=409)
+
+    async def control_leave(self, request: web.Request) -> web.Response:
+        try:
+            await self.leave_group()
+        except RuntimeError as error:
+            return web.json_response({"error": str(error)}, status=409)
+        return web.json_response({"left": True})
 
     async def group_recording(self, request: web.Request) -> web.Response:
         """A member, coordinating a group recording, starts or stops this Virgil's part of it."""
@@ -1119,6 +1300,11 @@ class Daemon:
         self.peers[sender] = Peer(beat, time.monotonic(), request.remote)
         if sender not in self.adverts and request.remote:
             self.learned[sender] = request.remote
+        if beat.members_digest and self.config.group and beat.members_digest != membership.digest(self.config.group):
+            last = self._members_fetched.get(sender, 0.0)
+            if time.monotonic() - last >= MEMBERS_FETCH_EVERY:
+                self._members_fetched[sender] = time.monotonic()
+                asyncio.ensure_future(self.sync_members_from(sender))
         return web.Response(status=204)
 
     def addresses_for(self, virgil_id: str) -> list[str]:
@@ -1457,7 +1643,8 @@ class Daemon:
                 "waiting_for_network": not self.electing,
                 "state": self.election.state.value,
                 "leader": self.name_of(self.election.leader),
-                "group": None if group is None else {"id": group.id, "members": members},
+                "group": None if group is None else {"id": group.id, "members": members,
+                                                     "removed_notice": self.removed_notice},
                 "clock": self.clock,
                 "alerts": None if self.alerts is None else {
                     "supported": self.alerts.supported,
@@ -1543,6 +1730,8 @@ class Daemon:
             self.learned[body["id"]] = request.remote
         log.info("%s joined the group from %s", body.get("name"), request.remote)
         await self._update_advert()
+        # Everyone else learns of the newcomer now (and from heartbeats, if they miss this).
+        asyncio.ensure_future(self.push_members([i for i in self.member_ids() if i != body.get("id")]))
         return web.json_response(reply)
 
     def public_app(self) -> web.Application:
@@ -1552,6 +1741,7 @@ class Daemon:
         app.router.add_get("/api/v1/status", self.status)
         app.router.add_get("/api/v1/graphs", self.graphs_api)
         app.router.add_get("/api/v1/time", self.time_api)
+        app.router.add_get(MEMBERSHIP_PATH, self.membership_api)
         app.router.add_post(JOIN_PATH, self.join)
         self.web = WebApi(self)
         self.web.routes(app)
@@ -1677,6 +1867,8 @@ class Daemon:
         app.router.add_post(RECORDING_PATH, self.group_recording)
         app.router.add_post(SETTIME_PATH, self.group_settime)
         app.router.add_post(DEVICE_PATH, self.group_device)
+        app.router.add_get(MEMBERS_PATH, self.group_members_get)
+        app.router.add_post(MEMBERS_PATH, self.group_members_post)
         app.router.add_post(RESYNC_PATH, self.group_resync)
         app.router.add_get(RECORDINGS_PATH + "/{name}", self.group_recording_file)
         app.router.add_post(RECORDINGS_PATH + "/delete", self.group_recording_delete)
@@ -1719,6 +1911,8 @@ class Daemon:
     def control_app(self) -> web.Application:
         app = web.Application(client_max_size=4096)
         app.router.add_post(LEAD_PATH, self.control_lead)
+        app.router.add_post(REMOVE_PATH, self.control_remove)
+        app.router.add_post(LEAVE_PATH, self.control_leave)
         return app
 
     async def _update_advert(self) -> None:
@@ -1807,7 +2001,8 @@ async def serve(daemon: Daemon, host: str) -> None:
     extras = await start_extras(daemon, host, public)
     jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election(),
             daemon.tidy_ptp(), daemon.watch_consoles(), daemon.watch_clock(), daemon.watch_trim(),
-            daemon.watch_alerts(), daemon.watch_graphs(Pinger(daemon.on_ping)), daemon.watch_ptpv1()]
+            daemon.watch_alerts(), daemon.watch_graphs(Pinger(daemon.on_ping)), daemon.watch_ptpv1(),
+            daemon.watch_membership()]
     if daemon.timing is not None:
         jobs.append(daemon.timing.run())
     tasks = [asyncio.create_task(job) for job in jobs]
