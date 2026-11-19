@@ -179,7 +179,8 @@ class WebApi:
         self.daemon.save()
         token = InviteToken(config.group.id, tuple(self.daemon.addresses), self.daemon.public_port,
                             self.daemon.identity_fingerprint(), secret, expires)
-        return web.json_response({"token": token.encode(), "expires": expires})
+        return web.json_response({"token": token.encode(), "expires": expires,
+                                  "invite_id": groups.invite_id(secret, is_secret=True)})
 
     async def create_group(self, request: web.Request, body: dict) -> web.Response:
         config = self.daemon.config

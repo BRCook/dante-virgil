@@ -453,3 +453,29 @@ def test_choosing_ptpv1_only_from_the_page_starts_the_switch(virgil):
         return status, switches, daemon.config.ptpv1
 
     assert run(virgil, scenario) == (200, [("fallback", "only")], "only")
+
+
+def test_a_used_invite_drops_off_the_outstanding_list(virgil):
+    """The page closes the invite it's showing once status no longer lists it."""
+    from virgil.group import InviteToken, redeem_invite
+
+    async def scenario(daemon, session, base):
+        if daemon.config.group is None:
+            from virgil import group as groups
+            daemon.config.group = groups.create(daemon.config.id, daemon.config.name, daemon.identity.cert_pem, time.time())
+        daemon.addresses = ("127.0.0.1",)
+        await _login(session, base)
+        async with session.post(f"{base}/api/v1/group/invite", json={"minutes": 60}, headers=HEADERS) as reply:
+            invite = await reply.json()
+        async with session.get(f"{base}/api/v1/status") as reply:
+            before = (await reply.json())["group"]["invites"]
+        secret = InviteToken.decode(invite["token"]).secret
+        assert redeem_invite(daemon.config.group, secret, time.time())  # as a join does
+        async with session.get(f"{base}/api/v1/status") as reply:
+            after = (await reply.json())["group"]["invites"]
+        return invite, before, after
+
+    invite, before, after = run(virgil, scenario)
+    assert [i["id"] for i in before] == [invite["invite_id"]] and len(invite["invite_id"]) == 12
+    assert after == []
+    assert invite["token"].count(invite["invite_id"]) == 0  # the name gives nothing of the token away

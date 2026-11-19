@@ -957,7 +957,13 @@ function render() {
   const typing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
   if (!typing) {
     if (changed("this", [own, session, interfaces, unit, timeOffset && Math.round(timeOffset * 2), syncArmedUntil > Date.now()])) renderThisVirgil();
-    if (changed("group", [group && group.id, members, status.other_virgils, session, lastInvite])) renderGroup();
+    // An invite this page is showing that's no longer outstanding has been used (or has expired): close it.
+    if (lastInvite && group && !(group.invites || []).some((i) => i.id === lastInvite.invite_id)) {
+      notice(Date.now() / 1000 >= lastInvite.expires ? "The invite expired" : "The invite was used");
+      lastInvite = null;
+    }
+    if (changed("group", [group && group.id, members, status.other_virgils, session, lastInvite,
+      group && group.invites])) renderGroup();
     const consoleSnapshot = [status.dante_devices, status.device_settings, ((group || {}).members || [])
       .map((m) => [m.id, m.dante_devices, m.device_settings, m.heard_ago <= QUIET_AFTER])];
     if (changed("consoles", [consoleSnapshot, session])) renderConsoles();
