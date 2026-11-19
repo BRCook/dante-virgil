@@ -115,7 +115,7 @@ Every Clock Box serves the same web UI, showing the whole group. Anyone who can 
 | **Consoles**     | Every console in the group and its settings.                                                         |
 | **Logging**      | Start, add notes, stop, and download.                                                                |
 | **Graphs**       | The last 30 seconds to 10 minutes of everything.                                                     |
-| **Events**       | Alerts history.                                                                                      |
+| **Events**       | Alerts, and what the group did: joins, leaves, new leaders, the time being set, and PTPv1 switching. |
 | **Group**        | Invites, joining, and the other Clock Boxes.                                                         |
 
 > [!WARNING]

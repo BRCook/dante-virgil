@@ -24,13 +24,11 @@ import aiohttp
 
 log = logging.getLogger("virgild.alerts")
 
-EVENTS_PATH = Path("/var/lib/dante-virgil/events.jsonl")
+from virgil.events import EVENTS_PATH, EventLog  # noqa: E402  (kept here for older imports)
 # An issue netaudio hasn't seen for this long isn't current, whatever its state says:
 # netaudio keeps an issue open until it sees it clear, which it never will if the
 # device or flow has gone away.
 FRESH_FOR = 120.0
-MAX_EVENTS_BYTES = 1024 * 1024
-RECENT = 50
 
 # netaudio's kinds of issue, and how Virgil labels them.
 LABELS = {
@@ -110,7 +108,10 @@ class Alerts:
 
     def __init__(self, fetch: Callable, local_servers: Callable[[], set[str]],
                  events_path: Path = EVENTS_PATH, clock: Callable[[], float] = time.time,
-                 console_healthy: Callable[[str], bool] = lambda server_name: False):
+                 console_healthy: Callable[[str], bool] = lambda server_name: False,
+                 event_log: EventLog | None = None):
+        # The history alerts are recorded in, shared with the group's events (see virgil.events).
+        self.events = event_log or EventLog(events_path, clock)
         self._fetch = fetch
         self._local = local_servers
         # Whether the console itself says its clock is fine: synchronised, and following this Virgil.
@@ -121,7 +122,6 @@ class Alerts:
         self._clock = clock
         self.open: dict[str, Alert] = {}
         self._opened_at: dict[str, float] = {}
-        self.recent: collections.deque[dict[str, Any]] = collections.deque(maxlen=RECENT)
         self.supported: bool | None = None
 
     async def poll(self) -> None:
@@ -184,14 +184,11 @@ class Alerts:
         event = {"t": now, "event": what, **alert.summary_dict()}
         if lasted is not None:
             event["lasted_s"] = round(lasted, 1)
-        self.recent.appendleft(event)
-        try:
-            if self._events_path.exists() and self._events_path.stat().st_size > MAX_EVENTS_BYTES:
-                self._events_path.replace(self._events_path.with_suffix(".jsonl.1"))
-            with self._events_path.open("a") as f:
-                f.write(json.dumps(event, separators=(",", ":")) + "\n")
-        except OSError as error:
-            log.warning("Couldn't record the event: %s", error)
+        self.events.record(event)
+
+    @property
+    def recent(self):
+        return self.events.recent
 
     def recovering_summaries(self) -> list[dict[str, Any]]:
         return [a.summary_dict() for a in self.recovering.values()]

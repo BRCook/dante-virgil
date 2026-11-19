@@ -481,8 +481,8 @@ def test_events(monkeypatch, capsys):
                                                                                   "recent": events}})
     assert cli.main(["events"]) == 0
     out = capsys.readouterr().out.splitlines()
-    assert "resolved  LOCK LOST on WingCompact: Clock synchronization lost (lasted 37 s)" in out[0]
-    assert "opened    LOCK LOST on WingCompact" in out[1]
+    assert "resolved    LOCK LOST on WingCompact: Clock synchronization lost (lasted 37 s)" in out[0]
+    assert "opened      LOCK LOST on WingCompact" in out[1]
     monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: {**STATUS, "alerts": {"supported": False}})
     assert cli.main(["events"]) == 0
     assert "2.0.0" in capsys.readouterr().out
@@ -567,3 +567,12 @@ def test_group_remove_and_leave_ask_virgild(monkeypatch, capsys):
     assert calls == [("/control/v1/remove", {"member": "Virgil C"}), ("/control/v1/leave", None)]
     out = capsys.readouterr().out
     assert "Removed Virgil C from the group" in out and "Left the group" in out
+
+
+def test_events_include_the_groups(monkeypatch, capsys):
+    events = [{"t": 1794254355.0, "event": "group", "kind": "joined", "label": "JOINED",
+               "title": "Virgil C joined the group"}]
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: {**STATUS, "alerts": None, "events": events})
+    assert cli.main(["events"]) == 0
+    out = capsys.readouterr().out
+    assert "JOINED      Virgil C joined the group" in out and "netaudio isn't running" in out

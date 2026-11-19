@@ -112,7 +112,7 @@ def from_dict(data: dict[str, Any]) -> Config:
             if not isinstance(entry, dict) or isinstance(entry.get("changed"), bool) \
                     or not isinstance(entry.get("changed"), (int, float)):
                 raise ConfigError(f"group.removed.{virgil_id} must have a time")
-            removed[virgil_id] = Removed(float(entry["changed"]), entry.get("fingerprint"))
+            removed[virgil_id] = Removed(float(entry["changed"]), entry.get("fingerprint"), entry.get("by"))
         invites = {}
         for key, expires in (_expect(group_data, "invites", dict, optional=True) or {}).items():
             if isinstance(expires, bool) or not isinstance(expires, int):
@@ -167,7 +167,8 @@ def to_dict(config: Config) -> dict[str, Any]:
         }
         if config.group.removed:
             data["group"]["removed"] = {
-                virgil_id: {"changed": entry.changed, **({"fingerprint": entry.fingerprint} if entry.fingerprint else {})}
+                virgil_id: {"changed": entry.changed, **({"fingerprint": entry.fingerprint} if entry.fingerprint else {}),
+                            **({"by": entry.by} if entry.by else {})}
                 for virgil_id, entry in sorted(config.group.removed.items())
             }
     return data

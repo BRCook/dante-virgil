@@ -468,6 +468,8 @@ function ptpv1Section(can) {
 // Time: how far this Virgil's clock is from the device the page is open on, and setting the group's from it.
 let timeOffset = null;  // this Virgil's clock minus the device's, in seconds
 let syncArmedUntil = 0;
+let syncCancelledAt = 0;  // for a word of approval, briefly, in the warning's place
+const GOOD_CHOICE_FOR = 3000;
 
 async function measureTime() {
   try {
@@ -502,6 +504,8 @@ function timeSection(can) {
   if (armed) {
     parts.push(el("div", { class: "danger-warning", role: "alert" },
       "YOU WILL ABSOLUTELY UNDOUBTEDLY AND UNEQUIVOCALLY CAUSE AUDIO TO STOP FLOWING FOR A FEW SECONDS IF YOU PRESS THIS BUTTON AGAIN"));
+  } else if (Date.now() - syncCancelledAt < GOOD_CHOICE_FOR) {
+    parts.push(el("div", { class: "good-choice", role: "status" }, "Good choice!"));
   }
   parts.push(el("div", { class: "row" },
     el("button", { class: armed ? "danger" : "", disabled: !can || agrees, onclick: async () => {
@@ -522,7 +526,12 @@ function timeSection(can) {
       }
       renderThisVirgil();
     } }, "Sync time"),
-    armed ? el("button", { onclick: () => { syncArmedUntil = 0; renderThisVirgil(); } }, "Cancel") : null));
+    armed ? el("button", { onclick: () => {
+      syncArmedUntil = 0;
+      syncCancelledAt = Date.now();
+      renderThisVirgil();
+      setTimeout(renderThisVirgil, GOOD_CHOICE_FOR + 50);
+    } }, "Cancel") : null));
   if (!armed) {
     parts.push(el("p", { class: "hint" }, "Syncs every Virgil in this group to your device's clock. This affects Virgil's PTP clock, "
       + "so any connected consoles will need to re-lock. ", el("strong", {}, "This will interrupt audio.")));
@@ -796,29 +805,33 @@ let eventsExpanded = false;
 
 function renderEvents() {
   const alerts = status.alerts;
-  if (!alerts) return replace("events", el("p", { class: "hint" }, "Alerts need netaudio running on this Virgil."));
-  if (alerts.supported === false) {
-    return replace("events", el("p", { class: "hint" }, "This Virgil's netaudio doesn't report issues; alerts need netaudio 2.0.0 or later."));
-  }
-  const events = alerts.recent || [];
-  const recovering = (alerts.recovering || []).map((a) => el("p", { class: "hint" },
+  // Alerts and the group's events, in one history, newest first (an older virgild only had alerts).
+  const events = status.events || (alerts && alerts.recent) || [];
+  const recovering = ((alerts && alerts.recovering) || []).map((a) => el("p", { class: "hint" },
     `${a.device} recovered from "${a.title}"; netaudio is still confirming it. The console reports it's synchronised.`));
-  if (!events.length) {
-    return replace("events", ...recovering, el("p", { class: "hint" }, "No alerts since Virgil started."));
+  const notes = [];
+  if (!alerts) notes.push(el("p", { class: "hint" }, "Alerts need netaudio running on this Virgil."));
+  else if (alerts.supported === false) {
+    notes.push(el("p", { class: "hint" }, "This Virgil's netaudio doesn't report issues; alerts need netaudio 2.0.0 or later."));
   }
-  // The latest few, newest first; the rest on request, so a long history doesn't bury what's below.
+  if (!events.length) {
+    return replace("events", ...recovering, ...notes, el("p", { class: "hint" }, "Nothing has happened yet."));
+  }
+  const line = (e) => (e.event === "group"
+    ? [el("strong", { class: "group-event" }, e.label), ` ${e.title}`]
+    : [el("strong", { class: e.event === "opened" && e.severity === "error" ? "stale" : "" },
+      e.event === "opened" ? e.label : `${e.label} ${e.event}`),
+    ` ${e.device}: ${e.title}`,
+    e.lasted_s !== undefined ? el("span", { class: "hint" }, ` (lasted ${Math.round(e.lasted_s)} s)`) : null]);
+  // The latest few; the rest on request, so a long history doesn't bury what's below.
   const shown = eventsExpanded ? events : events.slice(0, EVENTS_SHOWN);
   const more = events.length - shown.length;
   replace("events", ...recovering, el("ul", { class: "plain events" }, shown.map((e) => el("li", {},
-    el("span", { class: "event-time" }, clockTime(e.t)), " ",
-    el("strong", { class: e.event === "opened" && e.severity === "error" ? "stale" : "" },
-      e.event === "opened" ? e.label : `${e.label} ${e.event}`),
-    ` ${e.device}: ${e.title}`,
-    e.lasted_s !== undefined ? el("span", { class: "hint" }, ` (lasted ${Math.round(e.lasted_s)} s)`) : null))),
-    more > 0 || eventsExpanded && events.length > EVENTS_SHOWN
-      ? el("button", { onclick: () => { eventsExpanded = !eventsExpanded; renderEvents(); } },
-        eventsExpanded ? "Show the latest only" : `Show all ${events.length}`)
-      : null);
+    el("span", { class: "event-time" }, clockTime(e.t)), " ", ...line(e)))),
+  more > 0 || eventsExpanded && events.length > EVENTS_SHOWN
+    ? el("button", { onclick: () => { eventsExpanded = !eventsExpanded; renderEvents(); } },
+      eventsExpanded ? "Show the latest only" : `Show all ${events.length}`)
+    : null, ...notes);
 }
 
 // Recording: everything from a test session, from this Virgil and the group, as one file.
@@ -944,7 +957,7 @@ function render() {
   badge.hidden = !(status.recording && status.recording.active);
   const alerts = collectAlerts();
   if (changed("alerts", alerts)) renderAlerts(alerts);
-  if (changed("events", status.alerts)) renderEvents();
+  if (changed("events", [status.alerts, status.events])) renderEvents();
   const warnings = collectWarnings();
   if (changed("warnings", warnings)) {
     replace("warnings", warnings.map((w) => el("p", { class: w.fault ? "warning fault" : "warning" }, w.text)));
@@ -956,7 +969,8 @@ function render() {
   // Don't redraw a form while someone's typing in it.
   const typing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
   if (!typing) {
-    if (changed("this", [own, session, interfaces, unit, timeOffset && Math.round(timeOffset * 2), syncArmedUntil > Date.now()])) renderThisVirgil();
+    if (changed("this", [own, session, interfaces, unit, timeOffset && Math.round(timeOffset * 2), syncArmedUntil > Date.now(),
+      Date.now() - syncCancelledAt < GOOD_CHOICE_FOR])) renderThisVirgil();
     // An invite this page is showing that's no longer outstanding has been used (or has expired): close it.
     if (lastInvite && group && !(group.invites || []).some((i) => i.id === lastInvite.invite_id)) {
       notice(Date.now() / 1000 >= lastInvite.expires ? "The invite expired" : "The invite was used");

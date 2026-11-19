@@ -79,7 +79,7 @@ The actual timekeeping is done by three standard programs: **chrony** (NTP), **p
 | `/etc/dante-virgil/tls/` | This Virgil's identity certificate and key (see [TLS](#tls)), plus `web/` for an imported web certificate. |
 | `/run/dante-virgil/` | Requests for `virgil-root`, the timing services' current state, and the control socket `virgilctl` uses to reach `virgild`. |
 | `/run/dante-virgil-generated/` | The configs `virgil-root prepare` generates. |
-| `/var/lib/dante-virgil/` | `events.jsonl` (the history of alerts, which survives reboots), `recordings/` (logging sessions), `timestamping-probe.json` (each card's probe results) and `timestamping.json` (cards caught losing transmit timestamps); see [Transmit Timestamp Slots](#transmit-timestamp-slots). |
+| `/var/lib/dante-virgil/` | `events.jsonl` (the history of alerts and the group's events, which survives reboots), `recordings/` (logging sessions), `timestamping-probe.json` (each card's probe results) and `timestamping.json` (cards caught losing transmit timestamps); see [Transmit Timestamp Slots](#transmit-timestamp-slots). |
 | `/opt/dante-virgil/venv` | The Python environment Virgil runs from. |
 
 ### Ports
@@ -469,7 +469,7 @@ If the trim has moved by 1 ppm or more over its last 16 steps, but the Dante dev
 
 netaudio's daemon already detects audio problems on Dante devices — lost clock locks, muted audio, late packets and failed subscriptions — and reports them as *issues* (from netaudio 2.0 onwards). Every three seconds, Virgil reads the open issues for its own local Dante devices. Each Virgil only reports its own local devices.
 
-When a new issue opens, Virgil logs it as an error, shows it on every Virgil's web UI in a red banner, and includes it in its heartbeats. When the issue closes, Virgil logs how long it lasted. Every opening and closing is also written to `/var/lib/dante-virgil/events.jsonl`, which survives reboots and is rotated at 1 MB. To keep the banner readable, alerts are grouped into one bar per device, with at most three bars visible at a time.
+When a new issue opens, Virgil logs it as an error, shows it on every Virgil's web UI in a red banner, and includes it in its heartbeats. When the issue closes, Virgil logs how long it lasted. Every opening and closing is also written to the event history (see [The Event History](#the-event-history)). To keep the banner readable, alerts are grouped into one bar per device, with at most three bars visible at a time.
 
 ### Out-of-Date Issues
 
@@ -480,6 +480,18 @@ netaudio keeps an issue open until it sees the problem clear. If the device or f
 When a Dante device's clock comes back after a lost lock, netaudio keeps the issue open — summarised as "Recovering; waiting for five seconds of continuous healthy clock status" — until it has seen five healthy seconds in a row. In one test, an issue stayed that way for two hours, reopening every 10 to 15 minutes, while the device reported itself synchronised throughout. The cause is in netaudio: its five-second count starts again whenever two healthy observations are further apart than its freshness window, so a device it observes less often than that can never complete the count.
 
 Virgil therefore shows a "Recovering" issue quietly (as a note in Events, rather than a red banner), but only while the device itself reports that it's synchronised and following its Virgil. If it doesn't, or stops doing so, the issue becomes a full alert again immediately.
+
+### The Event History
+
+Alerts share one history with the things the group does, so the order of events is clear: a lock lost just after a new leader took over, for example, will make it abundantly clear if there is a causal relationship. Each Virgil records what it sees:
+
+- Virgils joining, leaving, or being removed (and by whom), learned as the member lists merge (see [Syncing Group Members](#syncing-group-members));
+- a new leader, whoever it is;
+- the group's time being set (on the leader) and each follower resynchronising to it;
+- PTPv1 starting or stopping, and switching into or out of PTPv1-only mode;
+- timing being stopped or started on that Virgil.
+
+Everything goes into `/var/lib/dante-virgil/events.jsonl` with one event per line. The log is rotated at 1 MB. The latest are read back when `virgild` starts, so the web UI's Events section and `virgilctl events` show what happened before a restart, too, which may be relevant! The Events menu shows the latest ten, with the rest on request.
 
 ## The Web UI
 

@@ -33,7 +33,7 @@ def test_a_newcomer_spreads(certs):
     theirs = copy.deepcopy(ours)
     theirs.members[C] = Member("C", certs["C"], 5.0)
     assert membership.digest(ours) != membership.digest(theirs)
-    assert membership.merge(ours, theirs.members, theirs.removed) == ["C joined"]
+    assert membership.merge(ours, theirs.members, theirs.removed) == [("joined", "C joined the group")]
     assert membership.digest(ours) == membership.digest(theirs)
     assert membership.merge(ours, theirs.members, theirs.removed) == []  # nothing new the second time
 
@@ -41,8 +41,8 @@ def test_a_newcomer_spreads(certs):
 def test_a_removal_beats_the_joining_before_it(certs):
     ours = Group("g" * 32, {A: Member("A", certs["A"], 1.0), C: Member("C", certs["C"], 5.0)})
     theirs = copy.deepcopy(ours)
-    membership.remove(theirs, C, 9.0)
-    assert membership.merge(ours, theirs.members, theirs.removed) == ["C was removed"]
+    membership.remove(theirs, C, 9.0, by=A)
+    assert membership.merge(ours, theirs.members, theirs.removed) == [("removed", "C was removed from the group by A")]
     assert C not in ours.members and ours.removed[C].fingerprint == tls.fingerprint(certs["C"])
     # A stale list that still has C as a member can't bring it back.
     stale = Group("g" * 32, {C: Member("C", certs["C"], 5.0)})
@@ -52,12 +52,18 @@ def test_a_removal_beats_the_joining_before_it(certs):
 def test_reinviting_beats_the_removal(certs):
     ours = Group("g" * 32, {A: Member("A", certs["A"], 1.0)}, removed={C: Removed(9.0)})
     theirs = Group("g" * 32, {C: Member("C", certs["C"], 12.0)})
-    assert membership.merge(ours, theirs.members, theirs.removed) == ["C joined"] and C not in ours.removed
+    assert membership.merge(ours, theirs.members, theirs.removed) == [("joined", "C joined the group")]
+    assert C not in ours.removed
 
 
 def test_a_removal_at_the_same_moment_wins(certs):
     ours = Group("g" * 32, {C: Member("C", certs["C"], 7.0)})
-    assert membership.merge(ours, {}, {C: Removed(7.0)}) == ["C was removed"]
+    assert membership.merge(ours, {}, {C: Removed(7.0)}) == [("removed", "C was removed from the group")]
+
+
+def test_leaving_is_told_apart_from_being_removed(certs):
+    ours = Group("g" * 32, {A: Member("A", certs["A"], 1.0), C: Member("C", certs["C"], 1.0)})
+    assert membership.merge(ours, {}, {C: Removed(5.0, None, by=C)}) == [("left", "C left the group")]
 
 
 def test_lists_are_checked(certs):
@@ -193,6 +199,10 @@ def test_removing_a_member_tells_it_and_everyone(tmp_path):
 
     name, daemons = asyncio.run(scenario())
     assert name == "Virgil C"
+    titles = lambda d: [e["title"] for e in d.events.recent]
+    assert "Virgil C was removed from the group by Virgil A" in titles(daemons["B"])
+    assert "Virgil C was removed from the group by Virgil A" in titles(daemons["A"])
+    assert "This Virgil was removed from the group, and carries on alone" in titles(daemons["C"])
     assert daemons["C"].config.group is None  # C was told, and left: it carries on alone
     assert configs["C"].id not in daemons["B"].config.group.members  # B was told too
     assert configs["C"].id in daemons["B"].config.group.removed
@@ -216,6 +226,8 @@ def test_leaving_the_group(tmp_path):
 
     a, b = asyncio.run(scenario())
     assert b.config.group is None and config_file.load(paths["B"]).group is None
+    assert "Virgil B left the group" in [e["title"] for e in a.events.recent]
+    assert "This Virgil left the group, and carries on alone" in [e["title"] for e in b.events.recent]
     assert configs["B"].id not in a.config.group.members and configs["B"].id in a.config.group.removed
 
 
@@ -243,3 +255,14 @@ def test_a_virgil_cant_remove_itself(tmp_path):
     a = Daemon(paths["A"], identities["A"])
     with pytest.raises(RuntimeError, match="leave the group instead"):
         asyncio.run(a.remove_member(configs["A"].id))
+
+
+def test_a_new_leader_goes_in_the_history(tmp_path):
+    from virgil.election import Change, State
+
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    a.timing = object()  # managing its timing, so it isn't just observing
+    a._log_change(Change(State.FOLLOWER, State.LEADER, configs["B"].id, None))
+    a._log_change(Change(State.LEADER, State.FOLLOWER, None, configs["B"].id))
+    assert [e["title"] for e in a.events.recent][:2] == ["Virgil B became the leader", "This Virgil became the leader"]

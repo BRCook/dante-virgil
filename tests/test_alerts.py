@@ -98,7 +98,7 @@ def test_an_older_netaudio(tmp_path):
 
 
 def test_the_record_is_rotated(tmp_path, monkeypatch):
-    import virgil.alerts as module
+    import virgil.events as module
 
     monkeypatch.setattr(module, "MAX_EVENTS_BYTES", 200)
     feed = Feed()
