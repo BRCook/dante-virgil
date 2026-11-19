@@ -674,16 +674,14 @@ sudo ./install.sh
 
 1. installs the Debian packages Virgil needs, skipping `apt` entirely when nothing is missing (and adding `pci.ids` if it can);
 2. creates the `dante-virgil` user, with permission to read the system journal (where phc2sys's reports appear);
-3. builds the Python environment from `requirements.txt`;
+3. checks that `requirements.txt` matches `pyproject.toml` and `uv.lock`, refusing to go on if it doesn't, then builds the Python environment from `requirements.txt`;
 4. installs the systemd units, a tmpfiles entry, the polkit rule, and an AppArmor addition that lets chrony read Virgil's configuration;
 5. masks Debian's own `chrony.service`;
 6. generates the Virgil ID and certificate, if they don't exist yet;
 7. links `virgilctl` and `netaudio` into `/usr/local/bin`; and
 8. starts `virgild`.
 
-Running it again from a newer copy of the repository updates Virgil, keeping its configuration, ID and certificate. It only restarts `virgild` itself, not the timing services, and thus updating Virgil doesn't disturb any Dante devices. `uninstall.sh` reverses the installation, and `--purge` will additionally remove the configuration.
-
-Virgil's Python dependencies are pinned in `pyproject.toml` and locked with `uv`, and `requirements.txt` is exported from the lock file (`uv export --format requirements-txt --no-dev --no-emit-project -o requirements.txt`).
+Running it again from a newer copy of the repository updates Virgil, keeping its configuration, ID and certificate. It only restarts `virgild` itself, not the timing services, and thus updating Virgil doesn't disturb any Dante devices. When the Python environment is rebuilt, it also restarts netaudio, so a new netaudio version takes effect straight away; that only pauses monitoring and alerts for a few seconds. `uninstall.sh` reverses the installation, and `--purge` will additionally remove the configuration.
 
 ## Testing
 
