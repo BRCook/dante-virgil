@@ -661,22 +661,25 @@ def _clock_time(value) -> str:
 
 
 def cmd_events(args: argparse.Namespace) -> int:
-    alerts = fetch_status(args.tls_dir).get("alerts")
-    if alerts is None:
-        print("This Virgil isn't watching for alerts (netaudio isn't running here).")
-        return 0
-    if alerts.get("supported") is False:
-        print("This Virgil's netaudio doesn't report issues; alerts need netaudio 2.0.0 or later.")
-        return 0
-    events = alerts.get("recent") or []
+    status = fetch_status(args.tls_dir)
+    alerts = status.get("alerts")
+    events = status.get("events")
+    if events is None:  # an older virgild
+        events = (alerts or {}).get("recent") or []
     if not events:
-        print("No alerts since virgild started. The full record is in /var/lib/dante-virgil/events.jsonl.")
-        return 0
+        print("Nothing has happened yet. The full record is in /var/lib/dante-virgil/events.jsonl.")
     for event in events:
+        when = _clock_time(event["t"])
+        if event.get("event") == "group":
+            print(f"{when}  {event['label']:10s}  {event['title']}")
+            continue
         lasted = f" (lasted {event['lasted_s']:.0f} s)" if event.get("lasted_s") is not None else ""
         detail = f" ({event['summary']})" if event.get("summary") else ""
-        print(f"{_clock_time(event['t'])}  {event['event']:8s}  {event['label']} on {event['device']}: "
-              f"{event['title']}{detail}{lasted}")
+        print(f"{when}  {event['event']:10s}  {event['label']} on {event['device']}: {event['title']}{detail}{lasted}")
+    if alerts is None:
+        print("(This Virgil isn't watching for alerts, since netaudio isn't running here.)")
+    elif alerts.get("supported") is False:
+        print("(This Virgil's netaudio doesn't report issues; alerts need netaudio 2.0.0 or later.)")
     return 0
 
 

@@ -46,6 +46,7 @@ class Member:
 class Removed:
     changed: float
     fingerprint: str | None = None  # the removed Virgil's certificate's, so it can be recognised
+    by: str | None = None  # the Virgil that removed it: itself, if it left
 
 
 @dataclass

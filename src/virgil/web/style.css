@@ -206,6 +206,10 @@ button {
 }
 button.primary { background: var(--amber); border-color: var(--amber); color: #1b1305; }
 button.danger { background: var(--fault); border-color: var(--fault); color: #fff; }
+.good-choice {
+  margin: 0.6rem 0; padding: 1rem 1.2rem; background: var(--ok); color: #fff; border-radius: var(--radius-control);
+  font-size: 1.25rem; font-weight: 800;
+}
 .danger-warning {
   margin: 0.6rem 0; padding: 1rem 1.2rem; background: var(--fault); color: #fff; border-radius: var(--radius-control);
   font-size: 1.25rem; font-weight: 800; line-height: 1.3; letter-spacing: 0.01em;

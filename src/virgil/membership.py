@@ -31,7 +31,8 @@ def snapshot(group: Group) -> dict[str, Any]:
     return {
         "group_id": group.id,
         "members": {i: {"name": m.name, "cert": m.cert, "changed": m.changed} for i, m in sorted(group.members.items())},
-        "removed": {i: {"changed": r.changed, "fingerprint": r.fingerprint} for i, r in sorted(group.removed.items())},
+        "removed": {i: {"changed": r.changed, "fingerprint": r.fingerprint, "by": r.by}
+                    for i, r in sorted(group.removed.items())},
     }
 
 
@@ -68,16 +69,21 @@ def parse(data: Any, group_id: str) -> tuple[dict[str, Member], dict[str, Remove
     for virgil_id, entry in removed_data.items():
         if not (isinstance(virgil_id, str) and HEX_ID.match(virgil_id) and isinstance(entry, dict)):
             raise GroupError("a bad member list")
-        changed, fp = entry.get("changed"), entry.get("fingerprint")
-        if not isinstance(changed, (int, float)) or isinstance(changed, bool) or not (fp is None or isinstance(fp, str)):
+        changed, fp, by = entry.get("changed"), entry.get("fingerprint"), entry.get("by")
+        if not isinstance(changed, (int, float)) or isinstance(changed, bool) or not (fp is None or isinstance(fp, str)) \
+                or not (by is None or (isinstance(by, str) and HEX_ID.match(by))):
             raise GroupError("a bad member list")
-        removed[virgil_id] = Removed(float(changed), fp)
+        removed[virgil_id] = Removed(float(changed), fp, by)
     return members, removed
 
 
-def merge(group: Group, members: dict[str, Member], removed: dict[str, Removed]) -> list[str]:
-    """Merge another member's list into this one, last change winning. Returns what changed, in words."""
+def merge(group: Group, members: dict[str, Member], removed: dict[str, Removed]) -> list[tuple[str, str]]:
+    """Merge another member's list into this one, last change winning.
+
+    Returns what changed, as (kind, words) for the group's events: kind is "joined", "left", "removed" or "changed".
+    """
     changes = []
+    names = {i: m.name for source in (group.members, members) for i, m in source.items()}
     for virgil_id in set(group.members) | set(group.removed) | set(members) | set(removed):
         candidates = []
         for entry in (group.members.get(virgil_id), members.get(virgil_id)):
@@ -90,20 +96,26 @@ def merge(group: Group, members: dict[str, Member], removed: dict[str, Removed])
         if isinstance(winner, Member):
             ours = group.members.get(virgil_id)
             if ours is None or (ours.cert, ours.name, ours.changed) != (winner.cert, winner.name, winner.changed):
-                changes.append(f"{winner.name} {'joined' if ours is None else 'changed'}")
+                changes.append(("joined", f"{winner.name} joined the group") if ours is None
+                               else ("changed", f"{winner.name}'s details changed"))
                 group.members[virgil_id] = Member(winner.name, winner.cert, winner.changed)
             group.removed.pop(virgil_id, None)
         else:
             if virgil_id in group.members:
-                changes.append(f"{group.members[virgil_id].name} was removed")
+                name = group.members[virgil_id].name
+                if winner.by == virgil_id:
+                    changes.append(("left", f"{name} left the group"))
+                else:
+                    by = f" by {names[winner.by]}" if winner.by in names else ""
+                    changes.append(("removed", f"{name} was removed from the group{by}"))
                 del group.members[virgil_id]
             ours = group.removed.get(virgil_id)
             if ours is None or ours.changed != winner.changed:
-                group.removed[virgil_id] = Removed(winner.changed, winner.fingerprint)
+                group.removed[virgil_id] = Removed(winner.changed, winner.fingerprint, winner.by)
     return changes
 
 
-def remove(group: Group, virgil_id: str, now: float) -> None:
-    """Record a member's removal, as of now."""
+def remove(group: Group, virgil_id: str, now: float, by: str | None = None) -> None:
+    """Record a member's removal, as of now, by another member (or by itself, when it leaves)."""
     member = group.members.pop(virgil_id, None)
-    group.removed[virgil_id] = Removed(now, fingerprint(member.cert) if member else None)
+    group.removed[virgil_id] = Removed(now, fingerprint(member.cert) if member else None, by)

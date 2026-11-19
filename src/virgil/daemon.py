@@ -31,6 +31,7 @@ from virgil import __version__
 from virgil import config as config_file
 from virgil import autotrim, clocks, discovery, ptpwatch, roles, tls
 from virgil.alerts import EVENTS_PATH, Alerts
+from virgil.events import EventLog
 from virgil.graphs import KEEP_SECONDS, WORST, Recorder, jitter
 from virgil.pinger import Pinger
 from virgil.recording import RECORDINGS, Session, stamp_now
@@ -186,6 +187,8 @@ class Daemon:
     ptpv1_switching: asyncio.Task | None = field(default=None, init=False)
     # Keeping the member list in step (see virgil.membership).
     _members_fetched: dict = field(default_factory=dict, init=False)
+    # Alerts and the group's events, in one history (see virgil.events).
+    _event_log: EventLog | None = field(default=None, init=False)
     removed_notice: str | None = field(default=None, init=False)
     # Where evidence about cards' transmit timestamp slots is kept, and what was seen this session.
     timestamping_path: Path = field(default=timestamping.EVIDENCE_PATH, init=False)
@@ -598,6 +601,7 @@ class Daemon:
         atomic_write(SETTIME_REQUEST, json.dumps({"delta": delta}).encode(), mode=0o640)
         await asyncio.to_thread((systemd or roles.Systemd()).start, SETTIME_UNIT)
         log.warning("Moved the group's clock by %+.3f s; the consoles will re-lock", delta)
+        self.events.group("time", f"The group's time was set: moved by {delta:+.3f} s")
         followers = []
         for virgil_id in self._heard_members():
             if await self._member_call(virgil_id, "POST", RESYNC_PATH, {}) is not None:
@@ -625,13 +629,19 @@ class Daemon:
             raise web.HTTPForbidden()
         if self.timing is None:
             return web.json_response({"error": "not managing timing"}, status=409)
-        log.warning("The leader's clock was set; resynchronising")
+        self.events.group("time", f"{self.name_of(sender)} set the group's time, so this Virgil resynchronised")
         self.timing.resync()
         return web.json_response({"resynchronising": True})
 
     # The member list: kept in step across the group (see virgil.membership).
 
-    def apply_member_list(self, data, source: str) -> list[str]:
+    @property
+    def events(self) -> EventLog:
+        if self._event_log is None:
+            self._event_log = EventLog(self.events_path)
+        return self._event_log
+
+    def apply_member_list(self, data, source: str) -> list[tuple[str, str]]:
         """Merge another member's list into ours. Returns what changed."""
         group = self.config.group
         if group is None:
@@ -646,16 +656,20 @@ class Daemon:
             self._member_list_changed(changes, source)
         return changes
 
-    def _member_list_changed(self, changes: list[str], source: str) -> None:
+    def _member_list_changed(self, changes: list[tuple[str, str]], source: str) -> None:
         self.save()
         self._trust_members()
-        for change in changes:
-            log.info("Group: %s (learned from %s)", change, source)
+        for kind, words in changes:
+            if kind == "changed":
+                log.info("Group: %s (learned from %s)", words, source)
+            else:
+                self.events.group(kind, words)
         for virgil_id in list(self.peers):
             if virgil_id not in self.config.group.members:
                 del self.peers[virgil_id]  # a removed leader is lost at once, and the rest re-elect
         if self.config.id not in self.config.group.members:
             log.warning("This Virgil was removed from the group, so it's leaving it")
+            self.events.group("removed", "This Virgil was removed from the group, and carries on alone")
             self._leave_locally()
 
     def _leave_locally(self) -> None:
@@ -691,7 +705,7 @@ class Daemon:
             raise RuntimeError("that Virgil isn't a member of this group")
         name = group.members[virgil_id].name
         updated = copy.deepcopy(group)
-        membership.remove(updated, virgil_id, time.time())
+        membership.remove(updated, virgil_id, time.time(), by=self.config.id)
         told = await self.push_members([virgil_id], updated)  # so it leaves, if it can be reached
         self._member_list_changed(membership.merge(group, updated.members, updated.removed), "this Virgil")
         others = await self.push_members()
@@ -705,9 +719,10 @@ class Daemon:
         if group is None:
             raise RuntimeError("this Virgil isn't in a group")
         updated = copy.deepcopy(group)
-        membership.remove(updated, self.config.id, time.time())
+        membership.remove(updated, self.config.id, time.time(), by=self.config.id)
         told = await self.push_members(group=updated)
         log.info("Left the group (told %s)", ", ".join(told) or "no member")
+        self.events.group("left", "This Virgil left the group, and carries on alone")
         self._leave_locally()
 
     async def group_members_get(self, request: web.Request) -> web.Response:
@@ -1010,11 +1025,11 @@ class Daemon:
                 self.ptpv1_reason = f"couldn't open PTPv1's ports: {error}"
                 return
             self.ptpv1_server = server
-            log.info("Serving PTPv1: %s", reason)
+            self.events.group("ptpv1", f"Started serving PTPv1: {reason}")
         else:
             await self.ptpv1_server.stop()
             self.ptpv1_server = None
-            log.info("Stopped serving PTPv1: %s", reason)
+            self.events.group("ptpv1", f"Stopped serving PTPv1: {reason}")
 
     def change_ptpv1_mode(self, old: str, new: str) -> None:
         """React to a new ptpv1 setting. Into or out of "only", PTPv1 and ptp4l swap over in the background."""
@@ -1052,7 +1067,7 @@ class Daemon:
                                      and not self.timing.request.serve_ptpv2, 60.0)
             if self.ptpv1_server is not None:
                 self.ptpv1_server.set_hardware_tx(self.ptpv1_hardware_tx())  # the slots are PTPv1's now
-            log.info("Serving PTPv1 only: ptp4l has stopped")
+            self.events.group("ptpv1", "Switched to serving PTPv1 instead of PTPv2: ptp4l has stopped")
         else:
             self.serve_ptpv2_wanted = True
             if self.timing is not None:
@@ -1062,7 +1077,7 @@ class Daemon:
             if self.ptpv1_server is not None:
                 self.ptpv1_server.set_hardware_tx(self.ptpv1_hardware_tx())  # sharing again: only if the card can
             await self.check_ptpv1(settle=0)
-            log.info("Serving PTPv2 again")
+            self.events.group("ptpv1", "Switched back to serving PTPv2")
 
     async def watch_ptpv1(self) -> None:
         tick = 0
@@ -1130,7 +1145,7 @@ class Daemon:
                 return False
 
             self.alerts = Alerts(client.issues, local_servers, events_path=self.events_path,
-                                 console_healthy=console_healthy)
+                                 console_healthy=console_healthy, event_log=self.events)
         self.consoles = Consoles(client, local, lambda: self.config.devices,
                                  on_latency_history=self.on_latency_history,
                                  serving_ptpv2=self.wants_ptpv2,
@@ -1495,6 +1510,12 @@ class Daemon:
         prefix = "Would change" if self.observing else "Changing"
         log.info("%s from %s to %s", prefix, self._describe(change.old_state, change.old_leader),
                  self._describe(change.new_state, change.new_leader))
+        # A new leader is worth a place in the history: whoever it is, as this Virgil sees it.
+        leader_of = lambda state, leader: self.config.id if state is State.LEADER else leader
+        old, new = leader_of(change.old_state, change.old_leader), leader_of(change.new_state, change.new_leader)
+        if new is not None and new != old and not self.observing:
+            self.events.group("leader", "This Virgil became the leader" if new == self.config.id
+                              else f"{self.name_of(new)} became the leader")
 
     def ready_to_elect(self, now: float) -> bool:
         """Whether the election should run yet.
@@ -1647,11 +1668,13 @@ class Daemon:
                                                      "removed_notice": self.removed_notice,
                                                      "invites": outstanding_invites(group, time.time())},
                 "clock": self.clock,
+                # The history: alerts opening and closing, and the group's events (see virgil.events).
+                "events": list(self.events.recent)[:50],
                 "alerts": None if self.alerts is None else {
                     "supported": self.alerts.supported,
                     "open": self.alerts.open_summaries(),
                     "recovering": self.alerts.recovering_summaries(),
-                    "recent": list(self.alerts.recent),
+                    "recent": list(self.events.recent)[:50],
                 },
                 "dhcp_names": dhcp_lease_names(),
                 "trim_ppb": self.config.trim_ppb,
@@ -1729,7 +1752,7 @@ class Daemon:
             self._trust_members()
         if request.remote and isinstance(body.get("id"), str):
             self.learned[body["id"]] = request.remote
-        log.info("%s joined the group from %s", body.get("name"), request.remote)
+        self.events.group("joined", f"{body.get('name')} joined the group, through this Virgil")
         await self._update_advert()
         # Everyone else learns of the newcomer now (and from heartbeats, if they miss this).
         asyncio.ensure_future(self.push_members([i for i in self.member_ids() if i != body.get("id")]))
@@ -1828,12 +1851,14 @@ class Daemon:
             return False
         self._log_change(self.election.stop(time.monotonic()))
         self.timing.want(None)
+        self.events.group("timing", "Timing was stopped on this Virgil")
         return True
 
     def start_timing_again(self) -> bool:
         if self.timing is None:
             return False
         self._log_change(self.election.start(time.monotonic()))
+        self.events.group("timing", "Timing was started again on this Virgil")
         return True
 
     # Group port
