@@ -1447,3 +1447,59 @@ def test_leftover_chrony_sample_settings_do_no_harm(tmp_path):
     config_file.save(config_file.new_config(), path)
     path.write_text(path.read_text() + "chrony_maxsamples = 512\nchrony_minsamples = 128\n")
     assert config_file.load(path).chrony_filter == 1
+
+
+def test_a_late_burst_after_a_quiet_night_is_counted_in_full(tmp_path):
+    """The rate is since the previous reading: since the count last changed, 189 late packets after hours of none
+    were divided by hours, drawn as a spike labelled 0, totalling 0."""
+    paths, identities, configs = make_pair(tmp_path)
+    b = Daemon(paths["B"], identities["B"])
+
+    class Consoles:
+        polls, late = 0, 1996
+
+        def summaries(self):
+            return [{"name": "WingCompact", "late_packets": self.late}]
+
+    consoles = Consoles()
+    b.consoles = consoles
+    t = 1000.0
+    for _ in range(3000):  # hours of polls with no new late packets
+        consoles.polls += 1
+        b.sample_graphs(t)
+        t += 5.0
+    consoles.late, consoles.polls = 2185, consoles.polls + 1
+    b.sample_graphs(t)
+    series = b.graphs.window(60, t)
+    late = next(s for s in series if s["chart"] == "late")
+    assert late["summary"] == {"kind": "total", "value": pytest.approx(189.0)}
+
+
+def test_a_members_log_is_sent_at_a_limited_rate(tmp_path, monkeypatch):
+    """A log crosses the radio link, so it's paced: sent flat out, it could crowd out the audio."""
+    import virgil.daemon as module
+
+    paths, identities, configs = make_pair(tmp_path)
+    monkeypatch.setattr(module, "LOG_RATE", 200 * 1024)
+    monkeypatch.setattr(module, "LOG_CHUNK", 16 * 1024)
+
+    async def scenario():
+        a, b = Daemon(paths["A"], identities["A"]), Daemon(paths["B"], identities["B"])
+        b.recordings_root = tmp_path / "recordings"  # never the real /var/lib/dante-virgil
+        runners = await start(a) + await start(b)
+        try:
+            introduce(a, b)
+            log = b.recordings_root / "virgil-20261120-013227-Box-B.tar.gz"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            content = bytes(range(256)) * 1600  # 400 KB
+            log.write_bytes(content)
+            started = time.monotonic()
+            data = await a._member_call(configs["B"].id, "GET", f"{module.RECORDINGS_PATH}/{log.name}",
+                                        timeout=30, as_bytes=True)
+            return data == content, time.monotonic() - started
+        finally:
+            for runner in runners:
+                await runner.cleanup()
+
+    intact, took = asyncio.run(scenario())
+    assert intact and took >= 1.7  # 400 KB at 200 KB/s: about two seconds, not a blink

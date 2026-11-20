@@ -67,6 +67,23 @@ class EventLog:
         except OSError as error:
             log.warning("Couldn't record the event: %s", error)
 
+    def since(self, t: float) -> list[dict[str, Any]]:
+        """Every event from a time on, oldest first, from the file (the in-memory history only keeps the latest)."""
+        events = []
+        for path in (self.path.with_suffix(".jsonl.1"), self.path):
+            try:
+                lines = path.read_text().splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and isinstance(event.get("t"), (int, float)) and event["t"] >= t:
+                    events.append(event)
+        return sorted(events, key=lambda e: e["t"])
+
     def group(self, kind: str, title: str) -> None:
         """Something the group did, such as a Virgil joining, or a new leader."""
         log.info("%s", title)

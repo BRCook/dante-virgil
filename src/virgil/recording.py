@@ -2,14 +2,20 @@
 
 While recording, a Virgil writes into a folder under RECORDINGS:
 
-    status.jsonl       its status every 2 s: clocks, roles, consoles, members, alerts
+    status.jsonl       its status every 2 s: clocks, roles, consoles, members, open alerts
     graphs.jsonl       its graphs every 30 s, at full resolution (each covers 40 s, so they overlap)
-    diagnostics.jsonl  each console's current diagnostics every 30 s, without histories
+    diagnostics.jsonl  each console's full netaudio diagnostics every 5 minutes, without histories
+    events.jsonl       the event history during the session (alerts, and what the group did)
     journal.log        its timing services' logs
     notes.log          notes added from the web UI, each time-stamped
 
-Stopping packs the folder into <name>.tar.gz. A recording stops itself after
-MAX_SECONDS, or when the disk is down to MIN_FREE_BYTES.
+Status leaves out the event history it normally carries: repeated every 2 s, it was 97% of a night's
+log. The events are written once, when the session stops. Diagnostics, at about 9 KB for each of a
+console's receive paths, are recorded every 5 minutes for the same reason.
+
+Stopping packs the folder into <name>.tar.gz, in a separate tar process at the lowest CPU and disk
+priority: packing a long session takes minutes, and must never crowd out chrony, phc2sys or ptp4l. A
+recording stops itself after MAX_SECONDS, or when the disk is down to MIN_FREE_BYTES.
 """
 
 from __future__ import annotations
@@ -31,6 +37,9 @@ log = logging.getLogger("virgild.recording")
 RECORDINGS = Path("/var/lib/dante-virgil/recordings")
 MAX_SECONDS = 24 * 3600
 MIN_FREE_BYTES = 500 * 1024 * 1024
+STATUS_EVERY = 2.0  # seconds
+GRAPHS_EVERY = 15  # status readings (30 s)
+DIAGNOSTICS_EVERY = 150  # status readings (5 minutes)
 UNITS = ["dante-virgil", "dante-virgil-chrony", "dante-virgil-ptp4l", "dante-virgil-phc2sys",
          "dante-virgil-netaudio", "dante-virgil-trim", "dante-virgil-sync"]
 ARCHIVE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,150}\.tar(\.gz)?$")
@@ -50,12 +59,45 @@ def _strip_histories(value: Any) -> Any:
     return value
 
 
+def _slim(status: dict) -> dict:
+    """Status without the event history it carries: the session's events are written once, when it stops."""
+    slim = {key: value for key, value in status.items() if key != "events"}
+    if isinstance(slim.get("alerts"), dict):
+        slim["alerts"] = {key: value for key, value in slim["alerts"].items() if key != "recent"}
+    return slim
+
+
+PACK = ["nice", "-n", "19", "ionice", "-c", "3", "tar", "-czf"]
+
+
+async def pack(folder: Path, archive: Path) -> None:
+    """Pack a session's folder into a .tar.gz, in its own process at the lowest CPU and disk priority, so the
+    timing services always come first. Falls back on Python's tarfile if tar can't run."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *PACK, str(archive), "-C", str(folder.parent), folder.name,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        _, error = await process.communicate()
+        if process.returncode == 0:
+            return
+        log.warning("tar couldn't pack %s (%s); packing it here instead", folder.name, error.decode(errors="replace")[:200])
+    except OSError as error:
+        log.warning("Couldn't run tar (%s); packing %s here instead", error, folder.name)
+
+    def fallback() -> None:
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(folder, arcname=folder.name)
+
+    await asyncio.to_thread(fallback)
+
+
 class Session:
     def __init__(self, name: str, status: Callable[[], dict], graphs: Callable[[float], list],
                  diagnostics: Callable[[], dict], root: Path = RECORDINGS, units: list[str] | None = UNITS,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, events: Callable[[float], list] = lambda since: []):
         self.name = name
         self._status, self._graphs, self._diagnostics = status, graphs, diagnostics
+        self._events = events  # the event history since a time, written once when the session stops
         self.root = root
         self.units = units
         self.clock = clock
@@ -127,14 +169,15 @@ class Session:
             except TimeoutError:
                 self._journal.kill()
         folder, self.folder, self._task, self._journal = self.folder, None, None, None
+        try:
+            with (folder / "events.jsonl").open("w") as f:
+                for event in self._events(self.since or 0.0):
+                    f.write(json.dumps(event, separators=(",", ":")) + "\n")
+        except OSError as error:
+            log.warning("Couldn't write the session's events: %s", error)
         archive = folder.with_name(folder.name + ".tar.gz")
-
-        def pack() -> None:
-            with tarfile.open(archive, "w:gz") as tar:
-                tar.add(folder, arcname=folder.name)
-            shutil.rmtree(folder, ignore_errors=True)
-
-        await asyncio.to_thread(pack)
+        await pack(folder, archive)
+        shutil.rmtree(folder, ignore_errors=True)
         log.info("Recording saved as %s", archive.name)
         return archive.name
 
@@ -158,9 +201,10 @@ class Session:
         while True:
             now = self.clock()
             try:
-                self._append("status.jsonl", {"t": now, "status": self._status()})
-                if tick % 15 == 0:
+                self._append("status.jsonl", {"t": now, "status": _slim(self._status())})
+                if tick % GRAPHS_EVERY == 0:
                     self._append("graphs.jsonl", {"t": now, "series": self._graphs(40)})
+                if tick % DIAGNOSTICS_EVERY == 0:
                     self._append("diagnostics.jsonl", {"t": now, "diagnostics": _strip_histories(self._diagnostics())})
             except OSError as error:
                 log.warning("Recording stopped: %s", error)
@@ -175,7 +219,7 @@ class Session:
                 asyncio.ensure_future(self.stop())
                 return
             tick += 1
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(STATUS_EVERY)
 
     # Recordings on disk
 
