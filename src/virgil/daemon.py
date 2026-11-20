@@ -421,7 +421,7 @@ class Daemon:
             add(f"limit/{key}", "latency", f"{label} setting", "ns", now, device.get("latency_setting_ns"))
             if not self._has_history.get(key):
                 # No history from netaudio: fall back to the latest figures.
-                add(f"latency/{key}", "latency", f"{label} worst", "ns", now, device.get("latency_ns"), WORST)
+                add(f"latency/{key}", "latency", f"{label} worst flow", "ns", now, device.get("latency_ns"), WORST)
                 add(f"average/{key}", "latency", f"{label} average", "ns", now, device.get("latency_average_ns"))
             late = device.get("late_packets")
             if isinstance(late, int):
@@ -440,7 +440,7 @@ class Daemon:
         label, key = self._console_label(device.name)
         self._has_history[key] = True
         for t, worst, average in points:  # already placed on the wall clock (see consoles.latency_history)
-            self.graphs.add(f"latency/{key}", "latency", f"{label} worst", "ns", t, worst, WORST)
+            self.graphs.add(f"latency/{key}", "latency", f"{label} worst flow", "ns", t, worst, WORST)
             self.graphs.add(f"average/{key}", "latency", f"{label} average", "ns", t, average)
 
     async def watch_graphs(self, pinger: Pinger | None = None) -> None:
