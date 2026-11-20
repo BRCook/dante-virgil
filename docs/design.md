@@ -316,6 +316,7 @@ Every Virgil sends a heartbeat to the group once a second, through the group API
   - `v1_reason`: why it is or isn't serving PTPv1 (see [Serving PTPv1](#serving-ptpv1)).
 - `members_digest`: a short digest of its member list (see [Syncing Group Members](#syncing-group-members)).
 - `shared_settings`: the settings every member shares, as well as when it was changed (see [Shared Settings](#shared-settings)).
+- `ptp_address`: its PTP interface's address, so members can ping it across the Dante network (see [Graphs](#graphs)).
 - `device_settings`: its local Dante devices' enforce settings, by MAC address, each with `native_ptpv2` and `aes67` (see [Enforcing PTPv2 and AES67](#enforcing-ptpv2-and-aes67)).
 
 Every field is checked when the heartbeat arrives. Heartbeats are how every Virgil's web UI can show the whole group, rather than just itself.
@@ -459,7 +460,7 @@ While it leads, a Virgil records the figures of every Dante device in the group 
 
 1. It averages each device's figures over the last five minutes, then averages those across the devices.
 2. If the average is within ±0.2 ppm (of zero), it leaves the trim alone.
-3. Otherwise, it moves the trim 30% of the way towards cancelling the average, but by no more than 0.1 ppm in one step, and never beyond ±100 ppm in total. It applies the new trim through `virgil-root trim` without restarting anything, and saves it to the configuration.
+3. Otherwise, it moves the trim 30% of the way towards cancelling the average, but by no more than 0.1 ppm in one step (or 0.3 ppm while the average is more than 1 ppm out), and never beyond ±100 ppm in total. It applies the new trim through `virgil-root trim` without restarting anything, and saves it to the configuration.
 
 Two Dante devices can't always both be satisfied. Each has its own crystal, and two crystals can differ by a few ppm, so a shared clock would never be able to accommodate both. The solution is to take the average of the whole group and try to match that; this minimizes the total offset amongst the group, even if it means individual devices might have larger offsets than if they were individually targeted.
 
@@ -532,7 +533,7 @@ Each Virgil keeps the last ten minutes of its own measurements in memory:
 - its clock offsets;
 - its local Dante devices' clock corrections, receive latency (the worst flow, and the average across flows, against the device's latency setting) and late packets;
 - the trim, while it leads;
-- the link's round trip, jitter and packet loss, from four small pings a second to each other member (with the jitter smoothed the way RTP smooths it, as in RFC 3550).
+- the link's round trip, jitter and packet loss, from four small pings a second to each other member (with the jitter smoothed the way RTP smooths it, as in RFC 3550). When a Virgil's PTP interface is separate from its management interface, it also pings each member's PTP interface. These show on the same charts, labelled "(Dante)". The pings do not use the network card's transmit timestamp slots.
 
 When a web UI asks for graphs, its Virgil fetches every other member's measurements through the group API, and merges them with its own. That way, a Dante device on the far side of the link is graphed in as much detail as a local one. When there are more points than fit on a chart, latency, round trip, jitter and late packets keep each stretch's worst value (so a spike is never averaged away), while the others keep the average.
 

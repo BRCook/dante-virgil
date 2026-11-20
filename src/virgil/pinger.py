@@ -64,9 +64,13 @@ def parse_reply(data: bytes) -> int | None:
 
 
 class Pinger:
-    def __init__(self, on_result: Callable[[str, float | None], None], clock: Callable[[], int] = time.time_ns):
+    def __init__(self, on_result: Callable[[str, float | None], None], clock: Callable[[], int] = time.time_ns,
+                 interface: str | None = None, dscp: int | None = None):
         self.on_result = on_result  # (address, round trip in ns, or None if lost)
         self.clock = clock
+        # Pinging across the Dante network: leave by the PTP interface, marked like Dante's audio (DSCP EF, 46), so
+        # the pings share the audio's route and its queues in switches and radios that honour priorities.
+        self.interface, self.dscp = interface, dscp
         self.targets: set[str] = set()
         self._sock: socket.socket | None = None
         self._raw = False
@@ -80,13 +84,23 @@ class Pinger:
                 self._sock = socket.socket(socket.AF_INET, kind, socket.IPPROTO_ICMP)
                 self._raw = raw
                 self._sock.setblocking(False)
+                if self.interface:
+                    self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, self.interface.encode())
+                if self.dscp is not None:
+                    self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, self.dscp << 2)
                 try:  # the kernel's time of arrival, in nanoseconds, with each reply
                     self._sock.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPNS, 1)
                 except OSError:
                     pass  # then replies are timed when they're read, as before
                 return True
             except PermissionError:
+                if self._sock is not None:
+                    self._sock.close()
+                    self._sock = None
                 continue
+            except OSError as error:  # binding to an interface that's gone, say
+                log.warning("Can't ping from %s: %s", self.interface or "this Virgil", error)
+                return False
         log.warning("Can't open an ICMP socket, so the link's round trip isn't measured")
         return False
 

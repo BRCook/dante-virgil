@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -57,6 +58,8 @@ class Heartbeat:
     members_digest: str | None = None
     # The settings every member shares, each with when it was changed (see virgil.shared).
     shared_settings: dict | None = None
+    # Its PTP interface's address, so members can ping it across the Dante network.
+    ptp_address: str | None = None
 
     def encode(self) -> dict[str, Any]:
         return {
@@ -80,6 +83,7 @@ class Heartbeat:
             "device_settings": self.device_settings,
             "members_digest": self.members_digest,
             "shared_settings": self.shared_settings,
+            "ptp_address": self.ptp_address,
         }
 
     def view(self, heard_at: float) -> PeerView:
@@ -171,6 +175,13 @@ def decode(data: Any) -> Heartbeat:
             parse(shared_settings)
         except SharedError as error:
             raise HeartbeatError(str(error)) from error
+    ptp_address = data.get("ptp_address")
+    if ptp_address is not None:
+        try:
+            if not isinstance(ptp_address, str) or ipaddress.ip_address(ptp_address).version != 4:
+                raise ValueError
+        except ValueError:
+            raise HeartbeatError("bad ptp_address") from None
     return Heartbeat(
         id=virgil_id,
         name=name,
@@ -192,4 +203,5 @@ def decode(data: Any) -> Heartbeat:
         device_settings=device_settings,
         members_digest=members_digest,
         shared_settings=shared_settings,
+        ptp_address=ptp_address,
     )

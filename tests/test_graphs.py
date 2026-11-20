@@ -125,3 +125,27 @@ def test_a_reply_is_timed_by_the_kernel_not_when_its_read():
     p._sent[7] = ("10.0.0.2", 5_000_000_000)
     p._readable()  # read 25 ms after sending, as a busy virgild might
     assert results == [1_200_000.0]  # but timed by its arrival: 1.2 ms
+
+
+def test_a_dante_network_pinger_leaves_by_the_ptp_interface_marked_like_audio(monkeypatch):
+    import socket
+
+    from virgil import pinger
+
+    options = []
+
+    class Socket:
+        def __init__(self, *args):
+            pass
+
+        def setblocking(self, flag):
+            pass
+
+        def setsockopt(self, level, name, value):
+            options.append((level, name, value))
+
+    monkeypatch.setattr(pinger.socket, "socket", Socket)
+    p = pinger.Pinger(lambda address, rtt: None, interface="enp1s0", dscp=46)
+    assert p.open()
+    assert (socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"enp1s0") in options
+    assert (socket.IPPROTO_IP, socket.IP_TOS, 46 << 2) in options  # EF, as Dante marks its audio

@@ -24,6 +24,12 @@ GAIN = 0.3
 DEADBAND = 200
 # The largest change in one step, in ppb.
 MAX_STEP = 100
+# Further out than FAST_BEYOND, steps may be up to FAST_STEP, so a cold start's trim settles in a quarter of an hour
+# or so rather than most of one. The final approach is still at MAX_STEP. Followers kept up with steady 0.1 ppm
+# steps at an RMS of 3 to 4 µs; auto-trim still waits for them to settle after every step, so if they can't keep up
+# with bigger ones, it simply slows down.
+FAST_BEYOND = 1000
+FAST_STEP = 300
 # The trim never goes beyond this, in ppb.
 MAX_TRIM = 100_000
 # Readings beyond this, in ppb, can't come from a locked console.
@@ -42,7 +48,8 @@ def next_trim(trim_ppb: int, offsets_ppb: Iterable[int]) -> int | None:
     average = sum(readings) / len(readings)
     if abs(average) <= DEADBAND:
         return None
-    step = max(-MAX_STEP, min(MAX_STEP, round(-GAIN * average)))
+    limit = FAST_STEP if abs(average) > FAST_BEYOND else MAX_STEP
+    step = max(-limit, min(limit, round(-GAIN * average)))
     new = max(-MAX_TRIM, min(MAX_TRIM, trim_ppb + step))
     return None if new == trim_ppb else new
 

@@ -97,6 +97,8 @@ PTP_QUIET_AFTER = 60.0
 GRAPHS_PATH = "/group/v1/graphs"
 DEVICE_PATH = "/group/v1/device"
 MEMBERS_PATH = "/group/v1/members"
+# Dante marks its audio EF (46); pings across the Dante network are marked the same, to share its queues.
+DANTE_AUDIO_DSCP = 46
 MEMBERSHIP_PATH = "/api/v1/membership"
 # Fetch a member's list at most this often, when its digest differs from ours.
 MEMBERS_FETCH_EVERY = 5.0
@@ -377,23 +379,49 @@ class Daemon:
                          if self.recording is not None and self.recording.active else None,
                          self.serving(), self.local_device_settings(),
                          membership.digest(self.config.group) if self.config.group else None,
-                         shared.snapshot(self.config) if self.config.group else None)
+                         shared.snapshot(self.config) if self.config.group else None,
+                         self.ptp_addresses[0] if self.config.ptp_interface and self.ptp_addresses else None)
 
     # Graphs
 
     def on_ping(self, address: str, rtt_ns: float | None) -> None:
         name = self.member_name_at(address)
+        self._record_link(address, f"{self.config.name} to {name}", f"{self.config.name}/{name}", rtt_ns)
+
+    def on_dante_ping(self, address: str, rtt_ns: float | None) -> None:
+        """A ping across the Dante network, from the PTP interface to a member's, marked like Dante's audio."""
+        name = next((p.heartbeat.name for p in self.peers.values() if p.heartbeat.ptp_address == address), address)
+        self._record_link(("dante", address), f"{self.config.name} to {name} (Dante network)",
+                          f"{self.config.name}/{name}/dante", rtt_ns)
+
+    def _record_link(self, link, label: str, key: str, rtt_ns: float | None) -> None:
         now = time.time()
         # Each ping counts as 0% or 100% lost; averaged over a stretch, that's the loss rate.
-        label, key = f"{self.config.name} to {name}", f"{self.config.name}/{name}"
         self.graphs.add(f"loss/{key}", "loss", label, "percent", now, 100.0 if rtt_ns is None else 0.0)
         if rtt_ns is None:
             return
-        last, smoothed = self.link.get(address, (None, None))
+        last, smoothed = self.link.get(link, (None, None))
         smoothed = jitter(smoothed, rtt_ns, last)
-        self.link[address] = (rtt_ns, smoothed)
+        self.link[link] = (rtt_ns, smoothed)
         self.graphs.add(f"rtt/{key}", "rtt", label, "ns", now, rtt_ns, WORST)
         self.graphs.add(f"jitter/{key}", "jitter", label, "ns", now, smoothed, WORST)
+
+    def dante_pinger(self) -> Pinger | None:
+        """A pinger for the Dante network, if this Virgil's PTP interface is separate from its management one."""
+        interface = self.config.ptp_interface
+        if not interface or interface == self.config.mgmt_interface:
+            return None
+        return Pinger(self.on_dante_ping, interface=interface, dscp=DANTE_AUDIO_DSCP)
+
+    def dante_ping_targets(self) -> set[str]:
+        """Each member's PTP address, when pinging across the Dante network tells us anything new: only when this
+        Virgil's PTP interface isn't also its management interface (then the usual pings already cover it)."""
+        if not self.config.ptp_interface or self.config.ptp_interface == self.config.mgmt_interface:
+            return set()
+        # As with the usual pings, every member with a known address, heard lately or not: a member gone quiet
+        # should show up as lost pings.
+        members = set(self.member_ids())
+        return {p.heartbeat.ptp_address for i, p in self.peers.items() if i in members and p.heartbeat.ptp_address}
 
     def member_name_at(self, address: str) -> str:
         for virgil_id in self.member_ids():
@@ -456,14 +484,18 @@ class Daemon:
             self.graphs.add(f"latency/{key}", "latency", f"{label} worst flow", "ns", t, worst, WORST)
             self.graphs.add(f"average/{key}", "latency", f"{label} average", "ns", t, average)
 
-    async def watch_graphs(self, pinger: Pinger | None = None) -> None:
+    async def watch_graphs(self, pinger: Pinger | None = None, dante_pinger: Pinger | None = None) -> None:
         if pinger is not None:
             asyncio.ensure_future(pinger.run())
+        if dante_pinger is not None:
+            asyncio.ensure_future(dante_pinger.run())
         while True:
             await asyncio.sleep(1.0)
             try:
                 if pinger is not None:
                     pinger.targets = self.ping_targets()
+                if dante_pinger is not None:
+                    dante_pinger.targets = self.dante_ping_targets()
                 self.sample_graphs(time.time())
             except Exception:
                 log.exception("Couldn't sample the graphs")
@@ -2108,7 +2140,7 @@ async def serve(daemon: Daemon, host: str) -> None:
     extras = await start_extras(daemon, host, public)
     jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election(),
             daemon.tidy_ptp(), daemon.watch_consoles(), daemon.watch_clock(), daemon.watch_trim(),
-            daemon.watch_alerts(), daemon.watch_graphs(Pinger(daemon.on_ping)), daemon.watch_ptpv1(),
+            daemon.watch_alerts(), daemon.watch_graphs(Pinger(daemon.on_ping), daemon.dante_pinger()), daemon.watch_ptpv1(),
             daemon.watch_membership()]
     if daemon.timing is not None:
         jobs.append(daemon.timing.run())
