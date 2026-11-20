@@ -27,7 +27,10 @@ class Series:
     label: str
     unit: str  # "ns", "ppm", "per_s" or "percent"
     combine: str = MEAN
-    points: collections.deque = field(default_factory=lambda: collections.deque(maxlen=KEEP_SECONDS * 2))
+    # Kept by time (see Recorder.forget_before), however often a series is measured: the link is pinged four times
+    # a second, and a cap of two readings a second once cut its charts to the last five minutes. The cap is only
+    # a backstop against something recording far faster than anything does.
+    points: collections.deque = field(default_factory=lambda: collections.deque(maxlen=KEEP_SECONDS * 20))
 
 
 def _percentile(ordered: list[float], fraction: float) -> float:

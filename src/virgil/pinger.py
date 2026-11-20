@@ -3,6 +3,12 @@
 Uses an unprivileged ICMP socket where the kernel allows one, and a raw one
 otherwise (virgild has CAP_NET_RAW for PTP watching). Replies are matched by
 sequence number; one that hasn't come back within a second counts as lost.
+
+Each reply's arrival is the kernel's receive timestamp, not the moment virgild
+gets round to reading it: virgild's event loop is often busy (with heartbeats,
+graphs, netaudio), and timing replies when they're read counted its own delays
+as round trip, and as jitter. The send time comes from the same clock (the
+kernel's real-time clock), read immediately before sending.
 """
 
 from __future__ import annotations
@@ -36,6 +42,18 @@ def echo_request(identifier: int, sequence: int, payload: bytes = b"virgil") -> 
     return struct.pack("!BBHHH", ECHO_REQUEST, 0, checksum, identifier, sequence) + payload
 
 
+SO_TIMESTAMPNS = getattr(socket, "SO_TIMESTAMPNS", 35)  # Linux's value, if Python doesn't name it
+
+
+def received_at(ancillary) -> int | None:
+    """The kernel's time of arrival, in nanoseconds on the real-time clock, from a reply's ancillary data."""
+    for level, kind, data in ancillary:
+        if level == socket.SOL_SOCKET and kind == SO_TIMESTAMPNS and len(data) >= 16:
+            seconds, nanoseconds = struct.unpack_from("qq", data)
+            return seconds * 1_000_000_000 + nanoseconds
+    return None
+
+
 def parse_reply(data: bytes) -> int | None:
     """The sequence number of an echo reply, with or without an IPv4 header in front."""
     if data and data[0] >> 4 == 4 and len(data) >= 20:
@@ -46,7 +64,7 @@ def parse_reply(data: bytes) -> int | None:
 
 
 class Pinger:
-    def __init__(self, on_result: Callable[[str, float | None], None], clock: Callable[[], float] = time.monotonic):
+    def __init__(self, on_result: Callable[[str, float | None], None], clock: Callable[[], int] = time.time_ns):
         self.on_result = on_result  # (address, round trip in ns, or None if lost)
         self.clock = clock
         self.targets: set[str] = set()
@@ -62,6 +80,10 @@ class Pinger:
                 self._sock = socket.socket(socket.AF_INET, kind, socket.IPPROTO_ICMP)
                 self._raw = raw
                 self._sock.setblocking(False)
+                try:  # the kernel's time of arrival, in nanoseconds, with each reply
+                    self._sock.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPNS, 1)
+                except OSError:
+                    pass  # then replies are timed when they're read, as before
                 return True
             except PermissionError:
                 continue
@@ -71,16 +93,17 @@ class Pinger:
     def _readable(self) -> None:
         while True:
             try:
-                data = self._sock.recv(2048)
+                data, ancillary, _, _ = self._sock.recvmsg(2048, socket.CMSG_SPACE(16))
             except (BlockingIOError, InterruptedError):
                 return
             except OSError:
                 return
+            arrived = received_at(ancillary)
             sequence = parse_reply(data)
             sent = self._sent.pop(sequence, None) if sequence is not None else None
             if sent is not None:
                 address, at = sent
-                self.on_result(address, (self.clock() - at) * 1e9)
+                self.on_result(address, float((arrived if arrived is not None else self.clock()) - at))
 
     async def run(self) -> None:
         if self._sock is None and not self.open():
@@ -91,16 +114,18 @@ class Pinger:
             while True:
                 now = self.clock()
                 for sequence, (address, at) in list(self._sent.items()):
-                    if now - at > TIMEOUT:
+                    if now - at > TIMEOUT * 1e9:
                         del self._sent[sequence]
                         self.on_result(address, None)
                 for address in sorted(self.targets):
                     self._sequence = (self._sequence + 1) & 0xFFFF
                     packet = echo_request(self._identifier, self._sequence)
                     try:
+                        sent_at = self.clock()  # before sending: a reply can arrive before sendto even returns
+                        self._sent[self._sequence] = (address, sent_at)
                         self._sock.sendto(packet, (address, 0))
-                        self._sent[self._sequence] = (address, self.clock())
                     except OSError:
+                        self._sent.pop(self._sequence, None)
                         self.on_result(address, None)
                 await asyncio.sleep(INTERVAL)
         finally:
