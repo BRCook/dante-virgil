@@ -521,7 +521,7 @@ Each Virgil keeps the last ten minutes of its own measurements in memory:
 - its clock offsets;
 - its local Dante devices' clock corrections, receive latency (the worst flow, and the average across flows, against the device's latency setting) and late packets;
 - the trim, while it leads;
-- the link's round trip, jitter and packet loss, from four small pings a second to each other member (with the jitter smoothed the way RTP smooths it, as in RFC 3550). When a Virgil's PTP interface is separate from its management interface, it also pings each member's PTP interface. These show on the same charts, labelled "(Dante)", beside the usual ones, labelled "(Mgmt)". The pings do not use the network card's transmit timestamp slots.
+- the link's round trip, jitter and packet loss, from four small pings a second between each pair of members (with the jitter smoothed the way RTP smooths it, as in RFC 3550). A round trip *should be* the same from either end, so only one member of each pair pings: the one whose Virgil ID sorts first. When a Virgil's PTP interface is separate from its management interface, it also pings each member's PTP interface. These show on the same charts, labelled "(Dante)", beside the usual ones, labelled "(Mgmt)". The pings do not use the network card's transmit timestamp slots.
 
 When a web UI asks for graphs, its Virgil fetches every other member's measurements through the group API, and merges them with its own. That way, a Dante device on the far side of the link is graphed in as much detail as a local one. When there are more points than fit on a chart, latency, round trip, jitter and late packets keep each stretch's worst value (so a spike is never averaged away), while the others keep the average.
 

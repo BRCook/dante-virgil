@@ -386,12 +386,12 @@ class Daemon:
 
     def on_ping(self, address: str, rtt_ns: float | None) -> None:
         name = self.member_name_at(address)
-        self._record_link(address, f"{self.config.name} to {name} (Mgmt)", f"{self.config.name}/{name}", rtt_ns)
+        self._record_link(address, f"{self.config.name} ↔ {name} (Mgmt)", f"{self.config.name}/{name}", rtt_ns)
 
     def on_dante_ping(self, address: str, rtt_ns: float | None) -> None:
         """A ping across the Dante network, from the PTP interface to a member's, marked like Dante's audio."""
         name = next((p.heartbeat.name for p in self.peers.values() if p.heartbeat.ptp_address == address), address)
-        self._record_link(("dante", address), f"{self.config.name} to {name} (Dante)",
+        self._record_link(("dante", address), f"{self.config.name} ↔ {name} (Dante)",
                           f"{self.config.name}/{name}/dante", rtt_ns)
 
     def _record_link(self, link, label: str, key: str, rtt_ns: float | None) -> None:
@@ -420,7 +420,7 @@ class Daemon:
             return set()
         # As with the usual pings, every member with a known address, heard lately or not: a member gone quiet
         # should show up as lost pings.
-        members = set(self.member_ids())
+        members = set(filter(self.pings_to, self.member_ids()))
         return {p.heartbeat.ptp_address for i, p in self.peers.items() if i in members and p.heartbeat.ptp_address}
 
     def member_name_at(self, address: str) -> str:
@@ -430,10 +430,15 @@ class Daemon:
                 return member.name if member else address
         return address
 
+    def pings_to(self, virgil_id: str) -> bool:
+        """Whether this Virgil pings that member. A round trip is the same from either end, so only one of each pair
+        pings (the one whose ID sorts first); every page merges the group's graphs, so both still show it."""
+        return self.config.id < virgil_id
+
     def ping_targets(self) -> set[str]:
-        """One management address for each member heard from."""
+        """One management address for each member this Virgil pings (see pings_to)."""
         targets = set()
-        for virgil_id in self.member_ids():
+        for virgil_id in filter(self.pings_to, self.member_ids()):
             addresses = self.addresses_for(virgil_id)
             if addresses:
                 targets.add(addresses[0])
