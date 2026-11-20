@@ -554,9 +554,10 @@ The page draws the charts itself, on canvases, with windows from 30 seconds to 1
 
 "Start logging" logs this Virgil and, if asked, every other group member it can hear. No audio is recorded. Each Virgil writes the following under `/var/lib/dante-virgil/recordings/`:
 
-- its full status, every two seconds;
+- its status, every two seconds, without the event history;
 - its graphs, every 30 seconds (each covering 40 seconds, so no data is lost);
-- each local Dante device's diagnostics, every 30 seconds, excluding data covered by the graphs;
+- each local Dante device's netaudio diagnostics, every five minutes, excluding data covered by the graphs;
+- the event history during the session;
 - its timing services' logs;
 - any notes added from the web UI.
 

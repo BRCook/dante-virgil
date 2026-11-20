@@ -63,3 +63,46 @@ def test_one_at_a_time_and_notes_need_a_recording(tmp_path):
         assert await s.stop() is None
 
     asyncio.run(scenario())
+
+
+def test_status_is_logged_without_the_event_history_which_is_written_once(tmp_path):
+    """Repeated in every status reading, the event history was 97% of a night's log."""
+    history = [{"t": 1795152800.0, "event": "group", "label": "NEW LEADER", "title": "Box B became the leader"}]
+    status = {"name": "Box A", "events": history * 50,
+              "alerts": {"supported": True, "open": [{"title": "Late packets"}], "recent": history * 50}}
+    s = Session("Box A", lambda: status, lambda window: [], lambda: {}, root=tmp_path, units=None,
+                events=lambda since: history)
+
+    async def scenario():
+        await s.start("20261120-013227")
+        await asyncio.sleep(0.1)
+        return await s.stop()
+
+    archive = asyncio.run(scenario())
+    with tarfile.open(tmp_path / archive) as tar:
+        files = {m.name.split("/")[-1]: m for m in tar.getmembers() if m.isfile()}
+        logged = json.loads(tar.extractfile(files["status.jsonl"]).readline())["status"]
+        events = [json.loads(line) for line in tar.extractfile(files["events.jsonl"]).read().splitlines()]
+    assert "events" not in logged and "recent" not in logged["alerts"]
+    assert logged["alerts"]["open"] == [{"title": "Late packets"}]  # what's open now is still in every reading
+    assert events == history
+
+
+def test_diagnostics_are_logged_every_five_minutes():
+    from virgil.recording import DIAGNOSTICS_EVERY, GRAPHS_EVERY, STATUS_EVERY
+
+    assert DIAGNOSTICS_EVERY * STATUS_EVERY == 300 and GRAPHS_EVERY * STATUS_EVERY == 30
+
+
+def test_packing_falls_back_when_tar_cant_run(tmp_path, monkeypatch):
+    import virgil.recording as recording
+
+    folder = tmp_path / "virgil-20261120-013227-Box-A"
+    folder.mkdir()
+    (folder / "status.jsonl").write_text('{"t": 1}\n')
+    for command in (recording.PACK, ["no-such-command-here"]):
+        monkeypatch.setattr(recording, "PACK", command)
+        archive = tmp_path / f"{len(command)}.tar.gz"
+        asyncio.run(recording.pack(folder, archive))
+        with tarfile.open(archive) as tar:
+            assert "virgil-20261120-013227-Box-A/status.jsonl" in tar.getnames()

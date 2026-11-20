@@ -108,6 +108,12 @@ SETTIME_UNIT = "dante-virgil-settime.service"
 SETTIME_REQUEST = Path("/run/dante-virgil/settime.json")
 RECORDING_PATH = "/group/v1/recording"
 RECORDINGS_PATH = "/group/v1/recordings"
+# A member sends its log across the link at no more than this, in bytes a second, in chunks of LOG_CHUNK.
+LOG_RATE = 2 * 1024 * 1024
+LOG_CHUNK = 64 * 1024
+# Members get this long to stop and pack a session, and to send it: generous, since a long one takes a while.
+LOG_PACK_TIMEOUT = 900.0
+LOG_SEND_TIMEOUT = 1800.0
 NETAUDIO_UNIT = "dante-virgil-netaudio.service"
 DHCP_NAMES_UNIT = "dante-virgil-dhcpnames.service"
 DHCP_NAMES_REQUEST = Path("/run/dante-virgil/dhcp-names.json")
@@ -431,9 +437,10 @@ class Daemon:
                 add(f"average/{key}", "latency", f"{label} average", "ns", now, device.get("latency_average_ns"))
             late = device.get("late_packets")
             if isinstance(late, int):
+                # A rate since the previous reading. (Since the count last changed, a burst after hours of none was
+                # divided by hours: a spike labelled 0, totalling 0.)
                 before = self.late_counts.get(key)
-                if before is None or late != before[0]:
-                    self.late_counts[key] = (late, now)
+                self.late_counts[key] = (late, now)
                 if before is not None and late >= before[0] and now > before[1]:
                     add(f"late/{key}", "late", label, "per_s", now, (late - before[0]) / (now - before[1]), WORST)
         self.graphs.forget_before(now - KEEP_SECONDS)
@@ -529,11 +536,12 @@ class Daemon:
             return {"archive": None}
         archives = [self.recordings_root / own]
         for virgil_id in self.recording_members:
-            reply = await self._member_call(virgil_id, "POST", RECORDING_PATH, {"action": "stop"}, timeout=60)
+            reply = await self._member_call(virgil_id, "POST", RECORDING_PATH, {"action": "stop"},
+                                            timeout=LOG_PACK_TIMEOUT)
             if not reply or not reply.get("archive"):
                 continue
             data = await self._member_call(virgil_id, "GET", f"{RECORDINGS_PATH}/{reply['archive']}",
-                                           timeout=120, as_bytes=True)
+                                           timeout=LOG_SEND_TIMEOUT, as_bytes=True)
             if data is None:
                 continue
             path = self.recordings_root / reply["archive"]
@@ -866,9 +874,23 @@ class Daemon:
         if sender is None or sender == self.config.id:
             raise web.HTTPForbidden()
         try:
-            return web.FileResponse(self.recording.path(request.match_info["name"]))
+            path = self.recording.path(request.match_info["name"])
+            size = path.stat().st_size
         except FileNotFoundError:
             raise web.HTTPNotFound() from None
+        # Paced, since it crosses the radio link: a log sent flat out could crowd out the audio.
+        response = web.StreamResponse(headers={"Content-Type": "application/octet-stream", "Content-Length": str(size)})
+        await response.prepare(request)
+        started, sent = time.monotonic(), 0
+        with path.open("rb") as f:
+            while chunk := f.read(LOG_CHUNK):
+                await response.write(chunk)
+                sent += len(chunk)
+                ahead = sent / LOG_RATE - (time.monotonic() - started)
+                if ahead > 0:
+                    await asyncio.sleep(ahead)
+        await response.write_eof()
+        return response
 
     async def group_recording_delete(self, request: web.Request) -> web.Response:
         sender = self._member_for_certificate(request)
@@ -1829,7 +1851,8 @@ class Daemon:
         self.web.routes(app)
         self.recording = Session(
             self.config.name, self.status_data, lambda window: self.graphs.window(window, time.time()),
-            lambda: dict(self.consoles.diagnostics) if self.consoles else {}, root=self.recordings_root)
+            lambda: dict(self.consoles.diagnostics) if self.consoles else {}, root=self.recordings_root,
+            events=lambda since: self.events.since(since))
         return app
 
     # For the web UI

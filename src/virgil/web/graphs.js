@@ -149,7 +149,8 @@ function drawChart(canvas, chart, series) {
   g.textBaseline = "middle";
   for (let v = low; v <= high + step / 2; v += step) {
     g.beginPath(); g.moveTo(left, y(v)); g.lineTo(left + plotW, y(v)); g.stroke();
-    const digits = chart.kind === "time" ? Math.max(0, -Math.floor(Math.log10(step))) : (chart.kind === "ppm" ? 2 : 1);
+    // As many decimals as the step between ticks needs, so small values never all read "0" (ppm keeps at least 2).
+    const digits = Math.max(chart.kind === "ppm" ? 2 : 0, -Math.floor(Math.log10(step)));
     const label = new Intl.NumberFormat("en", { maximumFractionDigits: Math.min(digits, 6) }).format(v);
     g.fillText(label, left - 6, y(v));
   }
