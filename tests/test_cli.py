@@ -592,8 +592,8 @@ def test_phc2sys_servo_settings(config_path):
     assert config_file.load(config_path).phc2sys_kp == 0.03
 
 
-def test_chrony_minsamples_setting(config_path):
-    assert _set(config_path, "chrony_minsamples", "256") == 0 and config_file.load(config_path).chrony_minsamples == 256
-    assert _set(config_path, "chrony_minsamples", "32") != 0  # below chrony's usual minimum: refused
-    assert _set(config_path, "chrony_minsamples", "5000") != 0
-    assert config_file.load(config_path).chrony_minsamples == 256
+def test_chrony_filter_setting(config_path):
+    assert _set(config_path, "chrony_filter", "4") == 0 and config_file.load(config_path).chrony_filter == 4
+    assert _set(config_path, "chrony_filter", "0") != 0
+    assert _set(config_path, "chrony_filter", "17") != 0
+    assert config_file.load(config_path).chrony_filter == 4
