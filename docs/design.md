@@ -541,7 +541,7 @@ Each line in a chart's legend shows its current value, and after it, in muted te
 | Chart | Summary |
 |---|---|
 | Clock offset, PHC offset | Peak |
-| Receive latency (worst) | Max |
+| Receive latency (worst flow) | Max |
 | Receive latency (average) | Median and spread |
 | Late packets | Total in the window |
 | Device clocks, trim | Range, lowest to highest |

@@ -197,7 +197,7 @@ function renderGraphs() {
   graphData.series.forEach((s) => (byChart[s.chart] = byChart[s.chart] || []).push(s));
   // Each series keeps its colour by name across charts and refreshes.
   // A console's worst, average and setting lines share its colour, and differ in style.
-  const base = (label) => label.replace(/ (setting|worst|average)$/, "");
+  const base = (label) => label.replace(/ (setting|worst flow|worst|average)$/, "");
   // A console's series are labelled "<console> (<Clock Box>)"; everything else belongs to a Clock Box or the link.
   const isConsole = (name) => /\(.+\)$/.test(name);
   const names = [...new Set(graphData.series.map((s) => base(s.label)))].sort();
