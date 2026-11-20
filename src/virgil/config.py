@@ -67,6 +67,9 @@ class Config:
     # "Follower"). Gentler values make the PHC's rate steadier, at the cost of a larger offset from the system clock.
     phc2sys_kp: float = 0.03
     phc2sys_ki: float = 0.0005
+    # How many of its measurements chrony, on a follower, may average its estimate of the leader's rate over (one
+    # a second). More makes the follower's rate steadier, but slower to follow real changes, such as drift.
+    chrony_maxsamples: int = 256
     # The web UI's password, as a scrypt hash. None means the web UI is read-only.
     web_password: str | None = None
     # When the password was last changed: shared across the group too.
@@ -144,6 +147,7 @@ def from_dict(data: dict[str, Any]) -> Config:
         auto_trim_changed=_time(data, "auto_trim_changed"),
         phc2sys_kp=_servo(data, "phc2sys_kp", 0.03),
         phc2sys_ki=_servo(data, "phc2sys_ki", 0.0005),
+        chrony_maxsamples=_samples(data, "chrony_maxsamples", 256),
         web_password_changed=_time(data, "web_password_changed"),
         devices=devices,
         group=group,
@@ -167,6 +171,7 @@ def to_dict(config: Config) -> dict[str, Any]:
     data["probe_timestamps"] = config.probe_timestamps
     data["phc2sys_kp"] = config.phc2sys_kp
     data["phc2sys_ki"] = config.phc2sys_ki
+    data["chrony_maxsamples"] = config.chrony_maxsamples
     if config.devices:
         data["devices"] = {
             mac: {"native_ptpv2": settings.native_ptpv2, "aes67": settings.aes67}
@@ -198,6 +203,17 @@ def _servo(data: dict, key: str, default: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
         raise ConfigError(f"{key} must be a number from {low} to {high}")
     return float(value)
+
+
+def _samples(data: dict, key: str, default: int) -> int:
+    from virgil.generate import DEFAULT_TUNING
+    from virgil.request import TUNING_LIMITS
+
+    value = data.get(key, default)
+    low, high = DEFAULT_TUNING.minsamples, TUNING_LIMITS["maxsamples"][1]
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ConfigError(f"{key} must be a whole number from {low} to {high}")
+    return value
 
 
 def _time(data: dict, key: str) -> float:

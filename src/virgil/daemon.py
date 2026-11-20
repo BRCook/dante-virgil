@@ -278,7 +278,8 @@ class Daemon:
                                  config.trim_ppb, config.nic_profile is not None,
                                  ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
                                  probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2(),
-                                 tuning=Tuning(phc2sys_kp=config.phc2sys_kp, phc2sys_ki=config.phc2sys_ki))
+                                 tuning=Tuning(phc2sys_kp=config.phc2sys_kp, phc2sys_ki=config.phc2sys_ki,
+                                             maxsamples=config.chrony_maxsamples))
         addresses = self.addresses_for(target.leader_id) if target.leader_id else []
         if not addresses:
             return None
@@ -287,7 +288,8 @@ class Daemon:
                              config.trim_ppb, config.nic_profile is not None,
                              ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
                              probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2(),
-                             tuning=Tuning(phc2sys_kp=config.phc2sys_kp, phc2sys_ki=config.phc2sys_ki))
+                             tuning=Tuning(phc2sys_kp=config.phc2sys_kp, phc2sys_ki=config.phc2sys_ki,
+                                             maxsamples=config.chrony_maxsamples))
 
     def on_applied(self, target: Target | None) -> None:
         """The timing services now match the election's decision."""

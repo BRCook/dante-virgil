@@ -1433,7 +1433,9 @@ def test_the_phc2sys_settings_reach_the_timing_request(tmp_path):
     paths, identities, configs = make_pair(tmp_path)
     config = config_file.load(paths["A"])
     config.ptp_interface, config.phc2sys_kp, config.phc2sys_ki = "lo", 0.015, 0.0002
+    config.chrony_maxsamples = 1024
     config_file.save(config, paths["A"])
     a = Daemon(paths["A"], identities["A"])
     request = a.build_request(Target(Role.LEADER))
     assert (request.tuning.phc2sys_kp, request.tuning.phc2sys_ki) == (0.015, 0.0002)
+    assert request.tuning.maxsamples == 1024
