@@ -1433,9 +1433,21 @@ def test_the_phc2sys_settings_reach_the_timing_request(tmp_path):
     paths, identities, configs = make_pair(tmp_path)
     config = config_file.load(paths["A"])
     config.ptp_interface, config.phc2sys_kp, config.phc2sys_ki = "lo", 0.015, 0.0002
-    config.chrony_maxsamples = 1024
+    config.chrony_minsamples = 512
     config_file.save(config, paths["A"])
     a = Daemon(paths["A"], identities["A"])
     request = a.build_request(Target(Role.LEADER))
     assert (request.tuning.phc2sys_kp, request.tuning.phc2sys_ki) == (0.015, 0.0002)
-    assert request.tuning.maxsamples == 1024
+    assert (request.tuning.minsamples, request.tuning.maxsamples) == (512, 512)  # maxsamples raised to match
+    config.chrony_minsamples = 128
+    config_file.save(config, paths["A"])
+    a = Daemon(paths["A"], identities["A"])
+    assert (a.build_request(Target(Role.LEADER)).tuning.minsamples, a.build_request(Target(Role.LEADER)).tuning.maxsamples) == (128, 256)
+
+
+def test_a_leftover_chrony_maxsamples_setting_does_no_harm(tmp_path):
+    """Box B had chrony_maxsamples set during an experiment; the setting it was replaced by mustn't trip over it."""
+    path = tmp_path / "virgil.toml"
+    config_file.save(config_file.new_config(), path)
+    path.write_text(path.read_text() + "chrony_maxsamples = 512\n")
+    assert config_file.load(path).chrony_minsamples == 64

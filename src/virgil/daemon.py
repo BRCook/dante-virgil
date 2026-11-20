@@ -46,7 +46,7 @@ from virgil.config import Config, DeviceSettings
 from virgil.consoles import normalise_mac
 from virgil.files import atomic_write
 from virgil.election import Change, Election, State
-from virgil.generate import Tuning, Role
+from virgil.generate import DEFAULT_TUNING, Tuning, Role
 from virgil.group import GROUP_PORT, HEX_ID, PUBLIC_PORT, GroupError, outstanding_invites
 from virgil.heartbeat import HEARTBEAT_PATH, Heartbeat, HeartbeatError, decode
 from virgil.interfaces import Timestamping, get_interface, ipv4_addresses, ipv4_networks, is_link_local
@@ -279,7 +279,8 @@ class Daemon:
                                  ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
                                  probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2(),
                                  tuning=Tuning(phc2sys_kp=config.phc2sys_kp, phc2sys_ki=config.phc2sys_ki,
-                                             maxsamples=config.chrony_maxsamples))
+                                             minsamples=config.chrony_minsamples,
+                                             maxsamples=max(DEFAULT_TUNING.maxsamples, config.chrony_minsamples)))
         addresses = self.addresses_for(target.leader_id) if target.leader_id else []
         if not addresses:
             return None
@@ -289,7 +290,8 @@ class Daemon:
                              ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
                              probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2(),
                              tuning=Tuning(phc2sys_kp=config.phc2sys_kp, phc2sys_ki=config.phc2sys_ki,
-                                             maxsamples=config.chrony_maxsamples))
+                                             minsamples=config.chrony_minsamples,
+                                             maxsamples=max(DEFAULT_TUNING.maxsamples, config.chrony_minsamples)))
 
     def on_applied(self, target: Target | None) -> None:
         """The timing services now match the election's decision."""
