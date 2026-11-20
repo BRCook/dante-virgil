@@ -159,8 +159,8 @@ def test_ntp_hardware_timestamps():
     assert not any(line.startswith("hwtimestamp") for line in _settings(chrony_conf(Role.LEADER, I226, allow=[])))
 
 
-def test_chrony_on_a_follower_takes_maxsamples_from_the_request():
+def test_chrony_on_a_follower_takes_its_samples_from_the_request():
     from virgil.generate import Tuning, chrony_follower_conf
 
-    assert "minsamples 64 maxsamples 1024" in chrony_follower_conf("192.168.30.15", [], Tuning(maxsamples=1024))
+    assert "minsamples 256 maxsamples 256" in chrony_follower_conf("192.168.30.15", [], Tuning(minsamples=256))
     assert "minsamples 64 maxsamples 256" in chrony_follower_conf("192.168.30.15", [])

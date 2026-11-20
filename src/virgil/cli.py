@@ -191,14 +191,14 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         if value not in PTPV1_MODES:
             raise CliError(f"ptpv1 must be one of {', '.join(PTPV1_MODES)}")
         config.ptpv1 = value
-    elif key == "chrony_maxsamples":
+    elif key == "chrony_minsamples":
         from virgil.generate import DEFAULT_TUNING
         from virgil.request import TUNING_LIMITS
 
         low, high = DEFAULT_TUNING.minsamples, TUNING_LIMITS["maxsamples"][1]
         if not value.isdigit() or not low <= int(value) <= high:
             raise CliError(f"{key} must be a whole number from {low} to {high}")
-        config.chrony_maxsamples = int(value)
+        config.chrony_minsamples = int(value)
     elif key in ("phc2sys_kp", "phc2sys_ki"):
         from virgil.request import TUNING_LIMITS
 
@@ -979,7 +979,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_set = config_commands.add_parser("set", help="change a setting")
     config_set.add_argument("key", choices=["name", "ptp_interface", "mgmt_interface", "trim_ppb", "observe_only",
                                             "auto_trim", "ntp_hwtimestamp", "ptpv1", "probe_timestamps",
-                                            "phc2sys_kp", "phc2sys_ki", "chrony_maxsamples"])
+                                            "phc2sys_kp", "phc2sys_ki", "chrony_minsamples"])
     config_set.add_argument("value")
     config_set.add_argument("--yes", action="store_true", help="accept warnings and NIC profiles without asking")
     config_set.set_defaults(func=cmd_config_set)
