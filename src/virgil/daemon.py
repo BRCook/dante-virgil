@@ -46,7 +46,7 @@ from virgil.config import Config, DeviceSettings
 from virgil.consoles import normalise_mac
 from virgil.files import atomic_write
 from virgil.election import Change, Election, State
-from virgil.generate import Role
+from virgil.generate import Tuning, Role
 from virgil.group import GROUP_PORT, HEX_ID, PUBLIC_PORT, GroupError, outstanding_invites
 from virgil.heartbeat import HEARTBEAT_PATH, Heartbeat, HeartbeatError, decode
 from virgil.interfaces import Timestamping, get_interface, ipv4_addresses, ipv4_networks, is_link_local
@@ -191,6 +191,8 @@ class Daemon:
     # Alerts and the group's events, in one history (see virgil.events).
     _event_log: EventLog | None = field(default=None, init=False)
     _timestamping_seen: tuple | None = field(default=None, init=False)
+    # Auto-trim's history of the Dante devices' readings, and when the trim last changed (see virgil.autotrim).
+    trim_readings: autotrim.ReadingHistory = field(default_factory=autotrim.ReadingHistory, init=False)
     removed_notice: str | None = field(default=None, init=False)
     # Where evidence about cards' transmit timestamp slots is kept, and what was seen this session.
     timestamping_path: Path = field(default=timestamping.EVIDENCE_PATH, init=False)
@@ -275,7 +277,8 @@ class Daemon:
             return TimingRequest(Role.LEADER, config.ptp_interface, None, tuple(networks),
                                  config.trim_ppb, config.nic_profile is not None,
                                  ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
-                                 probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2())
+                                 probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2(),
+                                 tuning=Tuning(phc2sys_kp=config.phc2sys_kp, phc2sys_ki=config.phc2sys_ki))
         addresses = self.addresses_for(target.leader_id) if target.leader_id else []
         if not addresses:
             return None
@@ -283,7 +286,8 @@ class Daemon:
         return TimingRequest(Role.FOLLOWER, config.ptp_interface, leader, tuple(networks or [leader]),
                              config.trim_ppb, config.nic_profile is not None,
                              ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
-                             probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2())
+                             probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2(),
+                             tuning=Tuning(phc2sys_kp=config.phc2sys_kp, phc2sys_ki=config.phc2sys_ki))
 
     def on_applied(self, target: Target | None) -> None:
         """The timing services now match the election's decision."""
@@ -1470,16 +1474,22 @@ class Daemon:
                      and now - p.heard_at <= self.election.timing.visible and p.heartbeat.state is State.FOLLOWER]
         if not autotrim.followers_settled(followers):
             return  # A follower is still catching up; don't move the target again yet.
-        offsets = autotrim.plausible(self.console_offsets(now))
+        # Each device's average over the last five minutes, not its reading right now (see virgil.autotrim).
+        averages = self.trim_readings.averages(now, self.console_readings(now), self.config.trim_ppb)
+        offsets = [round(v) for v in averages.values()]
         if not offsets:
-            return
+            return  # not five minutes of readings from every following device yet
         average = sum(offsets) / len(offsets)
-        self.trim_history = (self.trim_history + [(self.config.trim_ppb, average)])[-autotrim.HISTORY:]
+        # Whether the devices respond to the trim at all is judged by what they actually read: correcting for
+        # the trim's changes would make them look as if they did.
+        read = self.trim_readings.averages(now, self.console_readings(now), self.config.trim_ppb, corrected=False)
+        self.trim_history = (self.trim_history + [(self.config.trim_ppb, sum(read.values()) / len(read))])[
+            -autotrim.HISTORY:]
         if autotrim.unresponsive(self.trim_history):
             first_trim, first_average = self.trim_history[0]
             self.trim_paused = (
                 f"the trim moved {(self.config.trim_ppb - first_trim) / 1000:+.3f} ppm but the consoles only "
-                f"{(average - first_average) / 1000:+.3f} ppm"
+                f"{(self.trim_history[-1][1] - first_average) / 1000:+.3f} ppm"
             )
             self.trim_paused_at = now
             self.trim_paused_wall = time.time()
@@ -1499,13 +1509,20 @@ class Daemon:
         except OSError as error:
             log.warning("Couldn't save the new trim: %s", error)
         self.timing.poke()
+        self.trim_readings.trim_changed(now)
         self.last_trim = {"at": time.time(), "from_ppb": old, "to_ppb": new, "consoles_ppb": round(average)}
 
     async def watch_trim(self) -> None:
+        ticks = round(autotrim.INTERVAL / autotrim.SAMPLE_EVERY)
+        tick = 0
         while True:
-            await asyncio.sleep(autotrim.INTERVAL)
+            await asyncio.sleep(autotrim.SAMPLE_EVERY)
+            tick += 1
             try:
-                self.trim_once(time.monotonic())
+                now = time.monotonic()
+                self.trim_readings.add(now, self.console_readings(now), self.config.trim_ppb)
+                if tick % ticks == 0:
+                    self.trim_once(now)
             except Exception:
                 log.exception("Auto-trim failed")
 
