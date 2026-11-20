@@ -556,7 +556,7 @@ def _leading_with_consoles(tmp_path, offsets, auto_trim=True):
     config.auto_trim = auto_trim
     config_file.save(config, paths["A"])
     a = Daemon(paths["A"], identities["A"])
-    a.election.resume(State.LEADER, None, 0.0)
+    a.election.resume(State.LEADER, None, -400.0)  # leading for long enough to have readings to steer by
 
     class Timing:
         """Applies every trim at once, unless told the trim unit is failing."""
@@ -584,6 +584,18 @@ def _leading_with_consoles(tmp_path, offsets, auto_trim=True):
     from virgil.daemon import Peer
 
     a.peers[configs["B"].id] = Peer(beat, 100.0)
+    step = a.trim_once
+    fed = [None]
+
+    def trim_once(now):
+        """As virgild runs it: the devices' readings every five seconds before each step, then the step."""
+        start = int(now) - 305 if fed[0] is None else max(fed[0] + 5, int(now) - 305)
+        for t in range(start, int(now), 5):
+            a.trim_readings.add(float(t), a.console_readings(now), a.config.trim_ppb)
+        fed[0] = int(now) - 1
+        step(now)
+
+    a.trim_once = trim_once
     return a, paths["A"], Timing
 
 
@@ -610,6 +622,7 @@ def test_auto_trim_off(tmp_path):
 
 def test_auto_trim_only_on_a_settled_leader(tmp_path):
     a, path, timing = _leading_with_consoles(tmp_path, [4750])
+    a.election.resume(State.LEADER, None, 0.0)
     a.trim_once(10.0)  # took the lead at 0; still settling
     assert a.config.trim_ppb == 600
     a.election.resume(State.FOLLOWER, "f" * 32, 0.0)
@@ -642,17 +655,17 @@ def test_auto_trim_pauses_when_the_consoles_dont_respond(tmp_path, caplog):
         a.trim_once(t)
 
     for step in range(12):
-        step_at(101.0 + 60 * step)  # the consoles never move
+        step_at(141.0 + 140 * step)  # the consoles never move
     assert a.trim_paused and "consoles only" in a.trim_paused
     paused_at = a.config.trim_ppb
-    step_at(900.0)
+    step_at(1900.0)
     assert a.config.trim_ppb == paused_at
     assert "Auto-trim paused" in caplog.text
     # Turning it off and on again resumes it.
     a.config.auto_trim = False
-    step_at(960.0)
+    step_at(2040.0)
     a.config.auto_trim = True
-    step_at(1020.0)
+    step_at(2180.0)
     assert a.trim_paused is None and a.config.trim_ppb == paused_at - 100
 
 
@@ -737,7 +750,7 @@ def _paused(tmp_path):
         a.trim_once(t)
 
     for step in range(12):
-        step_at(101.0 + 60 * step)
+        step_at(141.0 + 140 * step)
     assert a.trim_paused
     return a, step_at
 
@@ -756,8 +769,10 @@ def test_a_pause_ends_when_the_consoles_change(tmp_path):
     trim = a.config.trim_ppb
     both = [{"name": "Wing 0", "follows_this_virgil": True, "clock_offset_ppb": 5371},
             {"name": "Wing Rack", "follows_this_virgil": True, "clock_offset_ppb": 2000}]
-    step_at(a.trim_paused_at + 30, both)  # a second console starts following
-    assert a.trim_paused is None and a.config.trim_ppb < trim
+    step_at(a.trim_paused_at + 140, both)  # a second console starts following
+    assert a.trim_paused is None and a.config.trim_ppb == trim  # resumed, but waiting for the newcomer's readings
+    step_at(a.trim_paused_at + 140 + 310, both)  # five minutes of them
+    assert a.config.trim_ppb < trim
 
 
 def test_unreachable_netaudio_drops_old_readings():
@@ -1410,3 +1425,15 @@ def test_switching_back_waits_for_ptp4l_to_announce(tmp_path, monkeypatch):
     a.timing = Timing()
     asyncio.run(a.switch_ptpv1_mode(False, settle=0))
     assert a.serve_ptpv2_wanted is True and announced == [True] and a.serving()["v2"] is True
+
+
+def test_the_phc2sys_settings_reach_the_timing_request(tmp_path):
+    from virgil.timing import Target
+
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.ptp_interface, config.phc2sys_kp, config.phc2sys_ki = "lo", 0.015, 0.0002
+    config_file.save(config, paths["A"])
+    a = Daemon(paths["A"], identities["A"])
+    request = a.build_request(Target(Role.LEADER))
+    assert (request.tuning.phc2sys_kp, request.tuning.phc2sys_ki) == (0.015, 0.0002)

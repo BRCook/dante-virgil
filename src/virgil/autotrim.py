@@ -12,6 +12,7 @@ to several times the trim change, and settles within a few minutes.
 
 from __future__ import annotations
 
+import collections
 from collections.abc import Iterable
 
 # Gentle on purpose: every step changes the rate the followers' chrony is
@@ -44,6 +45,58 @@ def next_trim(trim_ppb: int, offsets_ppb: Iterable[int]) -> int | None:
     step = max(-MAX_STEP, min(MAX_STEP, round(-GAIN * average)))
     new = max(-MAX_TRIM, min(MAX_TRIM, trim_ppb + step))
     return None if new == trim_ppb else new
+
+
+# Each step steers by each Dante device's average reading over the last five minutes, not its reading at that
+# instant. A device behind a follower wanders by a ppm or so over minutes, as the follower tracks the leader
+# across a jittery link; steering by single readings, the trim chased that wander up and down (and each step
+# added to it). Averaging over a full five minutes, it only moves for an offset that lasts.
+#
+# A device's reading moves with the trim (lowering the trim by 0.1 ppm lowers the readings by about 0.1 ppm), so
+# readings taken before a trim change are corrected by the change since, rather than thrown away: every step can
+# then look at the whole five minutes. Readings from the few seconds just after a change are left out, since the
+# devices take a moment to respond.
+SAMPLE_EVERY = 5.0  # seconds between readings
+AVERAGE_OVER = 300.0  # each device's readings are averaged over this long, in seconds
+FULL = AVERAGE_OVER - 2 * SAMPLE_EVERY  # a device needs readings spanning this long to count
+AFTER_CHANGE = 10.0  # seconds after a trim change when readings don't count
+
+
+class ReadingHistory:
+    """Each Dante device's recent readings, with the trim at the time, for averaging."""
+
+    def __init__(self) -> None:
+        self.readings: dict[str, collections.deque] = {}
+        self.changes: collections.deque = collections.deque()  # when the trim changed
+
+    def add(self, now: float, readings: dict[str, int], trim_ppb: int) -> None:
+        for device, ppb in readings.items():
+            self.readings.setdefault(device, collections.deque()).append((now, ppb, trim_ppb))
+        for device in list(self.readings):
+            history = self.readings[device]
+            while history and history[0][0] < now - AVERAGE_OVER:
+                history.popleft()
+            if not history:
+                del self.readings[device]
+        while self.changes and self.changes[0] < now - AVERAGE_OVER:
+            self.changes.popleft()
+
+    def trim_changed(self, now: float) -> None:
+        self.changes.append(now)
+
+    def averages(self, now: float, devices: Iterable[str], trim_ppb: int, corrected: bool = True) -> dict[str, float]:
+        """Each device's average over AVERAGE_OVER, corrected to the current trim, once every one of `devices`
+        (those following now) has readings spanning FULL. Until then, nothing: steering by some devices and not
+        others would skew the average towards whichever were ready first. Uncorrected, it's what the devices
+        actually read, which is what tells whether they're responding to the trim at all."""
+        result = {}
+        for device in devices:
+            history = [(t, ppb, trim) for t, ppb, trim in self.readings.get(device, ())
+                       if t >= now - AVERAGE_OVER and not any(0 <= t - c < AFTER_CHANGE for c in self.changes)]
+            if not history or now - history[0][0] < FULL:
+                return {}
+            result[device] = sum(ppb + (trim_ppb - trim if corrected else 0) for _, ppb, trim in history) / len(history)
+        return result
 
 
 # A pause ends by itself after this long, and starts afresh.

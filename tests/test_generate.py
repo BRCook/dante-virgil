@@ -89,9 +89,18 @@ def test_tuning_is_applied():
 
 
 def test_phc2sys_matches_the_reference_build():
+    """The prototype's, plus -F 0: never step on the first update, so a restart can't make the PHC jump."""
     assert phc2sys_args(RTL8126) == [
-        "-s", "CLOCK_REALTIME", "-c", "/dev/ptp0", "-O", "0", "-P", "0.03", "-I", "0.0005", "-S", "0.001", "-m", "-q",
+        "-s", "CLOCK_REALTIME", "-c", "/dev/ptp0", "-O", "0", "-P", "0.03", "-I", "0.0005", "-S", "0.001", "-F", "0",
+        "-m", "-q",
     ]
+
+
+def test_phc2sys_takes_its_servo_from_the_request():
+    from virgil.generate import Tuning
+
+    args = phc2sys_args(RTL8126, Tuning(phc2sys_kp=0.015, phc2sys_ki=0.0002))
+    assert args[args.index("-P") + 1] == "0.015" and args[args.index("-I") + 1] == "0.0002"
 
 
 def test_no_phc2sys_without_a_phc():

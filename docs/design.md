@@ -112,7 +112,7 @@ On the leader:
 On a follower:
 
 - chrony follows the leader over NTP, with the following filtering: `minpoll 0 maxpoll 0 xleave maxdelayquant 0.25 minsamples 64 maxsamples 256`, with `corrtimeratio 20` and `maxslewrate 10`. In short, chrony asks the leader for the time once a second, and keeps only the quickest quarter of the replies (the ones least delayed by the radio and thus closest to the "true" time), averaging them over several minutes. `wireless-dante` explains each setting in detail.
-- phc2sys copies the system clock onto the PHC. Its servo is deliberately gentle (`-P 0.03 -I 0.0005`) so that the PHC follows the system clock's average rate and ignores any short-term wobble. With phc2sys's defaults, every small correction chrony makes will appear on the PHC within a second or two, and a Dante device will see its grandmaster's rate jump around.
+- phc2sys copies the system clock onto the PHC. Its servo is deliberately gentle (`-P 0.03 -I 0.0005` by default) so that the PHC follows the system clock's average rate and ignores any short-term wobble. With phc2sys's defaults, every small correction chrony makes will appear on the PHC within a second or two, and a Dante device will see its grandmaster's rate jump around. Even so, a Dante device behind a follower wanders by about a ppm over minutes, since chrony's estimate of the leader's rate wanders as it measures across a jittery link, and phc2sys passes some of that on. The servo's two values are settings (`phc2sys_kp` and `phc2sys_ki`): gentler values make the PHC's rate steadier, at the cost of a larger offset between the PHC and the system clock. phc2sys never steps the PHC by less than 1 ms (`-S 0.001 -F 0`), so restarting it, or a Clock Box becoming a follower, can't make the Dante devices' grandmaster jump.
 - ptp4l serves the PHC's time to the Dante device over PTP.
 
 Every follower follows the leader directly, no matter how many followers there are.
@@ -455,9 +455,9 @@ A Dante device that has to pull hard all the time has less margin for anything e
 
 ### The Rule
 
-While it leads, a Virgil considers a trim step once a minute:
+While it leads, a Virgil records the figures of every Dante device in the group that's following *any* group member every five seconds, ignoring any figure beyond ±100 ppm (which is unsalvageable). Once a minute, it considers a trim step:
 
-1. It averages the figures of every Dante device in the group that's following *any* group member, ignoring any figure beyond ±100 ppm (which is unsalvageable).
+1. It averages each device's figures over the last five minutes, then averages those across the devices.
 2. If the average is within ±0.2 ppm (of zero), it leaves the trim alone.
 3. Otherwise, it moves the trim 30% of the way towards cancelling the average, but by no more than 0.1 ppm in one step, and never beyond ±100 ppm in total. It applies the new trim through `virgil-root trim` without restarting anything, and saves it to the configuration.
 
@@ -628,6 +628,7 @@ Each Virgil has one configuration file, `/etc/dante-virgil/virgil.toml`. The web
 | `ntp_hwtimestamp` | true | Whether chrony may use hardware timestamps on the management interface, where it's safe (see [Hardware Timestamps for NTP](#hardware-timestamps-for-ntp)). |
 | `ptpv1` | `fallback` | When to serve PTPv1: `fallback`, `always`, `off`, or `only` (instead of PTPv2) (see [When It Serves](#when-it-serves)). |
 | `probe_timestamps` | true | Whether to probe the PTP interface's transmit timestamp slots during a setup from scratch (see [Transmit Timestamp Slots](#transmit-timestamp-slots)). |
+| `phc2sys_kp`, `phc2sys_ki` | 0.03, 0.0005 | phc2sys's servo on a follower (see [Follower](#follower)). Gentler values make the PHC's rate steadier, at the cost of a larger offset from the system clock. |
 | `observe_only` | false | Only take part in the election as an observer; roles are then set by hand with `virgilctl role`. Meant for testing. |
 | `web_password` | none | The web UI's password, as a scrypt hash. Shared by the group. |
 | `auto_trim_changed`, `web_password_changed` | 0 | When each shared setting was last changed, so the latest change wins across the group. |

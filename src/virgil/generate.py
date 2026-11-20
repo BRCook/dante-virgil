@@ -158,6 +158,10 @@ def phc2sys_args(setup: TimingSetup, tuning: Tuning = DEFAULT_TUNING) -> list[st
         "-P", str(tuning.phc2sys_kp),
         "-I", str(tuning.phc2sys_ki),
         "-S", "0.001",
+        # Never step on the first update either (by default, phc2sys steps then if off by more than 20 µs): a
+        # restart, or a Clock Box becoming a follower, would otherwise make the PHC (and the Dante devices'
+        # grandmaster) jump by tens of microseconds. Over 1 ms (-S) is still stepped.
+        "-F", "0",
         "-m",
         "-q",
     ]

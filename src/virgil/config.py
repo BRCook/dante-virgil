@@ -63,6 +63,10 @@ class Config:
     ptpv1: str = "fallback"
     # Measure the PTP interface's transmit timestamp slots during a setup from scratch (see virgil.tsprobe).
     probe_timestamps: bool = True
+    # phc2sys's servo on a follower: how firmly the PHC follows the system clock (see the design document's
+    # "Follower"). Gentler values make the PHC's rate steadier, at the cost of a larger offset from the system clock.
+    phc2sys_kp: float = 0.03
+    phc2sys_ki: float = 0.0005
     # The web UI's password, as a scrypt hash. None means the web UI is read-only.
     web_password: str | None = None
     # When the password was last changed: shared across the group too.
@@ -138,6 +142,8 @@ def from_dict(data: dict[str, Any]) -> Config:
         probe_timestamps=_expect(data, "probe_timestamps", bool, optional=True) is not False,
         web_password=_expect(data, "web_password", str, optional=True),
         auto_trim_changed=_time(data, "auto_trim_changed"),
+        phc2sys_kp=_servo(data, "phc2sys_kp", 0.03),
+        phc2sys_ki=_servo(data, "phc2sys_ki", 0.0005),
         web_password_changed=_time(data, "web_password_changed"),
         devices=devices,
         group=group,
@@ -159,6 +165,8 @@ def to_dict(config: Config) -> dict[str, Any]:
     data["ntp_hwtimestamp"] = config.ntp_hwtimestamp
     data["ptpv1"] = config.ptpv1
     data["probe_timestamps"] = config.probe_timestamps
+    data["phc2sys_kp"] = config.phc2sys_kp
+    data["phc2sys_ki"] = config.phc2sys_ki
     if config.devices:
         data["devices"] = {
             mac: {"native_ptpv2": settings.native_ptpv2, "aes67": settings.aes67}
@@ -180,6 +188,16 @@ def to_dict(config: Config) -> dict[str, Any]:
                 for virgil_id, entry in sorted(config.group.removed.items())
             }
     return data
+
+
+def _servo(data: dict, key: str, default: float) -> float:
+    from virgil.request import TUNING_LIMITS
+
+    value = data.get(key, default)
+    low, high = TUNING_LIMITS[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+        raise ConfigError(f"{key} must be a number from {low} to {high}")
+    return float(value)
 
 
 def _time(data: dict, key: str) -> float:

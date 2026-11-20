@@ -584,3 +584,9 @@ def test_changing_a_shared_setting_stamps_it(config_path):
     before = time.time()
     assert _set(config_path, "auto_trim", "false") == 0
     assert config_file.load(config_path).auto_trim_changed >= before
+
+
+def test_phc2sys_servo_settings(config_path):
+    assert _set(config_path, "phc2sys_ki", "0.0002") == 0 and config_file.load(config_path).phc2sys_ki == 0.0002
+    assert _set(config_path, "phc2sys_kp", "5") != 0  # out of range: refused
+    assert config_file.load(config_path).phc2sys_kp == 0.03
