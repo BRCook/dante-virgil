@@ -1,11 +1,13 @@
 import pytest
 
-from virgil.autotrim import DEADBAND, MAX_STEP, MAX_TRIM, next_trim, unresponsive
+from virgil.autotrim import DEADBAND, FAST_STEP, MAX_STEP, MAX_TRIM, next_trim, unresponsive
 
 
 def test_a_fast_leader_is_slowed_down():
     # Consoles at +4 ppm: the leader is faster than they'd like.
-    assert next_trim(0, [4000]) == -MAX_STEP
+    assert next_trim(0, [4000]) == -FAST_STEP  # more than 1 ppm out: bigger steps
+    assert next_trim(0, [900]) == -MAX_STEP  # within 1 ppm: the usual limit (30% of the way would be 0.27 ppm)
+    assert next_trim(0, [1000]) == -MAX_STEP
     assert next_trim(0, [300]) == -90
 
 
@@ -142,3 +144,33 @@ def test_a_real_offset_is_still_steered_out():
                 trim = new
                 history.trim_changed(float(t))
     assert -2200 <= trim <= -1800  # steered to within the dead band of cancelling the +2 ppm
+
+
+def settle_minutes(fast_step: int) -> float:
+    """A trim 3.35 ppm from where the devices want it, as in the cold-start test: minutes to reach the dead band."""
+    from virgil import autotrim
+
+    history, trim = autotrim.ReadingHistory(), 0
+    for t in range(0, 7200, 5):
+        readings = {"A/Compact": 5400 + trim, "B/Rack": 1300 + trim}  # averaging +3.35 ppm at trim 0
+        history.add(float(t), readings, trim)
+        if t and t % 60 == 0:
+            averages = history.averages(float(t), readings, trim)
+            if averages:
+                average = sum(averages.values()) / len(averages)
+                if abs(average) <= autotrim.DEADBAND:
+                    return t / 60
+                limit = fast_step if abs(average) > autotrim.FAST_BEYOND else autotrim.MAX_STEP
+                step = max(-limit, min(limit, round(-autotrim.GAIN * average)))
+                assert autotrim.next_trim(trim, [round(v) for v in averages.values()]) == trim + step or fast_step != autotrim.FAST_STEP
+                trim += step
+                history.trim_changed(float(t))
+    return float("inf")
+
+
+def test_a_cold_start_settles_in_half_the_time_with_bigger_steps_while_far_out():
+    """In the cold-start test, 0.1 ppm steps took about 40 minutes; bigger ones while far out, about half."""
+    from virgil.autotrim import FAST_STEP, MAX_STEP
+
+    fast, slow = settle_minutes(FAST_STEP), settle_minutes(MAX_STEP)
+    assert fast <= 25 and slow >= 35 and fast <= slow / 1.5, (fast, slow)

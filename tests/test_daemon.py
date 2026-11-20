@@ -602,8 +602,8 @@ def _leading_with_consoles(tmp_path, offsets, auto_trim=True):
 def test_auto_trim_slows_a_fast_leader(tmp_path):
     a, path, timing = _leading_with_consoles(tmp_path, [4750])
     a.trim_once(101.0)
-    assert a.config.trim_ppb == 500  # 600 - 100, the most in one step
-    assert config_file.load(path).trim_ppb == 500
+    assert a.config.trim_ppb == 300  # 600 - 300: 4.75 ppm out, so a bigger step, but no more than 0.3 ppm
+    assert config_file.load(path).trim_ppb == 300
     assert timing.pokes == 1
     assert a.last_trim["from_ppb"] == 600 and a.last_trim["consoles_ppb"] == 4750
 
@@ -640,10 +640,10 @@ def test_auto_trim_waits_for_each_step_to_take_effect(tmp_path):
     a, path, timing = _leading_with_consoles(tmp_path, [4750])
     timing.failing = True  # as when phc_ctl was refusing negative trims
     a.trim_once(101.0)
-    assert a.config.trim_ppb == 500
+    assert a.config.trim_ppb == 300  # 4.75 ppm out: a 0.3 ppm step
     a.trim_once(161.0)
     a.trim_once(221.0)
-    assert a.config.trim_ppb == 500  # no further steps until the first is applied
+    assert a.config.trim_ppb == 300  # no further steps until the first is applied
 
 
 def test_auto_trim_pauses_when_the_consoles_dont_respond(tmp_path, caplog):
@@ -656,17 +656,19 @@ def test_auto_trim_pauses_when_the_consoles_dont_respond(tmp_path, caplog):
 
     for step in range(12):
         step_at(141.0 + 140 * step)  # the consoles never move
+        if a.trim_paused:
+            break  # bigger steps while far out get the trim 1 ppm away sooner
     assert a.trim_paused and "consoles only" in a.trim_paused
-    paused_at = a.config.trim_ppb
-    step_at(1900.0)
+    paused_at, when = a.config.trim_ppb, a.trim_paused_at
+    step_at(when + 300)
     assert a.config.trim_ppb == paused_at
     assert "Auto-trim paused" in caplog.text
     # Turning it off and on again resumes it.
     a.config.auto_trim = False
-    step_at(2040.0)
+    step_at(when + 440)
     a.config.auto_trim = True
-    step_at(2180.0)
-    assert a.trim_paused is None and a.config.trim_ppb == paused_at - 100
+    step_at(when + 580)
+    assert a.trim_paused is None and a.config.trim_ppb == paused_at - 300  # still far out: a 0.3 ppm step
 
 
 def test_a_requested_restart(tmp_path):
@@ -751,6 +753,8 @@ def _paused(tmp_path):
 
     for step in range(12):
         step_at(141.0 + 140 * step)
+        if a.trim_paused:
+            break  # bigger steps while far out get the trim 1 ppm away sooner
     assert a.trim_paused
     return a, step_at
 
@@ -761,7 +765,7 @@ def test_a_pause_ends_by_itself(tmp_path):
     step_at(paused_at + 300)
     assert a.trim_paused and a.config.trim_ppb == trim  # still paused after 5 minutes
     step_at(paused_at + 601)
-    assert a.trim_paused is None and a.config.trim_ppb == trim - 100  # resumed, and stepping again
+    assert a.trim_paused is None and a.config.trim_ppb == trim - 300  # resumed, and stepping again (0.3: far out)
 
 
 def test_a_pause_ends_when_the_consoles_change(tmp_path):
@@ -857,7 +861,7 @@ def test_auto_trim_waits_for_an_unsettled_follower(tmp_path):
     assert a.config.trim_ppb == 600  # still catching up: wait
     peer.heartbeat = replace(peer.heartbeat, clock={"rms_offset_ns": 6_000})
     a.trim_once(101.5)
-    assert a.config.trim_ppb == 500
+    assert a.config.trim_ppb == 300
 
 
 def test_netaudios_ui_follows_the_management_addresses(tmp_path, monkeypatch):
@@ -1503,3 +1507,39 @@ def test_a_members_log_is_sent_at_a_limited_rate(tmp_path, monkeypatch):
 
     intact, took = asyncio.run(scenario())
     assert intact and took >= 1.7  # 400 KB at 200 KB/s: about two seconds, not a blink
+
+
+def test_pings_across_the_dante_network(tmp_path):
+    """Each member's PTP address comes in its heartbeats; pinging it gives separate lines on the link charts."""
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    a.config.ptp_interface, a.config.mgmt_interface = "enp1s0", "enp5s0"
+    beat = Daemon(paths["B"], identities["B"]).heartbeat()
+    from dataclasses import replace
+
+    from virgil.daemon import Peer
+    a.peers[configs["B"].id] = Peer(replace(beat, ptp_address="192.168.20.246"), time.monotonic())
+    assert a.dante_ping_targets() == {"192.168.20.246"}
+    assert a.dante_pinger() is not None and a.dante_pinger().dscp == 46
+    a.on_dante_ping("192.168.20.246", 1_100_000.0)
+    a.on_dante_ping("192.168.20.246", None)
+    labels = {s.label for s in a.graphs.series.values()}
+    assert "Virgil A to Virgil B (Dante network)" in labels
+    loss = a.graphs.series["loss/Virgil A/Virgil B/dante"].points
+    assert [v for _, v in loss] == [0.0, 100.0]
+    a.config.mgmt_interface = "enp1s0"  # one interface for both: the usual pings already cover it
+    assert a.dante_ping_targets() == set() and a.dante_pinger() is None
+
+
+def test_the_ptp_address_travels_in_heartbeats(tmp_path):
+    from dataclasses import replace
+
+    from virgil.heartbeat import HeartbeatError, decode
+
+    paths, identities, configs = make_pair(tmp_path)
+    beat = replace(Daemon(paths["A"], identities["A"]).heartbeat(), ptp_address="192.168.20.212")
+    data = dict(beat.encode())
+    assert decode(data).ptp_address == "192.168.20.212"
+    data["ptp_address"] = "not an address"
+    with pytest.raises(HeartbeatError):
+        decode(data)
