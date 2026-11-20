@@ -67,10 +67,10 @@ class Config:
     # "Follower"). Gentler values make the PHC's rate steadier, at the cost of a larger offset from the system clock.
     phc2sys_kp: float = 0.03
     phc2sys_ki: float = 0.0005
-    # The fewest of its measurements chrony, on a follower, keeps for its estimate of the leader's rate. Chrony
-    # discards older measurements when they suggest the rate has changed, and its estimate (and the clock) then
-    # jumps; keeping more means smaller, smoother corrections, at the cost of following real changes more slowly.
-    chrony_minsamples: int = 64
+    # How many measurements chrony, on a follower, merges into each sample, by their median (1: none). Chrony keeps
+    # at most 64 samples, so merging makes its history longer and cleaner, and its corrections smaller and smoother,
+    # at the cost of following real changes (such as the leader's crystal drifting) more slowly.
+    chrony_filter: int = 1
     # The web UI's password, as a scrypt hash. None means the web UI is read-only.
     web_password: str | None = None
     # When the password was last changed: shared across the group too.
@@ -148,7 +148,7 @@ def from_dict(data: dict[str, Any]) -> Config:
         auto_trim_changed=_time(data, "auto_trim_changed"),
         phc2sys_kp=_servo(data, "phc2sys_kp", 0.03),
         phc2sys_ki=_servo(data, "phc2sys_ki", 0.0005),
-        chrony_minsamples=_samples(data, "chrony_minsamples", 64),
+        chrony_filter=_whole(data, "chrony_filter", 1),
         web_password_changed=_time(data, "web_password_changed"),
         devices=devices,
         group=group,
@@ -172,7 +172,7 @@ def to_dict(config: Config) -> dict[str, Any]:
     data["probe_timestamps"] = config.probe_timestamps
     data["phc2sys_kp"] = config.phc2sys_kp
     data["phc2sys_ki"] = config.phc2sys_ki
-    data["chrony_minsamples"] = config.chrony_minsamples
+    data["chrony_filter"] = config.chrony_filter
     if config.devices:
         data["devices"] = {
             mac: {"native_ptpv2": settings.native_ptpv2, "aes67": settings.aes67}
@@ -206,12 +206,11 @@ def _servo(data: dict, key: str, default: float) -> float:
     return float(value)
 
 
-def _samples(data: dict, key: str, default: int) -> int:
-    from virgil.generate import DEFAULT_TUNING
+def _whole(data: dict, key: str, default: int) -> int:
     from virgil.request import TUNING_LIMITS
 
     value = data.get(key, default)
-    low, high = DEFAULT_TUNING.minsamples, TUNING_LIMITS["maxsamples"][1]
+    low, high = TUNING_LIMITS[key.removeprefix("chrony_")]
     if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
         raise ConfigError(f"{key} must be a whole number from {low} to {high}")
     return value

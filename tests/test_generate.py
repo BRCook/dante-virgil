@@ -67,7 +67,8 @@ def test_chrony_leader_with_software_timestamping_has_no_refclock():
 def test_chrony_follower_matches_the_live_show():
     settings = _settings(chrony_conf(Role.FOLLOWER, I226, allow=["192.168.20.21"], leader="192.168.20.21"))
     assert (
-        "server 192.168.20.21 iburst minpoll 0 maxpoll 0 xleave maxdelayquant 0.25 minsamples 64 maxsamples 256"
+        # As the live show ran it, but with maxsamples at chrony's real maximum of 64 (256 never did anything)
+        "server 192.168.20.21 iburst minpoll 0 maxpoll 0 xleave maxdelayquant 0.25 minsamples 64 maxsamples 64"
         in settings
     )
     for line in ("authselectmode ignore", "corrtimeratio 20", "maxslewrate 10", "makestep 0.001 -1",
@@ -159,8 +160,8 @@ def test_ntp_hardware_timestamps():
     assert not any(line.startswith("hwtimestamp") for line in _settings(chrony_conf(Role.LEADER, I226, allow=[])))
 
 
-def test_chrony_on_a_follower_takes_its_samples_from_the_request():
+def test_chrony_on_a_follower_merges_measurements_when_asked():
     from virgil.generate import Tuning, chrony_follower_conf
 
-    assert "minsamples 256 maxsamples 256" in chrony_follower_conf("192.168.30.15", [], Tuning(minsamples=256))
-    assert "minsamples 64 maxsamples 256" in chrony_follower_conf("192.168.30.15", [])
+    assert "maxsamples 64 filter 4\n" in chrony_follower_conf("192.168.30.15", [], Tuning(filter=4))
+    assert "filter" not in chrony_follower_conf("192.168.30.15", [])  # 1: each measurement is a sample, as before

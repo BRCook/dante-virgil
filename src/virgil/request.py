@@ -29,6 +29,7 @@ TUNING_LIMITS: dict[str, tuple[float, float]] = {
     "maxdelayquant": (0.01, 1.0),
     "minsamples": (1, 1024),
     "maxsamples": (1, 1024),
+    "filter": (1, 16),
     "corrtimeratio": (1, 100),
     "maxslewrate": (1, 100_000),
     "phc2sys_kp": (0.0001, 1.0),

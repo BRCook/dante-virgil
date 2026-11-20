@@ -24,8 +24,13 @@ class Tuning:
 
     # chrony, on followers
     maxdelayquant: float = 0.25
+    # Chrony keeps at most 64 samples per source, whatever these say (its useful range is 4 to 64), so both are 64:
+    # the prototype's maxsamples 256 never did anything.
     minsamples: int = 64
-    maxsamples: int = 256
+    maxsamples: int = 64
+    # How many measurements chrony merges into each sample, by their median (1: each measurement is a sample). With
+    # 64 samples at most, merging makes each one cleaner and the history longer, so the rate estimate jumps less.
+    filter: int = 1
     corrtimeratio: int = 20
     maxslewrate: int = 10
     # phc2sys, on followers
@@ -124,6 +129,7 @@ def chrony_follower_conf(leader: str, allow: list[str], tuning: Tuning = DEFAULT
             f"server {leader} iburst minpoll 0 maxpoll 0 xleave"
             f" maxdelayquant {tuning.maxdelayquant}"
             f" minsamples {tuning.minsamples} maxsamples {tuning.maxsamples}"
+            + (f" filter {tuning.filter}" if tuning.filter > 1 else "")
         ),
         "authselectmode ignore",
         f"corrtimeratio {tuning.corrtimeratio}",
