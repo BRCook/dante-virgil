@@ -25,6 +25,12 @@ const VIRGIL_COLOURS = ["#4c78a8", "#2a9d8f", "#56b4e9", "#8d99ae", "#76b7b2", "
 
 let graphWindow = 300;
 try { graphWindow = Number(localStorage.getItem("virgil-graph-window")) || 300; } catch { /* private browsing */ }
+// Traces hidden by clicking their legend entries, by series key.
+let hiddenSeries = new Set();
+try {
+  const saved = JSON.parse(localStorage.getItem("virgil-graph-hidden") || "[]");
+  if (Array.isArray(saved)) hiddenSeries = new Set(saved.filter((k) => typeof k === "string"));
+} catch { /* private browsing, or nothing saved */ }
 let graphData = null;
 const hover = {};  // chart id: seconds before now under the pointer
 
@@ -126,6 +132,7 @@ function drawChart(canvas, chart, series) {
   const left = 64, right = 10, top = 8, bottom = 22;
   const plotW = width - left - right, plotH = height - top - bottom;
 
+  series = series.filter((s) => !hiddenSeries.has(s.key));
   let low = Infinity, high = -Infinity;
   for (const s of series) for (const [, v] of s.points) {
     const y = scaled(chart, v);
@@ -167,7 +174,7 @@ function drawChart(canvas, chart, series) {
   series.forEach((s) => {
     g.strokeStyle = s.colour;
     g.lineWidth = s.style === "line" ? 1.6 : 1.3;
-    g.setLineDash({ setting: [6, 4], average: [1.5, 3], line: [] }[s.style]);
+    g.setLineDash({ setting: [6, 4], average: [1.5, 3], mgmt: [5, 3], line: [] }[s.style]);
     g.beginPath();
     s.points.forEach(([t, v], i) => (i ? g.lineTo(x(t), y(scaled(chart, v))) : g.moveTo(x(t), y(scaled(chart, v)))));
     g.stroke();
@@ -198,7 +205,8 @@ function renderGraphs() {
   graphData.series.forEach((s) => (byChart[s.chart] = byChart[s.chart] || []).push(s));
   // Each series keeps its colour by name across charts and refreshes.
   // A console's worst, average and setting lines share its colour, and differ in style.
-  const base = (label) => label.replace(/ (setting|worst flow|worst|average)$/, "");
+  // A link's two traces, (Dante) and (Mgmt), share its colour too, and differ in style.
+  const base = (label) => label.replace(/ \((Dante|Mgmt)\)$/, "").replace(/ (setting|worst flow|worst|average)$/, "");
   // A console's series are labelled "<console> (<Clock Box>)"; everything else belongs to a Clock Box or the link.
   const isConsole = (name) => /\(.+\)$/.test(name);
   const names = [...new Set(graphData.series.map((s) => base(s.label)))].sort();
@@ -209,7 +217,9 @@ function renderGraphs() {
     return isConsole(name) ? CONSOLE_COLOURS[consoles.indexOf(name) % CONSOLE_COLOURS.length]
       : VIRGIL_COLOURS[others.indexOf(name) % VIRGIL_COLOURS.length];
   };
-  const styleOf = (key) => (key.startsWith("limit/") ? "setting" : key.startsWith("average/") ? "average" : "line");
+  const link = (key) => /^(rtt|jitter|loss)\//.test(key);
+  const styleOf = (key) => (key.startsWith("limit/") ? "setting" : key.startsWith("average/") ? "average"
+    : link(key) && !key.endsWith("/dante") ? "mgmt" : "line");
 
   const controls = el("div", { class: "row graph-windows", role: "group", "aria-label": "Graph window" },
     WINDOWS.map(([seconds, label]) => el("button", {
@@ -226,7 +236,7 @@ function renderGraphs() {
   }
   const cards = shown.map((chart) => {
     // Grouped by console: its worst, then its average, then its setting.
-    const styleRank = { line: 0, average: 1, setting: 2 };
+    const styleRank = { line: 0, average: 1, mgmt: 1, setting: 2 };
     const series = byChart[chart.id].map((s) => ({ ...s, colour: colourOf(s.label), style: styleOf(s.key) }))
       .sort((x, y) => base(x.label).localeCompare(base(y.label)) || styleRank[x.style] - styleRank[y.style]);
     const canvas = el("canvas", { class: "graph", role: "img", "aria-label": chart.title });
@@ -240,9 +250,18 @@ function renderGraphs() {
         const swatch = el("span", { class: `swatch ${s.style}` });
         swatch.style.setProperty("--swatch", s.colour);
         const summary = summaryParts(chart, s.summary);
-        return el("li", {}, swatch,
-          `${s.label} `, el("span", { class: "legend-value" }, formatValue(chart, value)),
-          summary ? el("span", { class: "legend-summary", title: summary[1] }, summary[0]) : null);
+        const off = hiddenSeries.has(s.key);
+        // Clicking an entry hides or shows its trace, remembered by the browser.
+        const toggle = () => {
+          if (hiddenSeries.has(s.key)) hiddenSeries.delete(s.key); else hiddenSeries.add(s.key);
+          try { localStorage.setItem("virgil-graph-hidden", JSON.stringify([...hiddenSeries])); } catch { /* private */ }
+          drawChart(canvas, chart, series); fillLegend();
+        };
+        return el("li", { class: off ? "legend-entry off" : "legend-entry", role: "button", tabindex: "0",
+          "aria-pressed": off ? "false" : "true", title: off ? "Hidden: click to show" : "Click to hide",
+          onclick: toggle, onkeydown: (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } } },
+        swatch, `${s.label} `, el("span", { class: "legend-value" }, formatValue(chart, value)),
+        summary ? el("span", { class: "legend-summary", title: summary[1] }, summary[0]) : null);
       }));
     };
     canvas.addEventListener("pointermove", (event) => {

@@ -957,7 +957,7 @@ def test_pings_become_round_trip_jitter_and_loss(tmp_path):
     for rtt in (1_000_000, 1_200_000, None, 1_100_000):
         a.on_ping("10.0.0.2", rtt)
     assert len(a.graphs.series["rtt/Virgil A/Virgil B"].points) == 3
-    assert a.graphs.series["rtt/Virgil A/Virgil B"].label == "Virgil A to Virgil B (Mgmt)"
+    assert a.graphs.series["rtt/Virgil A/Virgil B"].label == "Virgil A ↔ Virgil B (Mgmt)"
     assert [v for _, v in a.graphs.series["loss/Virgil A/Virgil B"].points] == [0.0, 0.0, 100.0, 0.0]
     assert a.graphs.series["jitter/Virgil A/Virgil B"].points[-1][1] > 0
 
@@ -1514,6 +1514,7 @@ def test_pings_across_the_dante_network(tmp_path):
     paths, identities, configs = make_pair(tmp_path)
     a = Daemon(paths["A"], identities["A"])
     a.config.ptp_interface, a.config.mgmt_interface = "enp1s0", "enp5s0"
+    a.pings_to = lambda virgil_id: True  # whichever ID sorts first, here A is the one that pings
     beat = Daemon(paths["B"], identities["B"]).heartbeat()
     from dataclasses import replace
 
@@ -1524,7 +1525,7 @@ def test_pings_across_the_dante_network(tmp_path):
     a.on_dante_ping("192.168.20.246", 1_100_000.0)
     a.on_dante_ping("192.168.20.246", None)
     labels = {s.label for s in a.graphs.series.values()}
-    assert "Virgil A to Virgil B (Dante)" in labels
+    assert "Virgil A ↔ Virgil B (Dante)" in labels
     loss = a.graphs.series["loss/Virgil A/Virgil B/dante"].points
     assert [v for _, v in loss] == [0.0, 100.0]
     a.config.mgmt_interface = "enp1s0"  # one interface for both: the usual pings already cover it
@@ -1543,3 +1544,14 @@ def test_the_ptp_address_travels_in_heartbeats(tmp_path):
     data["ptp_address"] = "not an address"
     with pytest.raises(HeartbeatError):
         decode(data)
+
+
+def test_only_one_of_each_pair_pings(tmp_path):
+    """A round trip is the same from either end, so one trace per pair, not two."""
+    paths, identities, configs = make_pair(tmp_path)
+    a, b = Daemon(paths["A"], identities["A"]), Daemon(paths["B"], identities["B"])
+    assert a.pings_to(configs["B"].id) != b.pings_to(configs["A"].id)
+    pinger, other = (a, b) if a.pings_to(configs["B"].id) else (b, a)
+    other_address = "192.168.30.15"
+    pinger.addresses_for = other.addresses_for = lambda virgil_id: [other_address]
+    assert pinger.ping_targets() == {other_address} and other.ping_targets() == set()
