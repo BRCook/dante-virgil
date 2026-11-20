@@ -386,12 +386,12 @@ class Daemon:
 
     def on_ping(self, address: str, rtt_ns: float | None) -> None:
         name = self.member_name_at(address)
-        self._record_link(address, f"{self.config.name} to {name}", f"{self.config.name}/{name}", rtt_ns)
+        self._record_link(address, f"{self.config.name} to {name} (Mgmt)", f"{self.config.name}/{name}", rtt_ns)
 
     def on_dante_ping(self, address: str, rtt_ns: float | None) -> None:
         """A ping across the Dante network, from the PTP interface to a member's, marked like Dante's audio."""
         name = next((p.heartbeat.name for p in self.peers.values() if p.heartbeat.ptp_address == address), address)
-        self._record_link(("dante", address), f"{self.config.name} to {name} (Dante network)",
+        self._record_link(("dante", address), f"{self.config.name} to {name} (Dante)",
                           f"{self.config.name}/{name}/dante", rtt_ns)
 
     def _record_link(self, link, label: str, key: str, rtt_ns: float | None) -> None:

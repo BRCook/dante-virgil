@@ -112,7 +112,7 @@ On the leader:
 On a follower:
 
 - chrony follows the leader over NTP, with the following filtering: `minpoll 0 maxpoll 0 xleave maxdelayquant 0.25 minsamples 64 maxsamples 64`, with `corrtimeratio 20` and `maxslewrate 10`. In short, chrony asks the leader for the time once a second, and keeps only the quickest quarter of the replies (the ones least delayed by the radio and thus closest to the "true" time), averaging them over the last minute or two. `wireless-dante` explains each setting in detail. Chrony keeps at most 64 samples, and discards older ones whenever they suggest the leader's rate has changed; each time it does, its estimate of the rate (and so the follower's clock) jumps. The `chrony_filter` setting makes chrony merge measurements into a sample, by their median (`filter` on its `server` line): each sample is thus cleaner, so the estimate jumps less, at the cost of following real changes (such as the leader's crystal drifting) more slowly.
-- phc2sys copies the system clock onto the PHC. Its servo is deliberately gentle (`-P 0.03 -I 0.0005` by default) so that the PHC follows the system clock's average rate and ignores any short-term wobble. With phc2sys's defaults, every small correction chrony makes will appear on the PHC within a second or two, and a Dante device will see its grandmaster's rate jump around. Even so, a Dante device behind a follower wanders by about a ppm over minutes, since chrony's estimate of the leader's rate wanders as it measures across a jittery link, and phc2sys passes some of that on. The servo's two values are settings (`phc2sys_kp` and `phc2sys_ki`): gentler values make the PHC's rate steadier, at the cost of a larger offset between the PHC and the system clock. phc2sys never steps the PHC by less than 1 ms (`-S 0.001 -F 0`), so restarting it, or a Clock Box becoming a follower, can't make the Dante devices' grandmaster jump.
+- phc2sys copies the system clock onto the PHC. Its servo is deliberately gentle (`-P 0.03 -I 0.0005` by default) so that the PHC follows the system clock's average rate and ignores any short-term wobble. With phc2sys's defaults, every small correction chrony makes will appear on the PHC within a second or two, and a Dante device will see its grandmaster's rate jump around. Even so, a Dante device behind a follower sees its grandmaster's rate wander a little, since chrony's estimate of the leader's rate wanders as it measures across a jittery link, and phc2sys passes some of that on. The servo's two values are settings (`phc2sys_kp` and `phc2sys_ki`): gentler values make the PHC's rate steadier, at the cost of a larger offset between the PHC and the system clock. phc2sys never steps the PHC by less than 1 ms (`-S 0.001 -F 0`), so restarting it, or a Clock Box becoming a follower, can't make the Dante devices' grandmaster jump.
 - ptp4l serves the PHC's time to the Dante device over PTP.
 
 Every follower follows the leader directly, no matter how many followers there are.
@@ -131,7 +131,7 @@ ptp4l's configuration is identical on the leader and the followers:
 | `hybrid_e2e 1` | A device that sends its Delay Requests by unicast gets its Delay Responses by unicast too. Multicast requests are still answered by multicast. |
 | `dscp_event 56`, `dscp_general 56` | Mark PTP as CS7, as Dante marks its own PTP, so that switches with QoS treat Virgil's PTP the same way. |
 
-With linuxptp's defaults (one Sync message a second, identifying as PTPv2.1), the test Dante cards wouldn't lock to ptp4l at all. Both settings were changed at the same time in the prototype, so it isn't known which of the two was the problem.
+With linuxptp's defaults (one Sync message a second, identifying as PTPv2.1), Dante devices may not lock to ptp4l at all, so Virgil changes both.
 
 Because the configuration doesn't depend on the role, ptp4l never needs restarting when the role changes: it simply keeps serving whatever is in the PHC. The Dante device therefore hears the same grandmaster, with the same identity, before, during and after a change of leader. Updating Virgil doesn't restart ptp4l either. If an update changes ptp4l's configuration, the change takes effect the next time the timing services are set up from scratch (at the next boot, for example).
 
@@ -328,7 +328,7 @@ Each Virgil listens to all the PTP traffic on its PTP interface, using a raw soc
 - **Its own grandmaster identity**, from the Announce messages its own ptp4l sends. When those Announces stop, Virgil knows ptp4l has stopped serving (and gets rightfully upset).
 - **Its local Dante devices.** Anything sending PTP on the PTP interface must be local, since PTP isn't (*shouldn't be*, but that's up to you to sort out) allowed to cross the wireless link. For each device, Virgil notes whether it's sending PTPv1 Sync messages (leading PTPv1), whether those Syncs come from a boundary clock naming this Virgil as their grandmaster (bridging this Virgil's PTPv2 into PTPv1; see [Serving PTPv1](#serving-ptpv1)), whether it's sending PTPv1 Delay Requests (following this Virgil over PTPv1), and whether it's sending PTPv2 Delay Requests (following this Virgil over PTPv2).
 - **Leaks and impostors.** An Announce from another member of the group means PTP is crossing the link, which defeats the whole design, and as such Virgil will complain. An Announce from any other grandmaster gets a warning too (unless it's a local Dante device that has already been reported for making itself the grandmaster; see [Dante Devices](#dante-devices)).
-- **Silence.** If nothing but this Virgil has sent PTP on its PTP interface for 60 seconds, while the interface has a link, Virgil will alert you. On the test bench, a switch that had stopped passing PTP between ports looked exactly like this (see [Switches and the Link](#switches-and-the-link)).
+- **Silence.** If nothing but this Virgil has sent PTP on its PTP interface for 60 seconds, while the interface has a link, Virgil will alert you. A switch that has stopped passing PTP between ports looks exactly like this (see [Switches and the Link](#switches-and-the-link)).
 
 ## Dante Devices
 
@@ -410,23 +410,11 @@ The web UI shows each card's slots in the small table of facts under the PTP int
 
 Timestamps for packets a card *receives* don't use the slots, so the PTPv1 grandmaster takes those from the card whenever it can. The RTL8126 is the exception: its NIC profile sets its receive filter to PTPv2 event messages only (`hwstamp_ctl -r 12`), so it doesn't timestamp received PTPv1 packets at all. On that card, the PTPv1 grandmaster uses the kernel's timestamps in both directions, and Virgil warns that PTPv1 is using software timestamps only.
 
-### Measurements
-
-On the test bench, a Wing Compact followed Virgil's PTPv1 within seconds of it starting, with its PTPv2 port going passive (as expected). Here's its clock correction (how hard it was pulling its own clock to follow) on each path:
-
-| Path | Spread | Range |
-|---|---|---|
-| PTPv2, from ptp4l | 0.22 ppm | +1.48 to +2.73 ppm |
-| PTPv1, with software timestamps | 2.19 ppm | −4.05 to +11.18 ppm |
-| PTPv1, with hardware timestamps | 0.87 ppm | +0.39 to +2.74 ppm |
-
-Hardware timestamps made PTPv1 usable, but PTPv2 was still about four times steadier (not sure why). The timestamps at Virgil's end were equally precise on both paths, so the remaining difference is most likely in the Wing's own PTPv1 servo.
-
 ### When It Serves
 
 The `ptpv1` setting chooses when Virgil serves PTPv1:
 
-- **`fallback`** (the default) serves PTPv1 only when nothing local can bridge this Virgil's PTPv2 into PTPv1. Virgil stands by while a local Dante device is bridging (seen within the last 15 seconds), while netaudio shows a local Dante device with PTPv2 or AES67 on (such a device could bridge, and would go passive if Virgil served instead), and while no local Dante device uses PTPv1 at all. After `virgild` starts, it watches the network for 20 seconds before deciding anything.
+- **`fallback`** (the default) serves PTPv1 only when nothing local can bridge this Virgil's PTPv2 into PTPv1. A Dante device's PTPv1 bridged from Virgil's PTPv2 is steadier than Virgil's PTPv1, even with hardware timestamps, Dante devices should be used to bridge PTPv2 into PTPv1 where possible. Virgil stands by while a local Dante device is bridging (seen within the last 15 seconds), while netaudio shows a local Dante device with PTPv2 or AES67 on (such a device could bridge, and would go passive if Virgil served instead), and while no local Dante device uses PTPv1 at all. After `virgild` starts, it watches the network for 20 seconds before deciding anything.
 - **`always`** serves PTPv1 regardless.
 - **`off`** never serves PTPv1.
 - **`only`** serves PTPv1 *instead of* PTPv2: ptp4l doesn't run at all (see [Serving PTPv1 Instead of PTPv2](#serving-ptpv1-instead-of-ptpv2)).
@@ -452,7 +440,7 @@ Starting or stopping ptp4l touches nothing else: chrony and phc2sys carry on as 
 
 Each Dante device reports how hard it's pulling its own clock to follow PTP, in parts per billion (netaudio's `clock_frequency_offset_parts_per_billion`). A positive figure means the device is speeding its clock up to keep pace, so the grandmaster is running faster than the device's crystal would like.
 
-A Dante device that has to pull hard all the time has less margin for anything else: devices pulling about 20 ppm occasionally lost lock. The leader can relieve them by moving its own rate (its *trim*) towards what the devices prefer. Auto-trim does that automatically, so that the stress of an unusually fast or slow crystal falls on the Clock Box rather than the Dante devices.
+A Dante device that has to pull hard all the time has less margin for anything else, and is more likely to lose lock when something disturbs it. The leader can relieve them by moving its own rate (its *trim*) towards what the devices prefer. Auto-trim does that automatically, so that the stress of an unusually fast or slow crystal falls on the Clock Box rather than the Dante devices.
 
 ### The Rule
 
@@ -466,7 +454,7 @@ Two Dante devices can't always both be satisfied. Each has its own crystal, and 
 
 ### Why It's Slow
 
-These trim changes are deliberately small and slow. Each trim step changes the rate that every follower is measuring. chrony on the followers averages its measurements over several minutes, to filter out the jitter from the link (which is ultimately why any of this works in the first place). That means a change of rate on the leader takes tens of seconds, or longer, to show up on the followers. With steps of 0.5 ppm every 30 seconds, chrony on a follower measured a skew of 0.6 ppm (its own estimate of how uncertain its frequency was). That's far too aggressive for chrony to follow the leader confidently, and it coincided with the follower console's receive latency climbing.
+These trim changes are deliberately small and slow. Each trim step changes the rate that every follower is measuring. chrony on the followers averages its measurements over several minutes, to filter out the jitter from the link (which is ultimately why any of this works in the first place). That means a change of rate on the leader takes tens of seconds, or longer, to show up on the followers. Large or frequent steps leave the followers unsure of the rate they're following.
 
 So auto-trim waits: it considers a step at most once a minute, and only when chrony on every follower reports an RMS offset under 20 µs (which shows the followers have caught up with the previous step). It also waits a full minute after the trimming Virgil takes the lead, to let things settle, and never steps until the previous trim has been applied. From a cold start, auto trim can take up to half an hour to settle to the lowest group offset, but the system should typically be ready to pass audio within only a few minutes. Half an hour is a good warm-up target to be production-ready.
 
@@ -488,7 +476,7 @@ netaudio keeps an issue open until it sees the problem clear. If the device or f
 
 ### Recoveries netaudio Is Still Confirming
 
-When a Dante device's clock comes back after a lost lock, netaudio keeps the issue open — summarised as "Recovering; waiting for five seconds of continuous healthy clock status" — until it has seen five healthy seconds in a row. In one test, an issue stayed that way for two hours, reopening every 10 to 15 minutes, while the device reported itself synchronised throughout. The cause is in netaudio: its five-second count starts again whenever two healthy observations are further apart than its freshness window, so a device it observes less often than that can never complete the count.
+When a Dante device's clock comes back after a lost lock, netaudio keeps the issue open — summarised as "Recovering; waiting for five seconds of continuous healthy clock status" — until it has seen five healthy seconds in a row. The cause is in netaudio: its five-second count starts again whenever two healthy observations are further apart than its freshness window, so a device it observes less often than that can never complete the count.
 
 Virgil therefore shows a "Recovering" issue quietly (as a note in Events, rather than a red banner), but only while the device itself reports that it's synchronised and following its Virgil. If it doesn't, or stops doing so, the issue becomes a full alert again immediately.
 
@@ -533,7 +521,7 @@ Each Virgil keeps the last ten minutes of its own measurements in memory:
 - its clock offsets;
 - its local Dante devices' clock corrections, receive latency (the worst flow, and the average across flows, against the device's latency setting) and late packets;
 - the trim, while it leads;
-- the link's round trip, jitter and packet loss, from four small pings a second to each other member (with the jitter smoothed the way RTP smooths it, as in RFC 3550). When a Virgil's PTP interface is separate from its management interface, it also pings each member's PTP interface. These show on the same charts, labelled "(Dante)". The pings do not use the network card's transmit timestamp slots.
+- the link's round trip, jitter and packet loss, from four small pings a second to each other member (with the jitter smoothed the way RTP smooths it, as in RFC 3550). When a Virgil's PTP interface is separate from its management interface, it also pings each member's PTP interface. These show on the same charts, labelled "(Dante)", beside the usual ones, labelled "(Mgmt)". The pings do not use the network card's transmit timestamp slots.
 
 When a web UI asks for graphs, its Virgil fetches every other member's measurements through the group API, and merges them with its own. That way, a Dante device on the far side of the link is graphed in as much detail as a local one. When there are more points than fit on a chart, latency, round trip, jitter and late packets keep each stretch's worst value (so a spike is never averaged away), while the others keep the average.
 
