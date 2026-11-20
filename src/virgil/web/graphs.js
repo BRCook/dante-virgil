@@ -65,6 +65,38 @@ function formatValue(chart, value) {
   return `${value.toFixed(value < 10 ? 1 : 0)}/s`;
 }
 
+// The summary of a series over the whole window, worked out by virgild from every reading (not the thinned points
+// drawn here): one muted figure after the current value, with what it means on hover.
+function summaryParts(chart, summary) {
+  if (!summary || typeof summary !== "object") return null;
+  const number = (v) => typeof v === "number" && Number.isFinite(v);
+  const window = (WINDOWS.find(([seconds]) => seconds === graphWindow) || [0, `${graphWindow} s`])[1];
+  const over = `over the last ${window.replace(/^1 min$/, "minute").replace(/^30 s$/, "30 seconds")
+    .replace(/ min$/, " minutes")}`;
+  switch (summary.kind) {
+    case "peak":
+      return number(summary.value) ? [`peak ${formatValue(chart, summary.value)}`, `The largest swing either way ${over}`] : null;
+    case "max":
+      return number(summary.value) ? [`max ${formatValue(chart, summary.value)}`, `The highest ${over}`] : null;
+    case "mean":
+      return number(summary.value) ? [`mean ${formatValue(chart, summary.value)}`, `The average ${over}`] : null;
+    case "median":
+      if (!number(summary.value) || !number(summary.spread)) return null;
+      return [`median ${formatValue(chart, summary.value)}, spread ${formatValue(chart, summary.spread)}`,
+        `Half the readings ${over} were below the median. The spread is how steady it was: the middle 80% of `
+        + `readings fell within ${formatValue(chart, summary.spread)} of each other`];
+    case "total":
+      return number(summary.value)
+        ? [`total ${Math.round(summary.value).toLocaleString("en")}`, `Late packets counted ${over}`] : null;
+    case "range":
+      return number(summary.low) && number(summary.high)
+        ? [`range ${formatValue(chart, summary.low)} to ${formatValue(chart, summary.high)}`, `Lowest to highest ${over}`]
+        : null;
+    default:
+      return null;
+  }
+}
+
 function scaled(chart, value) {
   // Values on the axis, in the chart's own time unit for times.
   return chart.kind === "time" ? value / UNITS[chartUnit(chart)].scale : value;
@@ -206,8 +238,10 @@ function renderGraphs() {
         // The colour is set through the CSSOM: the content security policy blocks inline style attributes.
         const swatch = el("span", { class: `swatch ${s.style}` });
         swatch.style.setProperty("--swatch", s.colour);
+        const summary = summaryParts(chart, s.summary);
         return el("li", {}, swatch,
-          `${s.label} `, el("span", { class: "legend-value" }, formatValue(chart, value)));
+          `${s.label} `, el("span", { class: "legend-value" }, formatValue(chart, value)),
+          summary ? el("span", { class: "legend-summary", title: summary[1] }, summary[0]) : null);
       }));
     };
     canvas.addEventListener("pointermove", (event) => {

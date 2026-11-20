@@ -1,3 +1,4 @@
+import pytest
 import struct
 
 from virgil.graphs import MEAN, WORST, Recorder, jitter
@@ -51,3 +52,37 @@ def test_echo_request_and_reply():
     with_ip_header = bytes([0x45]) + bytes(19) + reply
     assert parse_reply(with_ip_header) == 7
     assert parse_reply(bytes([8]) + bytes(7)) is None  # a request, not a reply
+
+
+def test_each_chart_gets_the_summary_that_suits_it():
+    from virgil.graphs import summary
+
+    readings = [(t, v) for t, v in enumerate([1.0, 2.0, 3.0, 4.0, 100.0])]
+    assert summary("offset", "offset/A", [(0, 5.0), (1, -9.0), (2, 3.0)]) == {"kind": "peak", "value": -9.0}
+    assert summary("latency", "latency/WingCompact", readings) == {"kind": "max", "value": 100.0}
+    median = summary("latency", "average/WingCompact", readings)
+    assert median["kind"] == "median" and median["value"] == 3.0  # the spike doesn't move the median...
+    assert median["spread"] == pytest.approx(61.6 - 1.4)  # ...and the spread is the middle 80% (10th to 90th)
+    assert summary("latency", "setting/WingCompact", readings) is None
+    assert summary("console", "console/WingCompact", readings) == {"kind": "range", "low": 1.0, "high": 100.0}
+    assert summary("loss", "loss/A-B", [(0, 0.0), (1, 100.0)]) == {"kind": "mean", "value": 50.0}
+
+
+def test_late_packets_are_totalled_from_their_rates():
+    from virgil.graphs import summary
+
+    # Each reading is a rate since the one before: 2/s for 5 s, then 0, then 10/s for 5 s: 60 in all.
+    readings = [(0.0, 0.0), (5.0, 2.0), (10.0, 0.0), (15.0, 10.0)]
+    assert summary("late", "late/WingRack", readings) == {"kind": "total", "value": 60.0}
+
+
+def test_summaries_come_from_every_reading_not_the_thinned_points():
+    """A one-off spike that thinning averages away is still in the summary."""
+    from virgil.graphs import Recorder
+
+    recorder = Recorder()
+    for second in range(600):
+        recorder.add("offset/A", "offset", "A", "ns", 1000.0 + second, 50_000.0 if second == 300 else 10.0)
+    series = recorder.window(600, 1600.0, max_points=10)[0]
+    assert max(abs(v) for _, v in series["points"]) < 50_000  # thinned by averaging...
+    assert series["summary"] == {"kind": "peak", "value": 50_000.0}  # ...but not the summary

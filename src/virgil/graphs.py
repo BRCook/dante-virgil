@@ -30,6 +30,48 @@ class Series:
     points: collections.deque = field(default_factory=lambda: collections.deque(maxlen=KEEP_SECONDS * 2))
 
 
+def _percentile(ordered: list[float], fraction: float) -> float:
+    """The value a fraction of the way through sorted readings, interpolating between neighbours."""
+    position = fraction * (len(ordered) - 1)
+    low = int(position)
+    high = min(low + 1, len(ordered) - 1)
+    return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
+
+
+def summary(chart: str, key: str, points: list[tuple[float, float]]) -> dict[str, Any] | None:
+    """One figure that sums a series up over the window, worked out from every reading, before any thinning.
+
+    What suits each chart: the peak swing for offsets (they wander both ways); the highest for worst latency and
+    the link's round trip and jitter (spikes are what hurt); the median, and the spread of the middle 80% of
+    readings, for average latency (how steady it is, untroubled by the spikes the worst line already shows); the
+    total for late packets; the range for clocks and the trim; and the mean for packet loss.
+    """
+    values = [v for _, v in points]
+    if not values:
+        return None
+    if chart in ("offset", "phc"):
+        return {"kind": "peak", "value": max(values, key=abs)}
+    if chart == "latency":
+        if key.startswith("average/"):
+            ordered = sorted(values)
+            return {"kind": "median", "value": _percentile(ordered, 0.5),
+                    "spread": _percentile(ordered, 0.9) - _percentile(ordered, 0.1)}
+        if key.startswith("latency/"):
+            return {"kind": "max", "value": max(values)}
+        return None  # the setting doesn't change
+    if chart in ("rtt", "jitter"):
+        return {"kind": "max", "value": max(values)}
+    if chart == "late":
+        # Each reading is a rate since the reading before, so the count is each rate times its interval.
+        total = sum(rate * (t - before) for (before, _), (t, rate) in zip(points, points[1:]) if 0 < t - before <= 60)
+        return {"kind": "total", "value": total}
+    if chart in ("console", "trim"):
+        return {"kind": "range", "low": min(values), "high": max(values)}
+    if chart == "loss":
+        return {"kind": "mean", "value": sum(values) / len(values)}
+    return None
+
+
 class Recorder:
     def __init__(self) -> None:
         self.series: dict[str, Series] = {}
@@ -58,9 +100,9 @@ class Recorder:
         result = []
         for key, series in sorted(self.series.items()):
             buckets: dict[int, list[float]] = {}
-            for t, value in series.points:
-                if t >= start:
-                    buckets.setdefault(int((t - start) / bucket), []).append(value)
+            inside = [(t, value) for t, value in series.points if t >= start]
+            for t, value in inside:
+                buckets.setdefault(int((t - start) / bucket), []).append(value)
             if not buckets:
                 continue
             points = []
@@ -69,7 +111,7 @@ class Recorder:
                 value = max(values, key=abs) if series.combine == WORST else sum(values) / len(values)
                 points.append([round(start + (index + 0.5) * bucket - now, 2), round(value, 3)])
             result.append({"key": key, "chart": series.chart, "label": series.label, "unit": series.unit,
-                           "points": points})
+                           "points": points, "summary": summary(series.chart, key, inside)})
         return result
 
 
