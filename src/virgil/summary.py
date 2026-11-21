@@ -219,8 +219,14 @@ COLUMNS = ("min", "p1", "p5", "median", "mean", "p95", "p99", "max", "stdev")
 
 def _row(label: str, unit: str | None, stats: dict[str, float], extra: str = "") -> str:
     divisor, unit_name = _scale(unit, stats["median"])
-    cells = "".join(f"<td>{_number(stats[c], divisor)}</td>" for c in COLUMNS)
-    return (f"<tr><th>{html.escape(label)}</th><td class=unit>{html.escape(unit_name)}</td>{cells}"
+    if unit == "ns":
+        # Times can be shown in any unit: the unit is a button that cycles the row through ns, µs and ms.
+        cells = "".join(f'<td data-ns="{stats[c]!r}">{_number(stats[c], divisor)}</td>' for c in COLUMNS)
+        unit_cell = f'<td class=unit><button type=button title="Change the unit">{unit_name}</button></td>'
+    else:
+        cells = "".join(f"<td>{_number(stats[c], divisor)}</td>" for c in COLUMNS)
+        unit_cell = f"<td class=unit>{html.escape(unit_name)}</td>"
+    return (f"<tr><th>{html.escape(label)}</th>{unit_cell}{cells}"
             f"<td>{stats['count']:,}</td><td>{html.escape(extra)}</td></tr>")
 
 
@@ -271,9 +277,25 @@ td.unit {{ color: var(--muted); text-align: left; }}
 .scroll {{ overflow-x: auto; }}
 ul {{ padding-left: 1.2rem; }} li span {{ color: var(--muted); font-variant-numeric: tabular-nums; }}
 section {{ margin-bottom: 3rem; }}
+td.unit button {{ font: inherit; color: inherit; background: none; border: 1px solid rgba(127,127,127,0.4);
+  border-radius: 4px; padding: 0 0.35rem; cursor: pointer; }}
 </style>
 <h1>Virgil log summary</h1>
 {''.join(parts)}
+<script>
+// Each time row's unit cycles through ns, µs and ms when clicked.
+const units = [["ns", 1], ["µs", 1e3], ["ms", 1e6]];
+const number = (v) => (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString("en")
+  : Math.abs(v) < 1 ? Number(v.toPrecision(3)).toString()
+  : v.toLocaleString("en", {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }}));
+document.querySelectorAll("td.unit button").forEach((button) => button.addEventListener("click", () => {{
+  const next = units[(units.findIndex(([name]) => name === button.textContent) + 1) % units.length];
+  button.textContent = next[0];
+  button.closest("tr").querySelectorAll("td[data-ns]").forEach((cell) => {{
+    cell.textContent = number(Number(cell.dataset.ns) / next[1]);
+  }});
+}}));
+</script>
 </html>
 """
 
