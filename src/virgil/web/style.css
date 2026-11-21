@@ -283,7 +283,11 @@ label.check { display: inline-flex; gap: 0.4rem; align-items: center; }
 .summary-table { overflow-x: auto; }
 table.summary { border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 0.9rem; }
 table.summary th, table.summary td { padding: 0.2rem 0.55rem; text-align: right; border-bottom: 1px solid var(--line); }
-table.summary th:first-child { text-align: left; font-weight: 500; }
+table.summary th:first-child, table.summary th.name { text-align: left; font-weight: 500; }
 button.unit-cycle { padding: 0 0.35rem; font-size: inherit; color: var(--muted); }
 table.summary tr.section th { text-align: left; padding-top: 0.9rem; font-size: 0.75rem; letter-spacing: 0.06em;
   text-transform: uppercase; color: var(--muted); }
+table.summary th.group { width: 1.6rem; padding: 0.3rem 0.2rem; text-align: center; vertical-align: middle;
+  font-weight: 500; color: var(--muted); border-right: 1px solid var(--line); }
+table.summary th.group span { writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; }
+table.summary tr.first > * { border-top: 1px solid var(--muted); }

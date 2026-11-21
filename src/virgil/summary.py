@@ -228,11 +228,29 @@ def _subject(key: str) -> str:
     return key.split("/", 1)[1] if "/" in key else key
 
 
+ROW_NAMES = {"latency/": "Receive latency: worst flow", "average/": "Receive latency: average",
+             "late": "Late packets", "console": "Clock frequency"}
+
+
+def _group_of(m: dict[str, Any], section: str) -> tuple[str, str]:
+    """Which group a measurement belongs in, and its row's name there (the group's name isn't repeated)."""
+    label = m["label"] or ""
+    if section == "Dante devices":
+        device = label.removesuffix(" worst flow").removesuffix(" average")
+        name = next(name for prefix, name in ROW_NAMES.items() if m["key"].startswith(prefix) or m["chart"] == prefix)
+        return device, name
+    if section == "Ping":
+        network = "Dante" if label.endswith("(Dante)") else "Mgmt"
+        return network, f"{CHART_NAMES[m['chart']]}: {label.removesuffix(' (Dante)').removesuffix(' (Mgmt)')}"
+    return label, m.get("title") or CHART_NAMES.get(m["chart"], m["chart"])  # Clock: grouped by Virgil
+
+
 def layout(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The whole group's table, as rows: a section heading, or a measurement (label, unit, stats, note)."""
+    """The whole group's table: sections (Dante devices, Ping, Clock), each of groups (a device, a network, a Virgil),
+    each of rows (a measurement: name, unit, stats and a note)."""
     measurements = [m for s in summaries for m in s["measurements"]]
     settings = {_subject(m["key"]): m for m in measurements if m["key"].startswith("limit/")}
-    rows = []
+    sections = []
     for section, charts in SECTIONS:
         found = [m for m in measurements if m["chart"] in charts and not m["key"].startswith("limit/")]
         if section == "Clock":
@@ -242,33 +260,36 @@ def layout(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
                       if (s.get("clock") or s.get("chrony") or {}).get(field)]
         if not found:
             continue
-        rows.append({"section": section})
         order = list(charts) + ["clock"]
-        # Each device's (or pair's, or Virgil's) rows together; within them, in the charts' order, worst flow first.
-        def place(m: dict[str, Any]) -> tuple:
-            subject = _subject(m["key"])
-            if section == "Clock":
-                subject = subject.split("/")[0]  # the Virgil
-            elif section == "Ping":
-                subject = (subject.removesuffix("/dante"), not subject.endswith("/dante"))  # Dante, the audio's path, first
-            return subject, order.index(m["chart"]), not m["key"].startswith("latency/")
-
-        found.sort(key=place)
+        groups: dict[str, list[dict[str, Any]]] = {}
         for m in found:
+            group, name = _group_of(m, section)
             note = ""
             if "total" in m:
                 note = f"total {m['total']:,.0f}"
             elif "lost" in m:
                 note = f"lost {m['lost']:,} of {m['count']:,}"
             elif m["key"].startswith("latency/") and _subject(m["key"]) in settings:
-                setting = settings[_subject(m["key"])]["median"]
-                note = f"setting {setting / 1e6:g} ms"
-            title = m.get("title") or CHART_NAMES.get(m["chart"], m["chart"])
-            rows.append({"label": f"{title}: {m['label']}", "unit": m["unit"], "stats": m, "note": note})
-    return rows
+                note = f"setting {settings[_subject(m['key'])]['median'] / 1e6:g} ms"
+            # Within a group: each pair's (or device's) rows together, in the charts' order, worst flow first, and
+            # the clock's own figures in CLOCK_NAMES' order.
+            subject = _subject(m["key"]).removesuffix("/dante")
+            field = list(CLOCK_NAMES).index(subject.rsplit("/", 1)[1]) if m["chart"] == "clock" else 0
+            if m["chart"] == "clock":
+                subject = subject.rsplit("/", 1)[0]
+            groups.setdefault(group, []).append({"key": m["key"], "label": name, "unit": m["unit"], "stats": m,
+                                                 "note": note, "_order": (subject, order.index(m["chart"]), field,
+                                                                          not m["key"].startswith("latency/"))})
+        # Dante first among the networks (it's the audio's path); devices and Virgils by name.
+        names = sorted(groups, key=lambda g: (g != "Dante", g) if section == "Ping" else (g,))
+        sections.append({"section": section, "groups": [
+            {"group": g, "rows": [{k: v for k, v in r.items() if k != "_order"}
+                                  for r in sorted(groups[g], key=lambda r: r["_order"])]}
+            for g in names]})
+    return sections
 
 
-def _row(label: str, unit: str | None, stats: dict[str, float], extra: str = "") -> str:
+def _row(label: str, unit: str | None, stats: dict[str, float], extra: str = "", side: str = "", first: bool = False) -> str:
     divisor, unit_name = _scale(unit, stats["median"])
     if unit == "ns":
         # Times can be shown in any unit: the unit is a button that cycles the row through ns, µs and ms.
@@ -277,15 +298,24 @@ def _row(label: str, unit: str | None, stats: dict[str, float], extra: str = "")
     else:
         cells = "".join(f"<td>{_number(stats[c], divisor, unit)}</td>" for c in COLUMNS)
         unit_cell = f"<td class=unit>{html.escape(unit_name)}</td>"
-    return (f"<tr><th>{html.escape(label)}</th>{unit_cell}{cells}"
+    return (f"<tr{' class=first' if first else ''}>{side}<th class=name>{html.escape(label)}</th>{unit_cell}{cells}"
             f"<td>{stats['count']:,}</td><td>{html.escape(extra)}</td></tr>")
 
 
 def render(summaries: list[dict[str, Any]]) -> str:
     """A self-contained page: the whole group's measurements in one table, in sections, then what happened."""
-    head = ("<th></th><th>unit</th>" + "".join(f"<th>{c}</th>" for c in COLUMNS) + "<th>readings</th><th></th>")
-    rows = "".join(f"<tr class=section><th colspan={len(COLUMNS) + 4}>{html.escape(r['section'])}</th></tr>"
-                   if "section" in r else _row(r["label"], r["unit"], r["stats"], r["note"]) for r in layout(summaries))
+    head = ("<th></th><th></th><th>unit</th>" + "".join(f"<th>{c}</th>" for c in COLUMNS) + "<th>readings</th><th></th>")
+    columns = len(COLUMNS) + 5
+    rows = []
+    for section in layout(summaries):
+        rows.append(f"<tr class=section><th colspan={columns}>{html.escape(section['section'])}</th></tr>")
+        for group in section["groups"]:
+            for n, r in enumerate(group["rows"]):
+                # The group's name once, down the side, spanning its rows.
+                side = (f'<th class=group rowspan={len(group["rows"])}><span>{html.escape(group["group"])}</span></th>'
+                        if n == 0 else "")
+                rows.append(_row(r["label"], r["unit"], r["stats"], r["note"], side, first=n == 0))
+    rows = "".join(rows)
 
     def late(d: dict) -> str:
         return "—" if d["late_packets"] is None else f"{d['late_packets']:,}"
@@ -320,13 +350,17 @@ def render(summaries: list[dict[str, Any]]) -> str:
 body {{ font: 14px/1.45 system-ui, sans-serif; margin: 2rem auto; max-width: 1400px; padding: 0 1rem; }}
 table {{ border-collapse: collapse; margin: 0.4rem 0 1rem; font-variant-numeric: tabular-nums; }}
 th, td {{ padding: 0.25rem 0.6rem; text-align: right; border-bottom: 1px solid rgba(127,127,127,0.25); }}
-th:first-child {{ text-align: left; font-weight: 500; }}
+th:first-child, th.name {{ text-align: left; font-weight: 500; }}
 td.unit {{ color: var(--muted); text-align: left; }}
 .scroll {{ overflow-x: auto; }}
 ul {{ padding-left: 1.2rem; }} li span {{ color: var(--muted); font-variant-numeric: tabular-nums; }}
 tr.section th {{ text-align: left; padding-top: 1.1rem; font-size: 0.8rem; letter-spacing: 0.06em;
   text-transform: uppercase; color: var(--muted); border-bottom: 1px solid rgba(127,127,127,0.5); }}
 h2 {{ font-size: 1.1rem; margin-top: 1.8rem; }}
+th.group {{ width: 1.6rem; padding: 0.3rem 0.2rem; text-align: center; vertical-align: middle; font-weight: 500;
+  color: var(--muted); border-right: 1px solid rgba(127,127,127,0.25); }}
+th.group span {{ writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; }}
+tr.first > * {{ border-top: 1px solid rgba(127,127,127,0.5); }}
 td.unit button {{ font: inherit; color: inherit; background: none; border: 1px solid rgba(127,127,127,0.4);
   border-radius: 4px; padding: 0 0.35rem; cursor: pointer; }}
 </style>
