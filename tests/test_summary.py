@@ -112,9 +112,9 @@ def test_older_summaries_name_their_clock_figures_chrony(tmp_path):
     assert "Clock skew" in summary.render([old])
 
 
-def test_one_table_for_the_group_in_three_sections(tmp_path):
-    """Each device's rows together (its latency setting beside its worst flow, not a row of its own), each pair's
-    pings together with Dante first, and each Virgil's clock rows together, without status repeating the graphs."""
+def test_one_table_for_the_group_in_sections_of_groups(tmp_path):
+    """Each device's rows as a group (its latency setting beside its worst flow, not a row of its own), pings
+    grouped by network with Dante first, and each Virgil's clock rows as a group, without status repeating the graphs."""
     def series(key, chart, label, unit, value):
         return {"key": key, "chart": chart, "label": label, "unit": unit, "points": [[-5.0, value]]}
 
@@ -129,11 +129,14 @@ def test_one_table_for_the_group_in_three_sections(tmp_path):
     b = write_session(tmp_path / "b", graphs=[{"t": 1100.0, "series": [series("offset/Box B", "offset", "Box B", "ns", 5e3)]}],
                       status=[{"t": 1100.0, "status": {"name": "Box B", "state": "follower",
                                                      "clock": {"skew_ppm": 0.1, "system_offset_ns": 5e3}}}])
-    rows = summary.layout([summary.summarise(a), summary.summarise(b)])
-    order = [r.get("section") or r["label"] for r in rows]
-    assert order == ["Dante devices", "Receive latency: W (Box A) worst flow", "Receive latency: W (Box A) average",
-                     "Ping", "Ping round trip: Box A ↔ Box B (Dante)", "Ping round trip: Box A ↔ Box B (Mgmt)",
-                     "Clock", "Trim: Box A", "Clock skew: Box A", "Clock offset from the leader: Box B", "Clock skew: Box B"]
-    assert rows[1]["note"] == "setting 3 ms"
+    sections = summary.layout([summary.summarise(a), summary.summarise(b)])
+    shape = [(sec["section"], [(g["group"], [r["label"] for r in g["rows"]]) for g in sec["groups"]]) for sec in sections]
+    assert shape == [
+        ("Dante devices", [("W (Box A)", ["Receive latency: worst flow", "Receive latency: average"])]),
+        ("Ping", [("Dante", ["Ping round trip: Box A ↔ Box B"]), ("Mgmt", ["Ping round trip: Box A ↔ Box B"])]),
+        ("Clock", [("Box A", ["Trim", "Clock skew"]), ("Box B", ["Clock offset from the leader", "Clock skew"])]),
+    ]
+    assert sections[0]["groups"][0]["rows"][0]["note"] == "setting 3 ms"
     page = summary.render([summary.summarise(a), summary.summarise(b)])
     assert page.count("<table>") == 3 and page.count("tr class=section") == 3  # one measurements table, then two lists
+    assert page.count("<th class=group rowspan=") == 5 and "<th class=group rowspan=2><span>W (Box A)</span>" in page

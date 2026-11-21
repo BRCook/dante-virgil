@@ -987,17 +987,21 @@ function summaryRow(key, label, unit, stats, extra) {
       renderRecording();
     } }, name))
     : el("td", { class: "hint" }, name);
-  return el("tr", {}, el("th", {}, label), unitCell,
+  return el("tr", {}, el("th", { class: "name" }, label), unitCell,
     ...SUMMARY_COLUMNS.map((c) => el("td", {}, number(stats[c]))),
     el("td", {}, stats.count.toLocaleString("en")), el("td", { class: "hint" }, extra || ""));
 }
 
-// The whole group's table, as rows: a section heading, or a measurement. As virgil.summary.layout lays it out.
+// The whole group's table: sections of groups (a device, a network, a Virgil) of rows. As virgil.summary.layout does.
+const SUMMARY_ROW_NAMES = [["latency/", "Receive latency: worst flow"], ["average/", "Receive latency: average"],
+  ["late", "Late packets"], ["console", "Clock frequency"]];
+
 function summaryLayout(virgils) {
   const subject = (key) => (key.includes("/") ? key.slice(key.indexOf("/") + 1) : key);
   const measurements = virgils.flatMap((v) => v.measurements || []);
   const settings = new Map(measurements.filter((m) => m.key.startsWith("limit/")).map((m) => [subject(m.key), m]));
-  const rows = [];
+  const clockFields = Object.keys(SUMMARY_CLOCK);
+  const sections = [];
   for (const [section, charts] of SUMMARY_SECTIONS) {
     const found = measurements.filter((m) => charts.includes(m.chart) && !m.key.startsWith("limit/"));
     if (section === "Clock") {
@@ -1009,39 +1013,71 @@ function summaryLayout(virgils) {
       }
     }
     if (!found.length) continue;
-    rows.push({ section });
     const order = [...charts, "clock"];
-    const place = (m) => {
-      let s = subject(m.key);
-      if (section === "Clock") s = s.split("/")[0];
-      else if (section === "Ping") s = `${s.replace(/\/dante$/, "")}|${s.endsWith("/dante") ? 0 : 1}`;  // Dante first
-      return [s, order.indexOf(m.chart), m.key.startsWith("latency/") ? 0 : 1];
-    };
-    found.sort((a, b) => {
-      const [x, y] = [place(a), place(b)];
-      return x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : x[1] - y[1] || x[2] - y[2];
-    });
+    const groups = new Map();
     for (const m of found) {
+      const label = m.label || "";
+      let group, name;
+      if (section === "Dante devices") {
+        group = label.replace(/ (worst flow|average)$/, "");
+        name = SUMMARY_ROW_NAMES.find(([p]) => m.key.startsWith(p) || m.chart === p)[1];
+      } else if (section === "Ping") {
+        group = label.endsWith("(Dante)") ? "Dante" : "Mgmt";
+        name = `${SUMMARY_CHARTS[m.chart]}: ${label.replace(/ \((Dante|Mgmt)\)$/, "")}`;
+      } else {
+        group = label;
+        name = m.title || SUMMARY_CHARTS[m.chart] || m.chart;
+      }
       let note = "";
       if (m.total !== undefined) note = `total ${Math.round(m.total).toLocaleString("en")}`;
       else if (m.lost !== undefined) note = `lost ${m.lost.toLocaleString("en")} of ${m.count.toLocaleString("en")}`;
       else if (m.key.startsWith("latency/") && settings.has(subject(m.key))) {
         note = `setting ${settings.get(subject(m.key)).median / 1e6} ms`;
       }
-      rows.push({ key: m.key, label: `${m.title || SUMMARY_CHARTS[m.chart] || m.chart}: ${m.label}`, unit: m.unit, stats: m, note });
+      let place = subject(m.key).replace(/\/dante$/, "");
+      let field = 0;
+      if (m.chart === "clock") {
+        field = clockFields.indexOf(place.slice(place.lastIndexOf("/") + 1));
+        place = place.slice(0, place.lastIndexOf("/"));
+      }
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push({ key: m.key, label: name, unit: m.unit, stats: m, note,
+        order: [place, order.indexOf(m.chart), field, m.key.startsWith("latency/") ? 0 : 1] });
     }
+    const compare = (a, b) => {
+      for (let i = 0; i < a.length; i += 1) {
+        if (a[i] < b[i]) return -1;
+        if (a[i] > b[i]) return 1;
+      }
+      return 0;
+    };
+    const names = [...groups.keys()].sort((a, b) => (section === "Ping"
+      ? compare([a !== "Dante" ? 1 : 0, a], [b !== "Dante" ? 1 : 0, b]) : compare([a], [b])));
+    sections.push({ section, groups: names.map((g) => ({ group: g, rows: groups.get(g).sort((a, b) => compare(a.order, b.order)) })) });
   }
-  return rows;
+  return sections;
 }
 
 function summaryView({ name, data }) {
   const when = (t) => (t ? new Date(t * 1000).toLocaleString([], { hour12: false }) : "—");
   const virgils = data.virgils || [];
-  const head = el("tr", {}, el("th", {}, ""), el("th", {}, "unit"), ...SUMMARY_COLUMNS.map((c) => el("th", {}, c)),
+  const head = el("tr", {}, el("th", {}, ""), el("th", {}, ""), el("th", {}, "unit"), ...SUMMARY_COLUMNS.map((c) => el("th", {}, c)),
     el("th", {}, "readings"), el("th", {}, ""));
-  const rows = summaryLayout(virgils).map((r) => (r.section
-    ? el("tr", { class: "section" }, el("th", { colspan: String(SUMMARY_COLUMNS.length + 4) }, r.section))
-    : summaryRow(r.key, r.label, r.unit, r.stats, r.note)));
+  const rows = [];
+  for (const section of summaryLayout(virgils)) {
+    rows.push(el("tr", { class: "section" }, el("th", { colspan: String(SUMMARY_COLUMNS.length + 5) }, section.section)));
+    for (const group of section.groups) {
+      group.rows.forEach((r, n) => {
+        const row = summaryRow(r.key, r.label, r.unit, r.stats, r.note);
+        if (n === 0) {
+          // The group's name once, down the side, spanning its rows.
+          row.prepend(el("th", { class: "group", rowspan: String(group.rows.length) }, el("span", {}, group.group)));
+          row.classList.add("first");
+        }
+        rows.push(row);
+      });
+    }
+  }
   const devices = virgils.flatMap((v) => (v.devices || []).map((d) => el("li", {}, el("strong", {}, `${d.name} (${v.virgil})`),
     ` following ${d.following_percent.toFixed(1)}%, synchronised ${d.synchronised_percent.toFixed(1)}%, `
     + `${d.late_packets === null ? "late packets unknown" : `${d.late_packets.toLocaleString("en")} new late packets`}`)));
