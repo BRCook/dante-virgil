@@ -54,7 +54,7 @@ def test_late_packets_devices_and_alerts_add_up(tmp_path):
     assert device["following_percent"] == 75.0 and device["synchronised_percent"] == 100.0 and device["late_packets"] == 7
     assert s["alerts"] == [{"device": "WingCompact", "label": "LOCK LOST", "times": 1, "seconds": 3.0}]
     assert s["events"][0]["title"] == "Box A became the leader" and s["notes"][0]["text"] == "a note"
-    assert s["chrony"]["rms_offset_ns"]["max"] == 107 and s["virgil"] == "Box A" and s["states"] == {"leader": 8}
+    assert s["clock"]["rms_offset_ns"]["max"] == 107 and s["virgil"] == "Box A" and s["states"] == {"leader": 8}
 
 
 def test_the_page_escapes_what_came_from_the_network(tmp_path):
@@ -92,3 +92,21 @@ def test_times_stay_in_ns_in_the_json_and_cycle_units_on_the_page(tmp_path):
     page = summary.render([s])
     assert 'data-ns="674140.0"' in page and "<button type=button" in page  # a time row: a unit button, and its ns
     assert page.count("<button type=button") == 1  # ppm isn't a time: no button
+
+
+def test_packet_loss_counts_the_pings_lost_and_shows_hundredths(tmp_path):
+    points = [[-100.0 + i * 0.25, 100.0 if i in (7, 300) else 0.0] for i in range(400)]  # 2 of 400 pings lost
+    graphs = [{"t": 1100.0, "series": [{"key": "loss/A/B/dante", "chart": "loss", "label": "A ↔ B (Dante)",
+                                        "unit": "percent", "points": points}]}]
+    s = summary.summarise(write_session(tmp_path / "s", graphs=graphs))
+    loss = s["measurements"][0]
+    assert loss["lost"] == 2 and loss["count"] == 400 and loss["mean"] == 0.5
+    page = summary.render([s])
+    assert "lost 2 of 400" in page and "<td>0.50</td>" in page and "Ping packet loss" in page
+
+
+def test_older_summaries_name_their_clock_figures_chrony(tmp_path):
+    old = summary.summarise(write_session(tmp_path / "s", status=[
+        {"t": 1000.0, "status": {"name": "Box B", "state": "follower", "clock": {"skew_ppm": 0.1}}}]))
+    old["chrony"] = old.pop("clock")
+    assert "Clock skew" in summary.render([old])

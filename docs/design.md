@@ -534,8 +534,8 @@ Each line in a chart's legend shows its current value, and after it, in muted te
 | Receive latency (average) | Median and spread |
 | Late packets | Total in the window |
 | Device clocks, trim | Range, lowest to highest |
-| Link round trip, jitter | Max |
-| Link packet loss | Mean |
+| Ping round trip, jitter | Max |
+| Ping packet loss | Mean |
 
 The page draws the charts itself, on canvases, with windows from 30 seconds to 10 minutes. They're arranged in three labelled rows of related charts: **Clocks** (offset from the leader, PHC offset, and the trim), **Dante devices** (receive latency across the full width, then late packets and each device's clock correction), and **Link** (round trip, jitter and packet loss). Each row's charts share its width equally (at most three side by side on a wide screen, two on a medium one, and one on a phone), so a row never has a gap in it. Each chart of times has its own unit, chosen by clicking the unit beside its title and remembered by the browser. Clock offsets start in the page's unit (nanoseconds, by default), receive latency and round trip in milliseconds, and jitter in microseconds.
 

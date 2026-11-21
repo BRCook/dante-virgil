@@ -953,10 +953,10 @@ async function showSummary(name) {
 }
 
 const SUMMARY_CHARTS = { offset: "Clock offset from the leader", phc: "PHC offset from system clock", trim: "Trim",
-  latency: "Receive latency", late: "Late packets", console: "Device clocks", rtt: "Link round trip",
-  jitter: "Link jitter", loss: "Link packet loss" };
-const SUMMARY_CHRONY = { rms_offset_ns: ["chrony RMS offset", "ns"], skew_ppm: ["chrony skew", "ppm"],
-  frequency_ppm: ["chrony frequency", "ppm"], system_offset_ns: ["chrony offset", "ns"],
+  latency: "Receive latency", late: "Late packets", console: "Device clocks", rtt: "Ping round trip",
+  jitter: "Ping jitter", loss: "Ping packet loss" };
+const SUMMARY_CLOCK = { rms_offset_ns: ["Clock RMS offset", "ns"], skew_ppm: ["Clock skew", "ppm"],
+  frequency_ppm: ["Clock frequency", "ppm"], system_offset_ns: ["Clock offset", "ns"],
   phc_offset_ns: ["PHC offset (phc2sys)", "ns"] };
 const SUMMARY_COLUMNS = ["min", "p1", "p5", "median", "mean", "p95", "p99", "max", "stdev"];
 
@@ -974,6 +974,7 @@ function summaryRow(key, label, unit, stats, extra) {
   }
   const number = (v) => {
     const x = v / divisor;
+    if (unit === "percent") return x.toFixed(2);  // to hundredths of a percent
     return Math.abs(x) >= 1000 ? Math.round(x).toLocaleString("en")
       : Math.abs(x) < 1 ? Number(x.toPrecision(3)).toString() : x.toFixed(2);
   };
@@ -998,11 +999,13 @@ function summaryView({ name, data }) {
     for (const [chart, title] of Object.entries(SUMMARY_CHARTS)) {
       for (const m of (v.measurements || []).filter((x) => x.chart === chart)) {
         rows.push(summaryRow(`${v.virgil}|${m.key}`, `${title}: ${m.label}`, m.unit, m,
-          m.total !== undefined ? `total ${Math.round(m.total).toLocaleString("en")}` : ""));
+          m.total !== undefined ? `total ${Math.round(m.total).toLocaleString("en")}`
+            : m.lost !== undefined ? `lost ${m.lost.toLocaleString("en")} of ${m.count.toLocaleString("en")}` : ""));
       }
     }
-    for (const [field, [label, unit]] of Object.entries(SUMMARY_CHRONY)) {
-      if (v.chrony && v.chrony[field]) rows.push(summaryRow(`${v.virgil}|chrony/${field}`, label, unit, v.chrony[field]));
+    const clock = v.clock || v.chrony || {};  // "chrony" in summaries made before it was renamed
+    for (const [field, [label, unit]] of Object.entries(SUMMARY_CLOCK)) {
+      if (clock[field]) rows.push(summaryRow(`${v.virgil}|clock/${field}`, label, unit, clock[field]));
     }
     const head = el("tr", {}, el("th", {}, ""), el("th", {}, "unit"), ...SUMMARY_COLUMNS.map((c) => el("th", {}, c)),
       el("th", {}, "readings"), el("th", {}, ""));
