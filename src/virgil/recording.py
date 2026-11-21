@@ -26,6 +26,8 @@ import json
 import logging
 import re
 import shutil
+import sys
+import os
 import tarfile
 import time
 from collections.abc import Callable
@@ -70,6 +72,36 @@ def _slim(status: dict) -> dict:
 PACK = ["nice", "-n", "19", "ionice", "-c", "3", "tar", "-czf"]
 
 
+SUMMARISE = ["nice", "-n", "19", "ionice", "-c", "3", sys.executable, "-m", "virgil.summary"]
+
+
+def summary_path(archive: Path) -> Path:
+    """Where a saved log's summary is kept, beside it (see virgil.summary)."""
+    return archive.with_name(archive.name + ".summary.json")
+
+
+async def summarise(folder: Path) -> None:
+    """Write the session's summary into its folder, in its own process at the lowest CPU and disk priority: a long
+    session takes a while to read, and the timing services come first. Done here instead if that can't run."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *SUMMARISE, str(folder), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent)})
+        _, error = await process.communicate()
+        if process.returncode == 0:
+            return
+        log.warning("Couldn't summarise %s separately (%s); summarising it here", folder.name,
+                    error.decode(errors="replace")[-300:])
+    except OSError as error:
+        log.warning("Couldn't summarise %s separately (%s); summarising it here", folder.name, error)
+    from virgil import summary
+
+    try:
+        await asyncio.to_thread(summary.write, folder)
+    except Exception:
+        log.exception("Couldn't summarise %s", folder.name)
+
+
 async def pack(folder: Path, archive: Path) -> None:
     """Pack a session's folder into a .tar.gz, in its own process at the lowest CPU and disk priority, so the
     timing services always come first. Falls back on Python's tarfile if tar can't run."""
@@ -89,6 +121,27 @@ async def pack(folder: Path, archive: Path) -> None:
             tar.add(folder, arcname=folder.name)
 
     await asyncio.to_thread(fallback)
+
+
+def summary_of(archive: Path) -> dict[str, Any] | None:
+    """One Virgil's summary of its own log: from the copy beside it, or from inside it (as when a member sent it)."""
+    try:
+        data = json.loads(summary_path(archive).read_text())
+    except (OSError, ValueError):
+        data = _summary_inside(archive)
+    return data if isinstance(data, dict) and "virgils" not in data else None
+
+
+def _summary_inside(archive: Path) -> dict[str, Any] | None:
+    """The summary from inside a log: a group's at its top, or one Virgil's in its folder."""
+    try:
+        with tarfile.open(archive) as tar:
+            for member in tar.getmembers():
+                if member.isfile() and member.name.rsplit("/", 1)[-1] == "summary.json" and member.size < 50_000_000:
+                    return json.loads(tar.extractfile(member).read())
+    except (OSError, tarfile.TarError, ValueError):
+        pass
+    return None
 
 
 class Session:
@@ -176,7 +229,12 @@ class Session:
         except OSError as error:
             log.warning("Couldn't write the session's events: %s", error)
         archive = folder.with_name(folder.name + ".tar.gz")
+        await summarise(folder)
         await pack(folder, archive)
+        try:  # a copy beside the archive, so the web UI can show it without unpacking anything
+            shutil.copyfile(folder / "summary.json", summary_path(archive))
+        except OSError:
+            pass
         shutil.rmtree(folder, ignore_errors=True)
         log.info("Recording saved as %s", archive.name)
         return archive.name
@@ -243,4 +301,17 @@ class Session:
         return path
 
     def delete(self, name: str) -> None:
-        self.path(name).unlink()
+        path = self.path(name)
+        path.unlink()
+        summary_path(path).unlink(missing_ok=True)
+
+    def summary(self, name: str) -> dict[str, Any] | None:
+        """A saved log's summary, as {"virgils": [...]}: from the copy beside it, or from inside the log itself."""
+        path = self.path(name)
+        try:
+            data = json.loads(summary_path(path).read_text())
+        except (OSError, ValueError):
+            data = _summary_inside(path)
+        if isinstance(data, dict) and "virgils" not in data:
+            data = {"virgils": [data]}  # one Virgil's own
+        return data if isinstance(data, dict) else None

@@ -915,6 +915,7 @@ function renderRecording() {
       el("span", {}, r.name),
       el("span", { class: "hint" }, `${megabytes(r.size)}, ${new Date(r.modified * 1000).toLocaleString([], { hour12: false })}`),
       el("a", { class: "button", href: `/api/v1/recordings/${encodeURIComponent(r.name)}`, download: "" }, "Download"),
+      el("button", { onclick: () => showSummary(r.name) }, "Summary"),
       el("button", { onclick: async () => {
         if (!confirm(`Delete ${r.name}?`)) return;
         if (await act("/api/v1/recordings/delete", { name: r.name }, "Deleted")) { await loadRecordings(); renderRecording(); }
@@ -926,7 +927,81 @@ function renderRecording() {
       } }, "Delete all")));
     }
   }
+  if (shownSummary) parts.push(...summaryView(shownSummary));
   replace("recording", parts);
+}
+
+// A saved log's summary (see virgil.summary), shown beneath the list.
+let shownSummary = null;
+
+async function showSummary(name) {
+  try {
+    const response = await fetch(`/api/v1/recordings/${encodeURIComponent(name)}/summary`);
+    const data = await response.json();
+    if (!response.ok) { notice(data.error || "Couldn't load the summary", true); return; }
+    shownSummary = { name, data };
+  } catch {
+    notice("Couldn't load the summary", true);
+    return;
+  }
+  renderRecording();
+}
+
+const SUMMARY_CHARTS = { offset: "Clock offset from the leader", phc: "PHC offset from system clock", trim: "Trim",
+  latency: "Receive latency", late: "Late packets", console: "Device clocks", rtt: "Link round trip",
+  jitter: "Link jitter", loss: "Link packet loss" };
+const SUMMARY_CHRONY = { rms_offset_ns: ["chrony RMS offset", "ns"], skew_ppm: ["chrony skew", "ppm"],
+  frequency_ppm: ["chrony frequency", "ppm"], system_offset_ns: ["chrony offset", "ns"],
+  phc_offset_ns: ["PHC offset (phc2sys)", "ns"] };
+const SUMMARY_COLUMNS = ["min", "p1", "p5", "median", "mean", "p95", "p99", "max", "stdev"];
+
+function summaryRow(label, unit, stats, extra) {
+  // Units from the typical value (the median), so one outlier can't put a row in different units from its neighbours.
+  let divisor = 1, name = { per_s: "/s", percent: "%" }[unit] || unit || "";
+  if (unit === "ns") {
+    for (const [d, n] of [[1e6, "ms"], [1e3, "µs"], [1, "ns"]]) {
+      if (Math.abs(stats.median) >= d * 10 || d === 1) { divisor = d; name = n; break; }
+    }
+  }
+  const number = (v) => {
+    const x = v / divisor;
+    return Math.abs(x) >= 1000 ? Math.round(x).toLocaleString("en")
+      : Math.abs(x) < 1 ? Number(x.toPrecision(3)).toString() : x.toFixed(2);
+  };
+  return el("tr", {}, el("th", {}, label), el("td", { class: "hint" }, name),
+    ...SUMMARY_COLUMNS.map((c) => el("td", {}, number(stats[c]))),
+    el("td", {}, stats.count.toLocaleString("en")), el("td", { class: "hint" }, extra || ""));
+}
+
+function summaryView({ name, data }) {
+  const when = (t) => (t ? new Date(t * 1000).toLocaleString([], { hour12: false }) : "—");
+  const parts = [el("div", { class: "row summary-head" }, el("h3", {}, `Summary of ${name}`),
+    el("button", { onclick: () => { shownSummary = null; renderRecording(); } }, "Close"))];
+  for (const v of data.virgils || []) {
+    const rows = [];
+    for (const [chart, title] of Object.entries(SUMMARY_CHARTS)) {
+      for (const m of (v.measurements || []).filter((x) => x.chart === chart)) {
+        rows.push(summaryRow(`${title}: ${m.label}`, m.unit, m, m.total !== undefined ? `total ${Math.round(m.total).toLocaleString("en")}` : ""));
+      }
+    }
+    for (const [field, [label, unit]] of Object.entries(SUMMARY_CHRONY)) {
+      if (v.chrony && v.chrony[field]) rows.push(summaryRow(label, unit, v.chrony[field]));
+    }
+    const head = el("tr", {}, el("th", {}, ""), el("th", {}, "unit"), ...SUMMARY_COLUMNS.map((c) => el("th", {}, c)),
+      el("th", {}, "readings"), el("th", {}, ""));
+    const devices = (v.devices || []).map((d) => el("li", {}, el("strong", {}, d.name),
+      ` following ${d.following_percent.toFixed(1)}%, synchronised ${d.synchronised_percent.toFixed(1)}%, `
+      + `${d.late_packets === null ? "late packets unknown" : `${d.late_packets.toLocaleString("en")} new late packets`}`));
+    const alerts = (v.alerts || []).map((a) => el("li", {}, el("strong", {}, `${a.label}`),
+      ` on ${a.device}: ${a.times} time${a.times === 1 ? "" : "s"}, ${Math.round(a.seconds)} s in all`));
+    parts.push(el("h4", {}, v.virgil), el("p", { class: "hint" }, `${when(v.from)} to ${when(v.to)}`),
+      el("div", { class: "summary-table" }, el("table", { class: "summary" }, head, ...rows)),
+      el("p", {}, el("strong", {}, "Dante devices")), el("ul", { class: "plain" }, ...(devices.length ? devices : [el("li", {}, "None")])),
+      el("p", {}, el("strong", {}, "Alerts")), el("ul", { class: "plain" }, ...(alerts.length ? alerts : [el("li", {}, "None")])),
+      el("p", { class: "hint" }, `${(v.events || []).length} group events and ${(v.notes || []).length} notes; `
+        + "the full summary is summary.html, inside the log."));
+  }
+  return parts;
 }
 
 // The page only changes what has actually changed, and nothing at all while

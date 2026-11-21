@@ -339,6 +339,17 @@ class WebApi:
                 return _error(f"no recording called {name}", 404)
         return web.json_response({"deleted": len(names)})
 
+    async def recording_summary(self, request: web.Request) -> web.Response:
+        if not self.logged_in(request):
+            return _error("log in to see recordings", 401)
+        try:
+            summary = await asyncio.to_thread(self.daemon.recording.summary, request.match_info["name"])
+        except FileNotFoundError:
+            return _error("no such recording", 404)
+        if summary is None:
+            return _error("this recording has no summary (it was made before Virgil summarised logs)", 404)
+        return web.json_response(summary)
+
     async def list_recordings(self, request: web.Request) -> web.Response:
         if not self.logged_in(request):
             return _error("log in to see recordings", 401)
@@ -358,6 +369,7 @@ class WebApi:
         app.router.add_get("/api/v1/session", self.session)
         app.router.add_get("/api/v1/interfaces", self.interfaces)
         app.router.add_get("/api/v1/recordings", self.list_recordings)
+        app.router.add_get("/api/v1/recordings/{name}/summary", self.recording_summary)
         app.router.add_get("/api/v1/recordings/{name}", self.download_recording)
         app.router.add_post("/api/v1/login", self.login)
         app.router.add_post("/api/v1/logout", self.logout)

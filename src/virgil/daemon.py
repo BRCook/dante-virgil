@@ -34,7 +34,7 @@ from virgil.alerts import EVENTS_PATH, Alerts
 from virgil.events import EventLog
 from virgil.graphs import KEEP_SECONDS, WORST, Recorder, jitter
 from virgil.pinger import Pinger
-from virgil.recording import RECORDINGS, Session, stamp_now
+from virgil.recording import RECORDINGS, Session, stamp_now, summary_of, summary_path
 from virgil import ptpv1 as ptpv1_module
 from virgil import timestamping
 from virgil.ptpwatch import mac_of_identity
@@ -593,13 +593,27 @@ class Daemon:
         bundle = bundle.with_name(bundle.name + "-group.tar")
 
         def pack() -> None:
+            import io
             import tarfile
 
+            from virgil import summary
+
+            # The group's summary, from each Virgil's own: at the top of the bundle, and beside it.
+            summaries = [s for s in map(summary_of, archives) if s]
+            group = {"virgils": summaries}
+            files = {"summary.json": json.dumps(group, indent=1).encode(),
+                     "summary.html": summary.render(summaries).encode()}
             with tarfile.open(bundle, "w") as tar:
+                for name, data in files.items():
+                    info = tarfile.TarInfo(name)
+                    info.size, info.mtime, info.mode = len(data), int(time.time()), 0o644
+                    tar.addfile(info, io.BytesIO(data))
                 for archive in archives:
                     tar.add(archive, arcname=archive.name)
+            summary_path(bundle).write_bytes(files["summary.json"])
             for archive in archives:
                 archive.unlink(missing_ok=True)
+                summary_path(archive).unlink(missing_ok=True)
 
         await asyncio.to_thread(pack)
         return {"archive": bundle.name}

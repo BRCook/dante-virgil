@@ -67,10 +67,10 @@ class Config:
     # "Follower"). Gentler values make the PHC's rate steadier, at the cost of a larger offset from the system clock.
     phc2sys_kp: float = 0.03
     phc2sys_ki: float = 0.0005
-    # How many measurements chrony, on a follower, merges into each sample, by their median (1: none). Chrony keeps
+    # How many measurements chrony, on a follower, merges into each sample, by their median (1: none; 8 by default). Chrony keeps
     # at most 64 samples, so merging makes its history longer and cleaner, and its corrections smaller and smoother,
     # at the cost of following real changes (such as the leader's crystal drifting) more slowly.
-    chrony_filter: int = 1
+    chrony_filter: int = 8
     # The web UI's password, as a scrypt hash. None means the web UI is read-only.
     web_password: str | None = None
     # When the password was last changed: shared across the group too.
@@ -148,7 +148,7 @@ def from_dict(data: dict[str, Any]) -> Config:
         auto_trim_changed=_time(data, "auto_trim_changed"),
         phc2sys_kp=_servo(data, "phc2sys_kp", 0.03),
         phc2sys_ki=_servo(data, "phc2sys_ki", 0.0005),
-        chrony_filter=_whole(data, "chrony_filter", 1),
+        chrony_filter=_whole(data, "chrony_filter", 8),
         web_password_changed=_time(data, "web_password_changed"),
         devices=devices,
         group=group,
