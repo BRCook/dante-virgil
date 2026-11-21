@@ -79,3 +79,16 @@ def test_a_saved_logs_summary_is_found_beside_it_or_inside_it(tmp_path):
     assert session.summary(archive.name)["virgils"][0]["virgil"] == "Box A (beside)"
     session.delete(archive.name)
     assert not summary_path(archive).exists()  # deleting a log deletes its summary too
+
+
+def test_times_stay_in_ns_in_the_json_and_cycle_units_on_the_page(tmp_path):
+    graphs = [{"t": 1100.0, "series": [{"key": "rtt/A/B/dante", "chart": "rtt", "label": "A ↔ B (Dante)", "unit": "ns",
+                                        "points": [[-30.0, 674_140.0], [-20.0, 900_000.0]]},
+                                       {"key": "console/W", "chart": "console", "label": "W", "unit": "ppm",
+                                        "points": [[-30.0, 2.05]]}]}]
+    s = summary.summarise(write_session(tmp_path / "s", graphs=graphs))
+    rtt = next(m for m in s["measurements"] if m["chart"] == "rtt")
+    assert rtt["unit"] == "ns" and rtt["min"] == 674_140.0  # the JSON: always ns, whatever the page shows
+    page = summary.render([s])
+    assert 'data-ns="674140.0"' in page and "<button type=button" in page  # a time row: a unit button, and its ns
+    assert page.count("<button type=button") == 1  # ppm isn't a time: no button

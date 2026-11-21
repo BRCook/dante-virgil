@@ -498,3 +498,12 @@ def test_a_saved_logs_summary_needs_a_login(virgil):
         return before, after, body, missing
 
     assert run(virgil, scenario) == (401, 200, {"virgils": [{"virgil": "Box A"}]}, 404)
+
+
+def test_status_says_what_time_it_is_by_this_virgils_clock(virgil):
+    """The page judges Virgil's timestamps (when logging started) by Virgil's clock, not the device it's open on."""
+    async def scenario(daemon, session, base):
+        async with session.get(f"{base}/api/v1/status") as reply:
+            return (await reply.json())["now"]
+
+    assert abs(run(virgil, scenario) - time.time()) < 5

@@ -1789,6 +1789,8 @@ class Daemon:
                 "product": "Virgil",
                 "version": __version__,
                 "id": self.config.id,
+                # This Virgil's clock, so the page can judge Virgil's timestamps by it rather than by its own device's.
+                "now": time.time(),
                 "name": self.config.name,
                 "addresses": list(self.addresses),
                 "observing": self.observing,

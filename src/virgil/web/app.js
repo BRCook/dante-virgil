@@ -471,6 +471,10 @@ function ptpv1Section(can) {
 
 // Time: how far this Virgil's clock is from the device the page is open on, and setting the group's from it.
 let timeOffset = null;  // this Virgil's clock minus the device's, in seconds
+// The same, from every status refresh: Virgil's timestamps (when logging started, when an invite expires) are judged
+// by Virgil's clock, not this device's, which may be seconds out.
+let virgilAhead = 0;
+const virgilNow = () => Date.now() / 1000 + virgilAhead;
 let syncArmedUntil = 0;
 let syncCancelledAt = 0;  // for a word of approval, briefly, in the warning's place
 const GOOD_CHOICE_FOR = 3000;
@@ -858,7 +862,7 @@ function download(url) {
 const megabytes = (bytes) => `${(bytes / 1048576).toFixed(bytes < 104857600 ? 1 : 0)} MB`;
 
 function elapsed(since) {
-  const seconds = Math.max(0, Math.round(Date.now() / 1000 - since));
+  const seconds = Math.max(0, Math.round(virgilNow() - since));
   const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
   return h ? `${h} h ${m} min` : m ? `${m} min ${s} s` : `${s} s`;
 }
@@ -940,6 +944,7 @@ async function showSummary(name) {
     const data = await response.json();
     if (!response.ok) { notice(data.error || "Couldn't load the summary", true); return; }
     shownSummary = { name, data };
+    summaryUnits.clear();
   } catch {
     notice("Couldn't load the summary", true);
     return;
@@ -955,20 +960,31 @@ const SUMMARY_CHRONY = { rms_offset_ns: ["chrony RMS offset", "ns"], skew_ppm: [
   phc_offset_ns: ["PHC offset (phc2sys)", "ns"] };
 const SUMMARY_COLUMNS = ["min", "p1", "p5", "median", "mean", "p95", "p99", "max", "stdev"];
 
-function summaryRow(label, unit, stats, extra) {
-  // Units from the typical value (the median), so one outlier can't put a row in different units from its neighbours.
+const plural = (n, noun) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+const SUMMARY_TIME_UNITS = [["ns", 1], ["µs", 1e3], ["ms", 1e6]];
+const summaryUnits = new Map();  // a time row's chosen unit, kept while the summary is open (it's redrawn often)
+
+function summaryRow(key, label, unit, stats, extra) {
   let divisor = 1, name = { per_s: "/s", percent: "%" }[unit] || unit || "";
   if (unit === "ns") {
-    for (const [d, n] of [[1e6, "ms"], [1e3, "µs"], [1, "ns"]]) {
-      if (Math.abs(stats.median) >= d * 10 || d === 1) { divisor = d; name = n; break; }
-    }
+    // Units from the typical value (the median), so one outlier can't put a row in different units from its
+    // neighbours; clicking the unit cycles the row through ns, µs and ms.
+    const chosen = SUMMARY_TIME_UNITS.find(([n]) => n === summaryUnits.get(key));
+    [name, divisor] = chosen || [...SUMMARY_TIME_UNITS].reverse().find(([, d]) => Math.abs(stats.median) >= d * 10 || d === 1);
   }
   const number = (v) => {
     const x = v / divisor;
     return Math.abs(x) >= 1000 ? Math.round(x).toLocaleString("en")
       : Math.abs(x) < 1 ? Number(x.toPrecision(3)).toString() : x.toFixed(2);
   };
-  return el("tr", {}, el("th", {}, label), el("td", { class: "hint" }, name),
+  const unitCell = unit === "ns"
+    ? el("td", {}, el("button", { class: "unit-cycle", title: "Change the unit", onclick: () => {
+      const at = SUMMARY_TIME_UNITS.findIndex(([n]) => n === name);
+      summaryUnits.set(key, SUMMARY_TIME_UNITS[(at + 1) % SUMMARY_TIME_UNITS.length][0]);
+      renderRecording();
+    } }, name))
+    : el("td", { class: "hint" }, name);
+  return el("tr", {}, el("th", {}, label), unitCell,
     ...SUMMARY_COLUMNS.map((c) => el("td", {}, number(stats[c]))),
     el("td", {}, stats.count.toLocaleString("en")), el("td", { class: "hint" }, extra || ""));
 }
@@ -976,16 +992,17 @@ function summaryRow(label, unit, stats, extra) {
 function summaryView({ name, data }) {
   const when = (t) => (t ? new Date(t * 1000).toLocaleString([], { hour12: false }) : "—");
   const parts = [el("div", { class: "row summary-head" }, el("h3", {}, `Summary of ${name}`),
-    el("button", { onclick: () => { shownSummary = null; renderRecording(); } }, "Close"))];
+    el("button", { onclick: () => { shownSummary = null; summaryUnits.clear(); renderRecording(); } }, "Close"))];
   for (const v of data.virgils || []) {
     const rows = [];
     for (const [chart, title] of Object.entries(SUMMARY_CHARTS)) {
       for (const m of (v.measurements || []).filter((x) => x.chart === chart)) {
-        rows.push(summaryRow(`${title}: ${m.label}`, m.unit, m, m.total !== undefined ? `total ${Math.round(m.total).toLocaleString("en")}` : ""));
+        rows.push(summaryRow(`${v.virgil}|${m.key}`, `${title}: ${m.label}`, m.unit, m,
+          m.total !== undefined ? `total ${Math.round(m.total).toLocaleString("en")}` : ""));
       }
     }
     for (const [field, [label, unit]] of Object.entries(SUMMARY_CHRONY)) {
-      if (v.chrony && v.chrony[field]) rows.push(summaryRow(label, unit, v.chrony[field]));
+      if (v.chrony && v.chrony[field]) rows.push(summaryRow(`${v.virgil}|chrony/${field}`, label, unit, v.chrony[field]));
     }
     const head = el("tr", {}, el("th", {}, ""), el("th", {}, "unit"), ...SUMMARY_COLUMNS.map((c) => el("th", {}, c)),
       el("th", {}, "readings"), el("th", {}, ""));
@@ -998,8 +1015,7 @@ function summaryView({ name, data }) {
       el("div", { class: "summary-table" }, el("table", { class: "summary" }, head, ...rows)),
       el("p", {}, el("strong", {}, "Dante devices")), el("ul", { class: "plain" }, ...(devices.length ? devices : [el("li", {}, "None")])),
       el("p", {}, el("strong", {}, "Alerts")), el("ul", { class: "plain" }, ...(alerts.length ? alerts : [el("li", {}, "None")])),
-      el("p", { class: "hint" }, `${(v.events || []).length} group events and ${(v.notes || []).length} notes; `
-        + "the full summary is summary.html, inside the log."));
+      el("p", { class: "hint" }, `${plural((v.events || []).length, "group event")} and ${plural((v.notes || []).length, "note")}.`));
   }
   return parts;
 }
@@ -1052,7 +1068,7 @@ function render() {
       Date.now() - syncCancelledAt < GOOD_CHOICE_FOR])) renderThisVirgil();
     // An invite this page is showing that's no longer outstanding has been used (or has expired): close it.
     if (lastInvite && group && !(group.invites || []).some((i) => i.id === lastInvite.invite_id)) {
-      notice(Date.now() / 1000 >= lastInvite.expires ? "The invite expired" : "The invite was used");
+      notice(virgilNow() >= lastInvite.expires ? "The invite expired" : "The invite was used");
       lastInvite = null;
     }
     if (changed("group", [group && group.id, members, status.other_virgils, session, lastInvite,
@@ -1067,8 +1083,13 @@ function render() {
 
 async function refresh() {
   try {
+    const asked = Date.now();
     const reply = await fetch("/api/v1/status", { credentials: "same-origin", cache: "no-store" });
     status = await reply.json();
+    if (typeof status.now === "number") {
+      // How far ahead Virgil's clock is of this device's, allowing for the request's round trip.
+      virgilAhead = status.now - (asked + Date.now()) / 2000;
+    }
     render();
   } catch {
     replace("warnings", el("p", { class: "warning fault" }, "Can't reach this Virgil. Is virgild running?"));
