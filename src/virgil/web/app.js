@@ -955,9 +955,11 @@ async function showSummary(name) {
 const SUMMARY_CHARTS = { offset: "Clock offset from the leader", phc: "PHC offset from system clock", trim: "Trim",
   latency: "Receive latency", late: "Late packets", console: "Device clocks", rtt: "Ping round trip",
   jitter: "Ping jitter", loss: "Ping packet loss" };
+// Status adds what the graphs don't have. (Its offset from the leader and PHC offset are the graphs' too.)
 const SUMMARY_CLOCK = { rms_offset_ns: ["Clock RMS offset", "ns"], skew_ppm: ["Clock skew", "ppm"],
-  frequency_ppm: ["Clock frequency", "ppm"], system_offset_ns: ["Clock offset", "ns"],
-  phc_offset_ns: ["PHC offset (phc2sys)", "ns"] };
+  frequency_ppm: ["Clock frequency", "ppm"] };
+const SUMMARY_SECTIONS = [["Dante devices", ["latency", "late", "console"]], ["Ping", ["rtt", "jitter", "loss"]],
+  ["Clock", ["offset", "phc", "trim"]]];
 const SUMMARY_COLUMNS = ["min", "p1", "p5", "median", "mean", "p95", "p99", "max", "stdev"];
 
 const plural = (n, noun) => `${n} ${noun}${n === 1 ? "" : "s"}`;
@@ -990,37 +992,70 @@ function summaryRow(key, label, unit, stats, extra) {
     el("td", {}, stats.count.toLocaleString("en")), el("td", { class: "hint" }, extra || ""));
 }
 
-function summaryView({ name, data }) {
-  const when = (t) => (t ? new Date(t * 1000).toLocaleString([], { hour12: false }) : "—");
-  const parts = [el("div", { class: "row summary-head" }, el("h3", {}, `Summary of ${name}`),
-    el("button", { onclick: () => { shownSummary = null; summaryUnits.clear(); renderRecording(); } }, "Close"))];
-  for (const v of data.virgils || []) {
-    const rows = [];
-    for (const [chart, title] of Object.entries(SUMMARY_CHARTS)) {
-      for (const m of (v.measurements || []).filter((x) => x.chart === chart)) {
-        rows.push(summaryRow(`${v.virgil}|${m.key}`, `${title}: ${m.label}`, m.unit, m,
-          m.total !== undefined ? `total ${Math.round(m.total).toLocaleString("en")}`
-            : m.lost !== undefined ? `lost ${m.lost.toLocaleString("en")} of ${m.count.toLocaleString("en")}` : ""));
+// The whole group's table, as rows: a section heading, or a measurement. As virgil.summary.layout lays it out.
+function summaryLayout(virgils) {
+  const subject = (key) => (key.includes("/") ? key.slice(key.indexOf("/") + 1) : key);
+  const measurements = virgils.flatMap((v) => v.measurements || []);
+  const settings = new Map(measurements.filter((m) => m.key.startsWith("limit/")).map((m) => [subject(m.key), m]));
+  const rows = [];
+  for (const [section, charts] of SUMMARY_SECTIONS) {
+    const found = measurements.filter((m) => charts.includes(m.chart) && !m.key.startsWith("limit/"));
+    if (section === "Clock") {
+      for (const v of virgils) {
+        const clock = v.clock || v.chrony || {};  // "chrony" in summaries made before it was renamed
+        for (const [field, [title, unit]] of Object.entries(SUMMARY_CLOCK)) {
+          if (clock[field]) found.push({ ...clock[field], chart: "clock", key: `clock/${v.virgil}/${field}`, label: v.virgil, unit, title });
+        }
       }
     }
-    const clock = v.clock || v.chrony || {};  // "chrony" in summaries made before it was renamed
-    for (const [field, [label, unit]] of Object.entries(SUMMARY_CLOCK)) {
-      if (clock[field]) rows.push(summaryRow(`${v.virgil}|clock/${field}`, label, unit, clock[field]));
+    if (!found.length) continue;
+    rows.push({ section });
+    const order = [...charts, "clock"];
+    const place = (m) => {
+      let s = subject(m.key);
+      if (section === "Clock") s = s.split("/")[0];
+      else if (section === "Ping") s = `${s.replace(/\/dante$/, "")}|${s.endsWith("/dante") ? 0 : 1}`;  // Dante first
+      return [s, order.indexOf(m.chart), m.key.startsWith("latency/") ? 0 : 1];
+    };
+    found.sort((a, b) => {
+      const [x, y] = [place(a), place(b)];
+      return x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : x[1] - y[1] || x[2] - y[2];
+    });
+    for (const m of found) {
+      let note = "";
+      if (m.total !== undefined) note = `total ${Math.round(m.total).toLocaleString("en")}`;
+      else if (m.lost !== undefined) note = `lost ${m.lost.toLocaleString("en")} of ${m.count.toLocaleString("en")}`;
+      else if (m.key.startsWith("latency/") && settings.has(subject(m.key))) {
+        note = `setting ${settings.get(subject(m.key)).median / 1e6} ms`;
+      }
+      rows.push({ key: m.key, label: `${m.title || SUMMARY_CHARTS[m.chart] || m.chart}: ${m.label}`, unit: m.unit, stats: m, note });
     }
-    const head = el("tr", {}, el("th", {}, ""), el("th", {}, "unit"), ...SUMMARY_COLUMNS.map((c) => el("th", {}, c)),
-      el("th", {}, "readings"), el("th", {}, ""));
-    const devices = (v.devices || []).map((d) => el("li", {}, el("strong", {}, d.name),
-      ` following ${d.following_percent.toFixed(1)}%, synchronised ${d.synchronised_percent.toFixed(1)}%, `
-      + `${d.late_packets === null ? "late packets unknown" : `${d.late_packets.toLocaleString("en")} new late packets`}`));
-    const alerts = (v.alerts || []).map((a) => el("li", {}, el("strong", {}, `${a.label}`),
-      ` on ${a.device}: ${a.times} time${a.times === 1 ? "" : "s"}, ${Math.round(a.seconds)} s in all`));
-    parts.push(el("h4", {}, v.virgil), el("p", { class: "hint" }, `${when(v.from)} to ${when(v.to)}`),
-      el("div", { class: "summary-table" }, el("table", { class: "summary" }, head, ...rows)),
-      el("p", {}, el("strong", {}, "Dante devices")), el("ul", { class: "plain" }, ...(devices.length ? devices : [el("li", {}, "None")])),
-      el("p", {}, el("strong", {}, "Alerts")), el("ul", { class: "plain" }, ...(alerts.length ? alerts : [el("li", {}, "None")])),
-      el("p", { class: "hint" }, `${plural((v.events || []).length, "group event")} and ${plural((v.notes || []).length, "note")}.`));
   }
-  return parts;
+  return rows;
+}
+
+function summaryView({ name, data }) {
+  const when = (t) => (t ? new Date(t * 1000).toLocaleString([], { hour12: false }) : "—");
+  const virgils = data.virgils || [];
+  const head = el("tr", {}, el("th", {}, ""), el("th", {}, "unit"), ...SUMMARY_COLUMNS.map((c) => el("th", {}, c)),
+    el("th", {}, "readings"), el("th", {}, ""));
+  const rows = summaryLayout(virgils).map((r) => (r.section
+    ? el("tr", { class: "section" }, el("th", { colspan: String(SUMMARY_COLUMNS.length + 4) }, r.section))
+    : summaryRow(r.key, r.label, r.unit, r.stats, r.note)));
+  const devices = virgils.flatMap((v) => (v.devices || []).map((d) => el("li", {}, el("strong", {}, `${d.name} (${v.virgil})`),
+    ` following ${d.following_percent.toFixed(1)}%, synchronised ${d.synchronised_percent.toFixed(1)}%, `
+    + `${d.late_packets === null ? "late packets unknown" : `${d.late_packets.toLocaleString("en")} new late packets`}`)));
+  const alerts = virgils.flatMap((v) => (v.alerts || []).map((a) => el("li", {}, el("strong", {}, `${a.label}`),
+    ` on ${a.device} (${v.virgil}): ${plural(a.times, "time")}, ${Math.round(a.seconds)} s in all`)));
+  const events = virgils.reduce((n, v) => n + (v.events || []).length, 0);
+  const notes = virgils.reduce((n, v) => n + (v.notes || []).length, 0);
+  return [el("div", { class: "row summary-head" }, el("h3", {}, `Summary of ${name}`),
+    el("button", { onclick: () => { shownSummary = null; summaryUnits.clear(); renderRecording(); } }, "Close")),
+  ...virgils.map((v) => el("p", { class: "hint" }, el("strong", {}, v.virgil), ` ${when(v.from)} to ${when(v.to)}`)),
+  el("div", { class: "summary-table" }, el("table", { class: "summary" }, head, ...rows)),
+  el("p", {}, el("strong", {}, "Dante devices")), el("ul", { class: "plain" }, ...(devices.length ? devices : [el("li", {}, "None")])),
+  el("p", {}, el("strong", {}, "Alerts")), el("ul", { class: "plain" }, ...(alerts.length ? alerts : [el("li", {}, "None")])),
+  el("p", { class: "hint" }, `${plural(events, "group event")} and ${plural(notes, "note")}.`)];
 }
 
 // The page only changes what has actually changed, and nothing at all while

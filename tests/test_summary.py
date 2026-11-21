@@ -110,3 +110,30 @@ def test_older_summaries_name_their_clock_figures_chrony(tmp_path):
         {"t": 1000.0, "status": {"name": "Box B", "state": "follower", "clock": {"skew_ppm": 0.1}}}]))
     old["chrony"] = old.pop("clock")
     assert "Clock skew" in summary.render([old])
+
+
+def test_one_table_for_the_group_in_three_sections(tmp_path):
+    """Each device's rows together (its latency setting beside its worst flow, not a row of its own), each pair's
+    pings together with Dante first, and each Virgil's clock rows together, without status repeating the graphs."""
+    def series(key, chart, label, unit, value):
+        return {"key": key, "chart": chart, "label": label, "unit": unit, "points": [[-5.0, value]]}
+
+    a = write_session(tmp_path / "a", graphs=[{"t": 1100.0, "series": [
+        series("latency/W", "latency", "W (Box A) worst flow", "ns", 1.2e6),
+        series("average/W", "latency", "W (Box A) average", "ns", 1.1e6),
+        series("limit/W", "latency", "W (Box A) setting", "ns", 3e6),
+        series("rtt/Box A/Box B", "rtt", "Box A ↔ Box B (Mgmt)", "ns", 7e5),
+        series("rtt/Box A/Box B/dante", "rtt", "Box A ↔ Box B (Dante)", "ns", 6e5),
+        series("trim/Box A", "trim", "Box A", "ppm", -3.0)]}],
+        status=[{"t": 1100.0, "status": {"name": "Box A", "state": "leader", "clock": {"skew_ppm": 0.1}}}])
+    b = write_session(tmp_path / "b", graphs=[{"t": 1100.0, "series": [series("offset/Box B", "offset", "Box B", "ns", 5e3)]}],
+                      status=[{"t": 1100.0, "status": {"name": "Box B", "state": "follower",
+                                                     "clock": {"skew_ppm": 0.1, "system_offset_ns": 5e3}}}])
+    rows = summary.layout([summary.summarise(a), summary.summarise(b)])
+    order = [r.get("section") or r["label"] for r in rows]
+    assert order == ["Dante devices", "Receive latency: W (Box A) worst flow", "Receive latency: W (Box A) average",
+                     "Ping", "Ping round trip: Box A ↔ Box B (Dante)", "Ping round trip: Box A ↔ Box B (Mgmt)",
+                     "Clock", "Trim: Box A", "Clock skew: Box A", "Clock offset from the leader: Box B", "Clock skew: Box B"]
+    assert rows[1]["note"] == "setting 3 ms"
+    page = summary.render([summary.summarise(a), summary.summarise(b)])
+    assert page.count("<table>") == 3 and page.count("tr class=section") == 3  # one measurements table, then two lists

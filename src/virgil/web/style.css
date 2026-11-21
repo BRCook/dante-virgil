@@ -285,3 +285,5 @@ table.summary { border-collapse: collapse; font-variant-numeric: tabular-nums; f
 table.summary th, table.summary td { padding: 0.2rem 0.55rem; text-align: right; border-bottom: 1px solid var(--line); }
 table.summary th:first-child { text-align: left; font-weight: 500; }
 button.unit-cycle { padding: 0 0.35rem; font-size: inherit; color: var(--muted); }
+table.summary tr.section th { text-align: left; padding-top: 0.9rem; font-size: 0.75rem; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted); }

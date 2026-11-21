@@ -215,10 +215,57 @@ def _when(t: float | None) -> str:
 CHART_NAMES = {"offset": "Clock offset from the leader", "phc": "PHC offset from system clock", "trim": "Trim",
                "latency": "Receive latency", "late": "Late packets", "console": "Device clocks",
                "rtt": "Ping round trip", "jitter": "Ping jitter", "loss": "Ping packet loss"}
+# Status adds what the graphs don't have. (Its offset from the leader and PHC offset are the graphs' too.)
 CLOCK_NAMES = {"rms_offset_ns": ("Clock RMS offset", "ns"), "skew_ppm": ("Clock skew", "ppm"),
-               "frequency_ppm": ("Clock frequency", "ppm"), "system_offset_ns": ("Clock offset", "ns"),
-                "phc_offset_ns": ("PHC offset (phc2sys)", "ns")}
+               "frequency_ppm": ("Clock frequency", "ppm")}
 COLUMNS = ("min", "p1", "p5", "median", "mean", "p95", "p99", "max", "stdev")
+SECTIONS = (("Dante devices", ("latency", "late", "console")), ("Ping", ("rtt", "jitter", "loss")),
+            ("Clock", ("offset", "phc", "trim")))
+
+
+def _subject(key: str) -> str:
+    """What a series is about: the device, pair or Virgil after its chart's prefix, so its rows group together."""
+    return key.split("/", 1)[1] if "/" in key else key
+
+
+def layout(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The whole group's table, as rows: a section heading, or a measurement (label, unit, stats, note)."""
+    measurements = [m for s in summaries for m in s["measurements"]]
+    settings = {_subject(m["key"]): m for m in measurements if m["key"].startswith("limit/")}
+    rows = []
+    for section, charts in SECTIONS:
+        found = [m for m in measurements if m["chart"] in charts and not m["key"].startswith("limit/")]
+        if section == "Clock":
+            found += [{"chart": "clock", "key": f"clock/{s['virgil']}/{field}", "label": s["virgil"], "unit": unit,
+                       "title": title, **(s.get("clock") or s.get("chrony") or {})[field]}
+                      for s in summaries for field, (title, unit) in CLOCK_NAMES.items()
+                      if (s.get("clock") or s.get("chrony") or {}).get(field)]
+        if not found:
+            continue
+        rows.append({"section": section})
+        order = list(charts) + ["clock"]
+        # Each device's (or pair's, or Virgil's) rows together; within them, in the charts' order, worst flow first.
+        def place(m: dict[str, Any]) -> tuple:
+            subject = _subject(m["key"])
+            if section == "Clock":
+                subject = subject.split("/")[0]  # the Virgil
+            elif section == "Ping":
+                subject = (subject.removesuffix("/dante"), not subject.endswith("/dante"))  # Dante, the audio's path, first
+            return subject, order.index(m["chart"]), not m["key"].startswith("latency/")
+
+        found.sort(key=place)
+        for m in found:
+            note = ""
+            if "total" in m:
+                note = f"total {m['total']:,.0f}"
+            elif "lost" in m:
+                note = f"lost {m['lost']:,} of {m['count']:,}"
+            elif m["key"].startswith("latency/") and _subject(m["key"]) in settings:
+                setting = settings[_subject(m["key"])]["median"]
+                note = f"setting {setting / 1e6:g} ms"
+            title = m.get("title") or CHART_NAMES.get(m["chart"], m["chart"])
+            rows.append({"label": f"{title}: {m['label']}", "unit": m["unit"], "stats": m, "note": note})
+    return rows
 
 
 def _row(label: str, unit: str | None, stats: dict[str, float], extra: str = "") -> str:
@@ -235,42 +282,37 @@ def _row(label: str, unit: str | None, stats: dict[str, float], extra: str = "")
 
 
 def render(summaries: list[dict[str, Any]]) -> str:
-    """A self-contained page: one section for each Virgil."""
+    """A self-contained page: the whole group's measurements in one table, in sections, then what happened."""
     head = ("<th></th><th>unit</th>" + "".join(f"<th>{c}</th>" for c in COLUMNS) + "<th>readings</th><th></th>")
-    parts = []
-    for s in summaries:
-        rows = []
-        for chart in CHART_NAMES:
-            for m in (m for m in s["measurements"] if m["chart"] == chart):
-                extra = (f"total {m['total']:,.0f}" if "total" in m
-                         else f"lost {m['lost']:,} of {m['count']:,}" if "lost" in m else "")
-                rows.append(_row(f"{CHART_NAMES[chart]}: {m['label']}", m["unit"], m, extra))
-        clock = s.get("clock") or s.get("chrony") or {}  # "chrony" in summaries made before it was renamed
-        for field, (label, unit) in CLOCK_NAMES.items():
-            if clock.get(field):
-                rows.append(_row(label, unit, clock[field]))
-        def late(d: dict) -> str:
-            return "—" if d["late_packets"] is None else f"{d['late_packets']:,}"
+    rows = "".join(f"<tr class=section><th colspan={len(COLUMNS) + 4}>{html.escape(r['section'])}</th></tr>"
+                   if "section" in r else _row(r["label"], r["unit"], r["stats"], r["note"]) for r in layout(summaries))
 
-        devices = "".join(
-            f"<tr><th>{html.escape(d['name'])}</th><td>{d['following_percent']:.1f}%</td>"
-            f"<td>{d['synchronised_percent']:.1f}%</td><td>{late(d)}</td></tr>"
-            for d in s["devices"])
-        alerts = "".join(
-            f"<tr><th>{html.escape(str(a['device']))}</th><td>{html.escape(str(a['label']))}</td><td>{a['times']}</td>"
-            f"<td>{a['seconds']:,.0f} s</td></tr>" for a in s["alerts"]) or "<tr><td colspan=4>None</td></tr>"
-        events = "".join(f"<li><span>{_when(e['t'])}</span> <b>{html.escape(str(e['label']))}</b> "
-                         f"{html.escape(str(e['title']))}</li>" for e in s["events"]) or "<li>None</li>"
-        notes = "".join(f"<li><span>{html.escape(n['at'])}</span> {html.escape(n['text'])}</li>"
-                        for n in s["notes"]) or "<li>None</li>"
-        states = ", ".join(f"{k} {100 * v / max(1, s['status_readings']):.1f}%" for k, v in sorted(s["states"].items()))
-        parts.append(f"""<section><h2>{html.escape(s['virgil'])}</h2>
-<p>{_when(s['from'])} to {_when(s['to'])} · {states}</p>
-<h3>Measurements</h3><div class=scroll><table><tr>{head}</tr>{''.join(rows)}</table></div>
-<h3>Dante devices</h3><table><tr><th></th><th>following</th><th>synchronised</th><th>new late packets</th></tr>{devices}</table>
-<h3>Alerts</h3><table><tr><th>device</th><th>alert</th><th>times</th><th>total time</th></tr>{alerts}</table>
-<h3>Group events</h3><ul>{events}</ul>
-<h3>Notes</h3><ul>{notes}</ul></section>""")
+    def late(d: dict) -> str:
+        return "—" if d["late_packets"] is None else f"{d['late_packets']:,}"
+
+    spans = "".join(
+        f"<li><b>{html.escape(s['virgil'])}</b> {_when(s['from'])} to {_when(s['to'])} · "
+        + ", ".join(f"{k} {100 * v / max(1, s['status_readings']):.1f}%" for k, v in sorted(s["states"].items()))
+        + "</li>" for s in summaries)
+    devices = "".join(
+        f"<tr><th>{html.escape(d['name'])} ({html.escape(s['virgil'])})</th><td>{d['following_percent']:.1f}%</td>"
+        f"<td>{d['synchronised_percent']:.1f}%</td><td>{late(d)}</td></tr>"
+        for s in summaries for d in s["devices"]) or "<tr><td colspan=4>None</td></tr>"
+    alerts = "".join(
+        f"<tr><th>{html.escape(str(a['device']))} ({html.escape(s['virgil'])})</th><td>{html.escape(str(a['label']))}</td>"
+        f"<td>{a['times']}</td><td>{a['seconds']:,.0f} s</td></tr>"
+        for s in summaries for a in s["alerts"]) or "<tr><td colspan=4>None</td></tr>"
+    events = sorted(((e["t"] or 0, s["virgil"], e) for s in summaries for e in s["events"]), key=lambda x: x[0])
+    events_html = "".join(f"<li><span>{_when(e['t'])}</span> {html.escape(virgil)}: <b>{html.escape(str(e['label']))}</b> "
+                          f"{html.escape(str(e['title']))}</li>" for _, virgil, e in events) or "<li>None</li>"
+    notes = "".join(f"<li><span>{html.escape(n['at'])}</span> {html.escape(n['text'])}</li>"
+                    for s in summaries for n in s["notes"]) or "<li>None</li>"
+    parts = [f"""<ul>{spans}</ul>
+<div class=scroll><table><tr>{head}</tr>{rows}</table></div>
+<h2>Dante devices</h2><table><tr><th></th><th>following</th><th>synchronised</th><th>new late packets</th></tr>{devices}</table>
+<h2>Alerts</h2><table><tr><th>device</th><th>alert</th><th>times</th><th>total time</th></tr>{alerts}</table>
+<h2>Group events</h2><ul>{events_html}</ul>
+<h2>Notes</h2><ul>{notes}</ul>"""]
     return f"""<!doctype html><html lang=en><meta charset=utf-8><title>Virgil log summary</title>
 <meta name=viewport content="width=device-width, initial-scale=1">
 <style>
@@ -282,7 +324,9 @@ th:first-child {{ text-align: left; font-weight: 500; }}
 td.unit {{ color: var(--muted); text-align: left; }}
 .scroll {{ overflow-x: auto; }}
 ul {{ padding-left: 1.2rem; }} li span {{ color: var(--muted); font-variant-numeric: tabular-nums; }}
-section {{ margin-bottom: 3rem; }}
+tr.section th {{ text-align: left; padding-top: 1.1rem; font-size: 0.8rem; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted); border-bottom: 1px solid rgba(127,127,127,0.5); }}
+h2 {{ font-size: 1.1rem; margin-top: 1.8rem; }}
 td.unit button {{ font: inherit; color: inherit; background: none; border: 1px solid rgba(127,127,127,0.4);
   border-radius: 4px; padding: 0 0.35rem; cursor: pointer; }}
 </style>
