@@ -552,6 +552,8 @@ The page draws the charts itself, on canvases, with windows from 30 seconds to 1
 
 "Stop logging and download" stops logging on every Virgil it started, fetches their logs through the group API, bundles them all into one `.tar` file, and downloads it through the browser. Logging stops by itself after 24 hours, or when the disk has 500 MB left. Internally (and in the API), a logging session is called a recording.
 
+Additionally, Virgil will compile the results into a summary. For every measurement type (latency, jitter, trim, etc.), the summary gives the count, minimum, maximum, mean, median, standard deviation, and the 1st, 5th, 95th and 99th percentiles, plus the total for late packets. It also gives the share of the session each Dante device spent following and synchronised; each alert with how often it opened and for how long; the group's events; and any notes. It goes into the log as `summary.html` (to read) and `summary.json` (for tools). The **Summary** button beside the log entry in the web UI will open the summary.
+
 ## Setting the Time
 
 A Virgil's system clock isn't independent of the Dante devices' clock. On the leader, the system clock follows the PHC, and the PHC is the PTP time every Dante device follows. Setting the time of day therefore moves the Dante devices' clock, which makes every one of them re-lock, and interrupts audio for a few seconds.
@@ -619,7 +621,7 @@ Each Virgil has one configuration file, `/etc/dante-virgil/virgil.toml`. The web
 | `ptpv1` | `fallback` | When to serve PTPv1: `fallback`, `always`, `off`, or `only` (instead of PTPv2) (see [When It Serves](#when-it-serves)). |
 | `probe_timestamps` | true | Whether to probe the PTP interface's transmit timestamp slots during a setup from scratch (see [Transmit Timestamp Slots](#transmit-timestamp-slots)). |
 | `phc2sys_kp`, `phc2sys_ki` | 0.03, 0.0005 | phc2sys's servo on a follower (see [Follower](#follower)). Gentler values make the PHC's rate steadier, at the cost of a larger offset from the system clock. |
-| `chrony_filter` | 1 | How many measurements chrony on a follower merges into each sample, by their median, from 1 (none) to 16 (see [Follower](#follower)). |
+| `chrony_filter` | 8 | How many measurements chrony on a follower merges into each sample, by their median, from 1 (none) to 16 (see [Follower](#follower)). |
 | `observe_only` | false | Only take part in the election as an observer; roles are then set by hand with `virgilctl role`. Meant for testing. |
 | `web_password` | none | The web UI's password, as a scrypt hash. Shared by the group. |
 | `auto_trim_changed`, `web_password_changed` | 0 | When each shared setting was last changed, so the latest change wins across the group. |
@@ -646,7 +648,7 @@ The web UI's API is on ports 443 and 8740. Reading is open to anyone who can rea
 | `POST /api/v1/group/create`, `/invite`, `/join` | Creating a group, inviting a Virgil into it, and joining one. |
 | `POST /api/v1/group/remove`, `/leave` | Removing another member, and leaving the group. |
 | `POST /api/v1/time/sync` | Setting the group's time (see [Setting the Time](#setting-the-time)). |
-| `POST /api/v1/recording/start`, `/stop`, `/note`, `GET /api/v1/recordings[/<name>]`, `POST /api/v1/recordings/delete` | Logging sessions. |
+| `POST /api/v1/recording/start`, `/stop`, `/note`, `GET /api/v1/recordings[/<name>]`, `GET /api/v1/recordings/<name>/summary`, `POST /api/v1/recordings/delete` | Logging sessions. |
 
 ### Group
 

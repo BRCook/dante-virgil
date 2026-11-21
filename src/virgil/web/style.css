@@ -277,3 +277,10 @@ label.check { display: inline-flex; gap: 0.4rem; align-items: center; }
 @media (prefers-reduced-motion: no-preference) {
   .notice { transition: opacity 0.2s; }
 }
+
+/* A saved log's summary. */
+.summary-head { justify-content: space-between; align-items: center; margin-top: 1.5rem; }
+.summary-table { overflow-x: auto; }
+table.summary { border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 0.9rem; }
+table.summary th, table.summary td { padding: 0.2rem 0.55rem; text-align: right; border-bottom: 1px solid var(--line); }
+table.summary th:first-child { text-align: left; font-weight: 500; }

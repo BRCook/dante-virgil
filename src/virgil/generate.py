@@ -30,7 +30,7 @@ class Tuning:
     maxsamples: int = 64
     # How many measurements chrony merges into each sample, by their median (1: each measurement is a sample). With
     # 64 samples at most, merging makes each one cleaner and the history longer, so the rate estimate jumps less.
-    filter: int = 1
+    filter: int = 8
     corrtimeratio: int = 20
     maxslewrate: int = 10
     # phc2sys, on followers

@@ -1046,7 +1046,13 @@ def test_a_group_recording_comes_back_as_one_file(tmp_path):
     assert bundle.name.endswith("-group.tar")
     with tarfile.open(bundle) as tar:
         inner = sorted(tar.getnames())
-    assert len(inner) == 2 and inner[0].endswith("-Virgil-A.tar.gz") and inner[1].endswith("-Virgil-B.tar.gz")
+        group = json.loads(tar.extractfile("summary.json").read())
+        page = tar.extractfile("summary.html").read().decode()
+    logs = [name for name in inner if name.endswith(".tar.gz")]
+    assert len(logs) == 2 and logs[0].endswith("-Virgil-A.tar.gz") and logs[1].endswith("-Virgil-B.tar.gz")
+    assert {"summary.json", "summary.html"} <= set(inner)  # the group's summary, at the top
+    assert [s["virgil"] for s in group["virgils"]] == ["Virgil A", "Virgil B"] and "Virgil B" in page
+    assert a.recording.summary(bundle.name) == group  # and beside it, for the web UI
     assert not b.recording.active and b.recording.recordings() == []  # B's copy was fetched, then tidied away
     assert [r["name"] for r in a.recording.recordings()] == [bundle.name]
 
@@ -1450,7 +1456,7 @@ def test_leftover_chrony_sample_settings_do_no_harm(tmp_path):
     path = tmp_path / "virgil.toml"
     config_file.save(config_file.new_config(), path)
     path.write_text(path.read_text() + "chrony_maxsamples = 512\nchrony_minsamples = 128\n")
-    assert config_file.load(path).chrony_filter == 1
+    assert config_file.load(path).chrony_filter == 8  # the default
 
 
 def test_a_late_burst_after_a_quiet_night_is_counted_in_full(tmp_path):

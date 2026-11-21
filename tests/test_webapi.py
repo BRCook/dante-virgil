@@ -1,6 +1,7 @@
 """The web API, through a real daemon's public port."""
 
 import asyncio
+import json
 import shutil
 import time
 
@@ -479,3 +480,21 @@ def test_a_used_invite_drops_off_the_outstanding_list(virgil):
     assert [i["id"] for i in before] == [invite["invite_id"]] and len(invite["invite_id"]) == 12
     assert after == []
     assert invite["token"].count(invite["invite_id"]) == 0  # the name gives nothing of the token away
+
+
+def test_a_saved_logs_summary_needs_a_login(virgil):
+    async def scenario(daemon, session, base):
+        root = daemon.recording.root
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "virgil-20261121-100000-group.tar").write_bytes(b"\0" * 1024)
+        (root / "virgil-20261121-100000-group.tar.summary.json").write_text(json.dumps({"virgils": [{"virgil": "Box A"}]}))
+        async with session.get(f"{base}/api/v1/recordings/virgil-20261121-100000-group.tar/summary") as reply:
+            before = reply.status
+        await _login(session, base)
+        async with session.get(f"{base}/api/v1/recordings/virgil-20261121-100000-group.tar/summary") as reply:
+            after, body = reply.status, await reply.json()
+        async with session.get(f"{base}/api/v1/recordings/nonesuch.tar/summary") as reply:
+            missing = reply.status
+        return before, after, body, missing
+
+    assert run(virgil, scenario) == (401, 200, {"virgils": [{"virgil": "Box A"}]}, 404)
