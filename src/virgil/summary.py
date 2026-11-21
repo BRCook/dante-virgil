@@ -115,6 +115,8 @@ def summarise(folder: Path) -> dict[str, Any]:
         entry = {"key": key, "chart": s["chart"], "label": s["label"], "unit": s["unit"], **stats}
         if s["chart"] == "late":
             entry["total"] = _late_total(points)
+        if s["chart"] == "loss":
+            entry["lost"] = round(sum(v for _, v in points) / 100)  # each ping counts as 0% or 100% lost
         measurements.append(entry)
 
     # From status: chrony, and each Dante device's state.
@@ -173,7 +175,7 @@ def summarise(folder: Path) -> dict[str, Any]:
         "status_readings": readings,
         "states": dict(states),
         "measurements": measurements,
-        "chrony": {field: statistics_of(values) for field, values in chrony.items()},
+        "clock": {field: statistics_of(values) for field, values in chrony.items()},
         "devices": [
             {"name": n, "readings": d["readings"],
              "following_percent": 100 * d["following"] / d["readings"],
@@ -199,8 +201,10 @@ def _scale(unit: str | None, typical: float) -> tuple[float, str]:
     return 1, {"per_s": "/s", "percent": "%"}.get(unit or "", unit or "")
 
 
-def _number(value: float, divisor: float) -> str:
+def _number(value: float, divisor: float, unit: str | None = None) -> str:
     v = value / divisor
+    if unit == "percent":
+        return f"{v:,.2f}"  # to hundredths of a percent
     return f"{v:,.0f}" if abs(v) >= 1000 else f"{v:,.3g}" if abs(v) < 1 else f"{v:,.2f}"
 
 
@@ -210,9 +214,9 @@ def _when(t: float | None) -> str:
 
 CHART_NAMES = {"offset": "Clock offset from the leader", "phc": "PHC offset from system clock", "trim": "Trim",
                "latency": "Receive latency", "late": "Late packets", "console": "Device clocks",
-               "rtt": "Link round trip", "jitter": "Link jitter", "loss": "Link packet loss"}
-CHRONY_NAMES = {"rms_offset_ns": ("chrony RMS offset", "ns"), "skew_ppm": ("chrony skew", "ppm"),
-                "frequency_ppm": ("chrony frequency", "ppm"), "system_offset_ns": ("chrony offset", "ns"),
+               "rtt": "Ping round trip", "jitter": "Ping jitter", "loss": "Ping packet loss"}
+CLOCK_NAMES = {"rms_offset_ns": ("Clock RMS offset", "ns"), "skew_ppm": ("Clock skew", "ppm"),
+               "frequency_ppm": ("Clock frequency", "ppm"), "system_offset_ns": ("Clock offset", "ns"),
                 "phc_offset_ns": ("PHC offset (phc2sys)", "ns")}
 COLUMNS = ("min", "p1", "p5", "median", "mean", "p95", "p99", "max", "stdev")
 
@@ -224,7 +228,7 @@ def _row(label: str, unit: str | None, stats: dict[str, float], extra: str = "")
         cells = "".join(f'<td data-ns="{stats[c]!r}">{_number(stats[c], divisor)}</td>' for c in COLUMNS)
         unit_cell = f'<td class=unit><button type=button title="Change the unit">{unit_name}</button></td>'
     else:
-        cells = "".join(f"<td>{_number(stats[c], divisor)}</td>" for c in COLUMNS)
+        cells = "".join(f"<td>{_number(stats[c], divisor, unit)}</td>" for c in COLUMNS)
         unit_cell = f"<td class=unit>{html.escape(unit_name)}</td>"
     return (f"<tr><th>{html.escape(label)}</th>{unit_cell}{cells}"
             f"<td>{stats['count']:,}</td><td>{html.escape(extra)}</td></tr>")
@@ -238,11 +242,13 @@ def render(summaries: list[dict[str, Any]]) -> str:
         rows = []
         for chart in CHART_NAMES:
             for m in (m for m in s["measurements"] if m["chart"] == chart):
-                extra = f"total {m['total']:,.0f}" if "total" in m else ""
+                extra = (f"total {m['total']:,.0f}" if "total" in m
+                         else f"lost {m['lost']:,} of {m['count']:,}" if "lost" in m else "")
                 rows.append(_row(f"{CHART_NAMES[chart]}: {m['label']}", m["unit"], m, extra))
-        for field, (label, unit) in CHRONY_NAMES.items():
-            if s["chrony"].get(field):
-                rows.append(_row(label, unit, s["chrony"][field]))
+        clock = s.get("clock") or s.get("chrony") or {}  # "chrony" in summaries made before it was renamed
+        for field, (label, unit) in CLOCK_NAMES.items():
+            if clock.get(field):
+                rows.append(_row(label, unit, clock[field]))
         def late(d: dict) -> str:
             return "—" if d["late_packets"] is None else f"{d['late_packets']:,}"
 

@@ -13,9 +13,9 @@ const CHARTS = [
   { id: "latency", group: "Dante devices", title: "Receive latency", kind: "time", wide: true, unit: "ms" },
   { id: "late", group: "Dante devices", title: "Late packets", kind: "rate" },
   { id: "console", group: "Dante devices", title: "Device clocks", kind: "ppm", signed: true },
-  { id: "rtt", group: "Link", title: "Link round trip", kind: "time", unit: "ms" },
-  { id: "jitter", group: "Link", title: "Link jitter", kind: "time", unit: "us" },
-  { id: "loss", group: "Link", title: "Link packet loss", kind: "percent" },
+  { id: "rtt", group: "Link", title: "Ping round trip", kind: "time", unit: "ms" },
+  { id: "jitter", group: "Link", title: "Ping jitter", kind: "time", unit: "us" },
+  { id: "loss", group: "Link", title: "Ping packet loss", kind: "percent" },
 ];
 const WINDOWS = [[30, "30 s"], [60, "1 min"], [120, "2 min"], [300, "5 min"], [600, "10 min"]];
 // Consoles and Clock Boxes draw from separate sets, each ordered so neighbours contrast, so two consoles (or two
@@ -67,7 +67,7 @@ function formatValue(chart, value) {
   if (value === null || value === undefined || Number.isNaN(value)) return "–";
   if (kind === "time") return formatTime(chart, value);
   if (kind === "ppm") return `${value >= 0 ? "+" : ""}${value.toFixed(3)} ppm`;
-  if (kind === "percent") return `${value.toFixed(1)}%`;
+  if (kind === "percent") return `${value.toFixed(2)}%`;
   return `${value.toFixed(value < 10 ? 1 : 0)}/s`;
 }
 
