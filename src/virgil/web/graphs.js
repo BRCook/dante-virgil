@@ -299,6 +299,10 @@ function renderGraphs() {
 }
 
 async function loadGraphs() {
+  if (replaying) {
+    replayLoad();  // the replayed moment, with the window just chosen (see replay.js)
+    return;
+  }
   try {
     const reply = await fetch(`/api/v1/graphs?window=${graphWindow}`, { credentials: "same-origin", cache: "no-store" });
     graphData = await reply.json();
@@ -311,7 +315,7 @@ async function loadGraphs() {
 }
 
 loadGraphs();
-setInterval(loadGraphs, 2000);
+setInterval(() => { if (!replaying) loadGraphs(); }, 2000);  // a replay fetches its own, as it moves
 document.getElementById("units").addEventListener("change", () => renderGraphs());
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderGraphs());
 window.addEventListener("resize", () => renderGraphs());

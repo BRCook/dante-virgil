@@ -507,3 +507,14 @@ def test_status_says_what_time_it_is_by_this_virgils_clock(virgil):
             return (await reply.json())["now"]
 
     assert abs(run(virgil, scenario) - time.time()) < 5
+
+
+def test_the_page_loads_its_replay_script(virgil):
+    async def scenario(daemon, session, base):
+        async with session.get(f"{base}/") as reply:
+            page = await reply.text()
+        async with session.get(f"{base}/static/replay.js") as reply:
+            return page, reply.status, await reply.text()
+
+    page, served, script = run(virgil, scenario)
+    assert '<script src="/static/replay.js" defer></script>' in page and served == 200 and "function startReplay" in script

@@ -8,6 +8,7 @@ const REFRESH_MS = 2000;
 const QUIET_AFTER = 5;
 let status = null;
 let session = { logged_in: false, password_set: false };
+let replaying = null;  // a saved log being replayed (see replay.js): the page shows its moment, not live
 let lastInvite = null;
 // What's been typed into each text field, so a refresh never throws it away.
 const drafts = {};
@@ -118,9 +119,13 @@ async function act(path, body, done) {
 // The parts of the page
 
 function renderAccount() {
-  const shown = `${session.password_set}/${session.logged_in}`;
+  const shown = `${session.password_set}/${session.logged_in}/${Boolean(replaying)}`;
   if (shown === accountShown) return;  // Don't rebuild the login form on every refresh.
   accountShown = shown;
+  if (replaying) {
+    // No logging in mid-replay: it would turn on controls that act on the live Virgil, beside a replayed moment.
+    return replace("account", el("span", { class: "hint" }, "Replaying a log"));
+  }
   const canChange = session.logged_in;
   if (!session.password_set) {
     return replace("account", el("span", { class: "hint" },
@@ -920,6 +925,7 @@ function renderRecording() {
       el("span", { class: "hint" }, `${megabytes(r.size)}, ${new Date(r.modified * 1000).toLocaleString([], { hour12: false })}`),
       el("a", { class: "button", href: `/api/v1/recordings/${encodeURIComponent(r.name)}`, download: "" }, "Download"),
       el("button", { onclick: () => showSummary(r.name) }, "Summary"),
+      el("button", { onclick: () => startReplay(r.name) }, "Replay"),
       el("button", { onclick: async () => {
         if (!confirm(`Delete ${r.name}?`)) return;
         if (await act("/api/v1/recordings/delete", { name: r.name }, "Deleted")) { await loadRecordings(); renderRecording(); }
@@ -1104,6 +1110,11 @@ function changed(key, data) {
   return true;
 }
 
+// Everything is drawn afresh on the next render (as when leaving a replay).
+function forgetRendered() {
+  for (const key of Object.keys(shown)) delete shown[key];
+}
+
 function selecting() {
   const selection = window.getSelection();
   return selection && !selection.isCollapsed;
@@ -1156,6 +1167,7 @@ function render() {
 }
 
 async function refresh() {
+  if (replaying) return;  // the page shows the replayed moment
   try {
     const asked = Date.now();
     const reply = await fetch("/api/v1/status", { credentials: "same-origin", cache: "no-store" });

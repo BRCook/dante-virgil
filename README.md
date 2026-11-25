@@ -113,7 +113,7 @@ Every Clock Box serves the same web UI, showing the whole group. Anyone who can 
 | **Timing chain** | Both Clock Boxes, how far apart they are, and each detected console. The **v1** and **v2** badges show which PTP version each Clock Box serves, and which each console follows. |
 | **This Virgil**  | Its clock, **Become leader**, the trim, PTPv1, **Sync time**, its interfaces, and its certificate.    |
 | **Consoles**     | Every console in the group and its settings.                                                         |
-| **Logging**      | Start, add notes, stop, download, and see a summary of every measurement.                           |
+| **Logging**      | Start, add notes, stop, download, see a summary of every measurement, and replay the session.                           |
 | **Graphs**       | The last 30 seconds to 10 minutes of everything.                                                     |
 | **Events**       | Alerts, and what the group did: joins, leaves, new leaders, the time being set, and PTPv1 switching. |
 | **Group**        | Invites, joining, and the other Clock Boxes.                                                         |

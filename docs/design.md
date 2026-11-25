@@ -554,6 +554,10 @@ The page draws the charts itself, on canvases, with windows from 30 seconds to 1
 
 Additionally, Virgil will compile the results into a summary. For every measurement type (latency, jitter, trim, etc.), the summary gives the count, minimum, maximum, mean, median, standard deviation, and the 1st, 5th, 95th and 99th percentiles, plus the total for late packets. It also gives the share of the session each Dante device spent following and synchronised; each alert with how often it opened and for how long; the group's events; and any notes. It goes into the log as `summary.html` (to read) and `summary.json` (for tools). The **Summary** button beside the log entry in the web UI will open the summary. Times in `summary.json` are all in ns. Units can be cycled in the web UI, similar to the graphs, by clicking on the unit for each row.
 
+The **Replay** button beside a saved log shows the page as it was at any moment of the session, as if it were live: each Virgil's role and clocks, the timing chain, the Dante devices, the open alerts, the events so far, and the graphs for the window ending at that moment. A timeline across the top of the page shows the whole session at a glance (each Dante device's worst-flow latency, with late packets in red, and notes, alerts and the group's events marked along the bottom); clicking or dragging along it moves through the session, and buttons step, play at 1×, 10× or 60×, or jump to a note, alert or event. Nothing can be changed while replaying. The status sections move in two-second steps, as status was logged, while the graphs are at full resolution.
+
+A long log is too big to read through on every move, so it's first prepared, once, in a separate process at the lowest priority: unpacked beside the saved logs (along with every member's log inside a group's) and indexed, so that any moment can be reached directly. Only one log is kept prepared at a time; it's removed when the log is deleted or another is replayed, and a log isn't prepared at all if that would leave the disk with less than 500 MB.
+
 ## Setting the Time
 
 A Virgil's system clock isn't independent of the Dante devices' clock. On the leader, the system clock follows the PHC, and the PHC is the PTP time every Dante device follows. Setting the time of day therefore moves the Dante devices' clock, which makes every one of them re-lock, and interrupts audio for a few seconds.
@@ -649,6 +653,7 @@ The web UI's API is on ports 443 and 8740. Reading is open to anyone who can rea
 | `POST /api/v1/group/remove`, `/leave` | Removing another member, and leaving the group. |
 | `POST /api/v1/time/sync` | Setting the group's time (see [Setting the Time](#setting-the-time)). |
 | `POST /api/v1/recording/start`, `/stop`, `/note`, `GET /api/v1/recordings[/<name>]`, `GET /api/v1/recordings/<name>/summary`, `POST /api/v1/recordings/delete` | Logging sessions. |
+| `POST /api/v1/replay`, `GET /api/v1/replay[/at]` | Replaying a saved log: preparing it, its overview, and any moment of it. |
 
 ### Group
 

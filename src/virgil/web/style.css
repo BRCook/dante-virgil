@@ -291,3 +291,14 @@ table.summary th.group { width: 1.6rem; padding: 0.3rem 0.2rem; text-align: cent
   font-weight: 500; color: var(--muted); border-right: 1px solid var(--line); }
 table.summary th.group span { writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; }
 table.summary tr.first > * { border-top: 1px solid var(--muted); }
+
+/* Replaying a saved log: a banner that stays in view, with the session's timeline. */
+.replay { position: sticky; top: 0; z-index: 20; margin: 0 auto 1rem; max-width: var(--page-width);
+  padding: 0.7rem 1rem; background: var(--panel); border: 1px solid var(--focus); border-radius: var(--radius-node);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); }
+.replay-head, .replay-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
+.replay-head .replay-name { color: var(--muted); }
+.replay-head .replay-time { font-variant-numeric: tabular-nums; font-weight: 600; margin-left: auto; }
+.replay-strip { display: block; width: 100%; height: 64px; margin: 0.6rem 0; cursor: pointer; touch-action: none;
+  border-radius: 4px; background: var(--bg); }
+.replay p.hint { margin: 0.4rem 0 0; }

@@ -61,7 +61,7 @@ from virgil.webextra import HTTP_PORT, HTTPS_PORT, NETAUDIO_PROXY_PORT, netaudio
 log = logging.getLogger("virgild")
 
 WEB_DIR = Path(__file__).parent / "web"
-STATIC_FILES = {"style.css", "app.js", "graphs.js"}
+STATIC_FILES = {"style.css", "app.js", "graphs.js", "replay.js"}
 # The page may only load its own files, and nothing may frame it.
 CONTENT_SECURITY_POLICY = (
     "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; "
