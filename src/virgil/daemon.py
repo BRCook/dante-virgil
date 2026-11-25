@@ -1374,8 +1374,7 @@ class Daemon:
             else:
                 quiet = now - (self.ptp.last_heard if self.ptp.last_heard is not None else self.ptp_watch_started)
                 if quiet >= PTP_QUIET_AFTER:
-                    warnings.append(f"No PTP has been heard on {interface} for {quiet:.0f} s. If a console is "
-                                    "connected, check the switch's multicast settings")
+                    warnings.append(f"No PTP has been heard on {interface} for {quiet:.0f} s")
         if self.slots_lost:
             warnings.append(self.slots_lost)
         server = self.ptpv1_server

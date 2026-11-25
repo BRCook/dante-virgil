@@ -835,7 +835,7 @@ def test_no_ptp_heard(tmp_path, monkeypatch):
     a = _watching(tmp_path, monkeypatch)
     assert a.ptp_warnings(now=1030.0) == []
     (warning,) = a.ptp_warnings(now=1075.0)
-    assert warning.startswith("No PTP has been heard on enp1s0 for 75 s") and "multicast" in warning
+    assert warning == "No PTP has been heard on enp1s0 for 75 s"
     a.ptp.last_heard = 1070.0
     assert a.ptp_warnings(now=1075.0) == []
 
