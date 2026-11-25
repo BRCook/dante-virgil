@@ -874,10 +874,21 @@ function elapsed(since) {
 
 // How much each Virgil taking part has written so far: this one, then its members.
 function recordingSizes(rec) {
+  if (!rec.here) return `${megabytes(rec.size || 0)} so far on this Virgil (before compression)`;
   const others = ((status.group || {}).members || []).filter((m) => m.recording && m.recording.active)
     .map((m) => `${megabytes(m.recording.size || 0)} on ${m.name}`);
   return [`${megabytes(rec.size || 0)} so far`, ...others].join(", ")
     + " (before compression)";
+}
+
+// The figures that change as logging runs (how long, how big), updated where they are. Redrawing the section for
+// them replaced its buttons every couple of seconds, so a click that straddled a redraw didn't count.
+function updateRecordingLive() {
+  const rec = status && status.recording;
+  if (!rec || !rec.active) return;
+  for (const span of document.querySelectorAll("#recording .recording-elapsed")) span.textContent = elapsed(rec.since);
+  const sizes = document.getElementById("recording-sizes");
+  if (sizes) sizes.textContent = recordingSizes(rec);
 }
 
 function renderRecording() {
@@ -897,8 +908,9 @@ function renderRecording() {
       : "Log in to start logging."));
   } else if (!rec.here) {
     parts.push(el("p", {}, el("strong", {}, `Logging since ${clockTime(rec.since)}`),
-      ` (${elapsed(rec.since)}), started from another Virgil's page. Stop it there to get the file.`));
-    parts.push(el("p", { class: "hint" }, `${megabytes(rec.size || 0)} so far on this Virgil (before compression)`));
+      " (", el("span", { class: "recording-elapsed" }, elapsed(rec.since)),
+      "), started from another Virgil's page. Stop it there to get the file."));
+    parts.push(el("p", { class: "hint", id: "recording-sizes" }, recordingSizes(rec)));
   } else {
     const note = draft("note", "input", { type: "text", "aria-label": "Note", placeholder: "What just happened?",
       maxlength: "500", disabled: !can, class: "note-field" });
@@ -909,8 +921,9 @@ function renderRecording() {
     };
     note.addEventListener("keydown", (event) => { if (event.key === "Enter") addNote(); });
     parts.push(el("p", {}, el("strong", { class: "stale" }, "● "), el("strong", {}, `Logging since ${clockTime(rec.since)}`),
-      ` (${elapsed(rec.since)})`, rec.notes ? `, ${rec.notes} ${rec.notes === 1 ? "note" : "notes"}` : ""));
-    parts.push(el("p", { class: "hint" }, recordingSizes(rec)));
+      " (", el("span", { class: "recording-elapsed" }, elapsed(rec.since)), ")",
+      rec.notes ? `, ${rec.notes} ${rec.notes === 1 ? "note" : "notes"}` : ""));
+    parts.push(el("p", { class: "hint", id: "recording-sizes" }, recordingSizes(rec)));
     parts.push(el("div", { class: "row" }, note, el("button", { disabled: !can, onclick: addNote }, "Add note")));
     parts.push(el("div", { class: "row" }, el("button", { class: "primary", disabled: !can, onclick: async () => {
       notice("Stopping, and gathering the logs…");
@@ -1162,7 +1175,10 @@ function render() {
       .map((m) => [m.id, m.dante_devices, m.device_settings, m.heard_ago <= QUIET_AFTER])];
     if (changed("consoles", [consoleSnapshot, session])) renderConsoles();
     // The recording's elapsed time ticks along, so it's redrawn with each refresh.
-    if (changed("recording", [status.recording, session, recordings, Math.floor(Date.now() / 10000)])) renderRecording();
+    // Redrawn only when its shape changes: the size grows with every reading, and is updated in place.
+    const { size, ...shape } = status.recording || {};
+    if (changed("recording", [shape, session, recordings])) renderRecording();
+    updateRecordingLive();
   }
 }
 
