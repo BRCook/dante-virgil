@@ -53,7 +53,7 @@ async function waitForReplay(name) {
 
 function exitReplay() {
   if (!replaying) return;
-  if (replayTimer) clearInterval(replayTimer);
+  if (replayTimer) clearTimeout(replayTimer);
   replayTimer = null;
   session = replaying.liveSession;
   replaying = null;
@@ -64,12 +64,15 @@ function exitReplay() {
   loadGraphs();
 }
 
-function seekReplay(t) {
+function seekReplay(t, { follow = true } = {}) {
   if (!replaying || !replaying.overview) return;
   const o = replaying.overview;
   replaying.t = Math.max(o.from, Math.min(o.to, t));
-  drawReplayStrip();
-  updateReplayTime();
+  if (follow) {
+    // Moved by hand: the cursor goes where it's put at once. (Playing, it moves with the graphs: see showMoment.)
+    drawReplayStrip();
+    updateReplayTime();
+  }
   if (replaying.busy) {
     replaying.wanted = replaying.t;  // the latest wins; fetched when the one in flight is done
   } else {
@@ -114,13 +117,17 @@ function showMoment(moment) {
   graphData = { window: moment.window, series: moment.series };
   render();
   renderGraphs();
+  replaying.shown = moment.t;
+  drawReplayStrip();
   updateReplayTime();
+  if (replaying.playing) playNext();
 }
 
 function updateReplayTime() {
   const label = document.getElementById("replay-time");
   if (!label || !replaying || !replaying.overview) return;
-  label.textContent = new Date(replaying.t * 1000).toLocaleString([], { hour12: false });
+  const t = replaying.playing && replaying.shown ? replaying.shown : replaying.t;
+  label.textContent = new Date(t * 1000).toLocaleString([], { hour12: false });
   const quiet = document.getElementById("replay-quiet");
   if (quiet) {
     quiet.textContent = (replaying.quiet || []).length
@@ -130,24 +137,39 @@ function updateReplayTime() {
   if (play) play.textContent = replaying.playing ? "Pause" : "Play";
 }
 
+// Playing: each step covers a second of real time (speed seconds of the session), and the next is only asked for
+// once this one is shown, so the cursor and the graphs can't drift apart. A step that takes longer than a second
+// to arrive slows playback down, rather than leaving the graphs behind.
 function setPlaying(playing) {
   replaying.playing = playing;
-  if (replayTimer) clearInterval(replayTimer);
-  replayTimer = playing ? setInterval(() => {
-    if (!replaying || !replaying.overview) return;
+  if (replayTimer) clearTimeout(replayTimer);
+  replayTimer = null;
+  if (playing) {
+    replaying.stepStarted = Date.now();
+    seekReplay(replaying.t + replaying.speed, { follow: false });
+  }
+  updateReplayTime();
+}
+
+function playNext() {
+  if (replayTimer) clearTimeout(replayTimer);
+  const wait = Math.max(0, 1000 - (Date.now() - (replaying.stepStarted || 0)));
+  replayTimer = setTimeout(() => {
+    replayTimer = null;
+    if (!replaying || !replaying.playing || !replaying.overview) return;
     if (replaying.t >= replaying.overview.to) {
       setPlaying(false);
       return;
     }
-    seekReplay(replaying.t + replaying.speed);
-  }, 1000) : null;
-  updateReplayTime();
+    replaying.stepStarted = Date.now();
+    seekReplay(replaying.t + replaying.speed, { follow: false });
+  }, wait);
 }
 
 // The markers: notes, alerts opening, and the group's events, to jump to.
 function replayMarkers() {
   const o = replaying.overview;
-  const notes = (o.notes || []).map((n) => ({ t: Date.parse(n.at) / 1000, kind: "note", text: `Note: ${n.text}` }));
+  const notes = (o.notes || []).map((n) => ({ t: Date.parse(n.at) / 1000, kind: "note", text: n.text }));
   const events = (o.events || []).filter((e) => e.event === "opened" || e.event === "group").map((e) => ({
     t: e.t, kind: e.event === "group" ? "group" : "alert",
     text: e.event === "group" ? `${e.virgil}: ${e.title}` : `${e.label} on ${e.device} (${e.virgil})` }));
@@ -172,22 +194,29 @@ function renderReplay() {
     el("p", { class: "hint" }, "This happens once for each log, at a low priority; a long log takes a minute or so."));
     return;
   }
-  const step = (seconds, label) => el("button", { onclick: () => seekReplay(replaying.t + seconds) }, label);
+  const byHand = (t) => {
+    if (replaying.playing) setPlaying(false);
+    seekReplay(t);
+  };
+  const step = (seconds, label) => el("button", { onclick: () => byHand(replaying.t + seconds) }, label);
   const speed = el("select", { "aria-label": "Playback speed", onchange: (event) => { replaying.speed = Number(event.target.value); } },
     ...REPLAY_SPEEDS.map((s) => el("option", { value: String(s), ...(s === replaying.speed ? { selected: "" } : {}) }, `${s}×`)));
   const markers = replayMarkers();
-  const jump = el("select", { "aria-label": "Jump to", onchange: (event) => {
-    if (event.target.value) seekReplay(Number(event.target.value));
+  const sections = [["note", "Notes"], ["alert", "Alerts"], ["group", "Group events"]]
+    .map(([kind, title]) => [title, markers.filter((m) => m.kind === kind)]).filter(([, found]) => found.length);
+  const jump = el("select", { id: "replay-jump", onchange: (event) => {
+    if (event.target.value) byHand(Number(event.target.value));
     event.target.value = "";
-  } }, el("option", { value: "" }, markers.length ? `Jump to… (${markers.length})` : "Nothing to jump to"),
-  ...markers.map((m) => el("option", { value: String(m.t) },
-    `${new Date(m.t * 1000).toLocaleTimeString([], { hour12: false })} ${m.text}`)));
+  } }, el("option", { value: "" }, markers.length ? `Choose a note, alert or event (${markers.length})` : "No notes, alerts or events"),
+  ...sections.map(([title, found]) => el("optgroup", { label: title }, ...found.map((m) => el("option", { value: String(m.t) },
+    `${new Date(m.t * 1000).toLocaleTimeString([], { hour12: false })} ${m.text}`)))));
+  if (!markers.length) jump.disabled = true;
   const strip = el("canvas", { id: "replay-strip", class: "replay-strip", "aria-label": "The session: click or drag to move through it" });
   let dragging = false;
   const seekAt = (event) => {
     const box = strip.getBoundingClientRect();
     const o = replaying.overview;
-    seekReplay(o.from + ((event.clientX - box.left) / box.width) * (o.to - o.from));
+    byHand(o.from + ((event.clientX - box.left) / box.width) * (o.to - o.from));
   };
   strip.addEventListener("pointerdown", (event) => { dragging = true; strip.setPointerCapture(event.pointerId); seekAt(event); });
   strip.addEventListener("pointermove", (event) => { if (dragging) seekAt(event); });
@@ -201,7 +230,8 @@ function renderReplay() {
     el("div", { class: "replay-controls" },
       step(-60, "−1 min"), step(-10, "−10 s"),
       el("button", { id: "replay-play", onclick: () => setPlaying(!replaying.playing) }, "Play"),
-      step(10, "+10 s"), step(60, "+1 min"), speed, jump,
+      step(10, "+10 s"), step(60, "+1 min"), speed,
+      el("label", { class: "replay-jump" }, "Jump to: ", jump),
       el("span", { id: "replay-quiet", class: "hint" })),
     el("p", { class: "hint" }, "Nothing can be changed while replaying. The strip shows each Dante device's worst-flow "
       + "latency, late packets in red, and notes, alerts and the group's events as marks along the bottom."));

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import collections
 import json
 import logging
 import os
@@ -191,9 +192,29 @@ def _read_line(path: Path, offset: float) -> dict[str, Any] | None:
         return None
 
 
-def moment(folder: Path, virgil: dict[str, Any], t: float, window: float) -> tuple[dict | None, float | None, list[dict]]:
+class RecentRecords:
+    """Logged graph windows recently read, parsed: consecutive moments (playing, or dragging along the timeline)
+    mostly share their windows, so each only needs to read what's new."""
+
+    def __init__(self, size: int = 256):
+        self.size, self.records = size, collections.OrderedDict()
+
+    def read(self, path: Path, offset: float) -> dict[str, Any] | None:
+        key = (str(path), offset)
+        if key in self.records:
+            self.records.move_to_end(key)
+            return self.records[key]
+        record = _read_line(path, offset)
+        self.records[key] = record
+        if len(self.records) > self.size:
+            self.records.popitem(last=False)
+        return record
+
+
+def moment(folder: Path, virgil: dict[str, Any], t: float, window: float,
+           read=_read_line) -> tuple[dict | None, float | None, list[dict]]:
     """One Virgil at time t: its status reading nearest before (or at) t and how old it is then, and its graphs for
-    `window` up to t."""
+    `window` up to t (read through `read`, which may remember them)."""
     status, age = None, None
     times = [x[0] for x in virgil["status"]]
     i = bisect.bisect_right(times, t) - 1
@@ -207,7 +228,7 @@ def moment(folder: Path, virgil: dict[str, Any], t: float, window: float) -> tup
     last = bisect.bisect_right(graph_times, t + GRAPH_SPAN)
     previous = virgil["graphs"][first - 1][0] if first > 0 else -float("inf")
     for record_t, offset in virgil["graphs"][first:last]:
-        record = _read_line(folder / "graphs.jsonl", offset)
+        record = read(folder / "graphs.jsonl", offset)
         since, previous = previous, record_t
         if not record:
             continue
@@ -231,6 +252,7 @@ class Replays:
         self._preparing: str | None = None
         self._failed: dict[str, str] = {}
         self._index: dict[str, Any] | None = None
+        self._recent = RecentRecords()
 
     def _folder(self, name: str) -> Path:
         return self.cache / name
@@ -259,6 +281,7 @@ class Replays:
             shutil.rmtree(self._folder(name), ignore_errors=True)
         if self._index and (name is None or self._index.get("name") == name):
             self._index = None
+        self._recent = RecentRecords()
 
     def _room_for(self, archive: Path) -> bool:
         """Whether unpacking the log would leave MIN_FREE_BYTES: its own size, or a guess for packed members' logs."""
@@ -332,7 +355,7 @@ class Replays:
         window = max(1.0, min(MAX_WINDOW, window))
         statuses, series = {}, []
         for virgil in index["virgils"]:
-            status, age, graphs = moment(self._folder(name) / virgil["folder"], virgil, t, window)
+            status, age, graphs = moment(self._folder(name) / virgil["folder"], virgil, t, window, self._recent.read)
             # How old each reading is at t: one well over the two seconds between readings means that Virgil
             # wasn't logging then (before it started, or after it stopped).
             statuses[virgil["virgil"]] = {"status": status, "age": age}

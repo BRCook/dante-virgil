@@ -156,3 +156,20 @@ def test_replay_through_the_web_api(virgil, tmp_path):
     assert state["overview"]["virgils"] == ["Box A", "Box B"]
     assert moment["statuses"]["Box B"]["status"]["state"] == "follower" and moment["window"] == 60
     assert after == {"state": "none"}  # deleting the log forgot its prepared copy
+
+
+def test_consecutive_moments_reuse_what_was_read(tmp_path, monkeypatch):
+    """Playing, or dragging, consecutive moments share most of their windows: each reads only what's new."""
+    bundle = group_log(tmp_path)
+    replay.prepare(bundle, tmp_path / "replay" / bundle.name)
+    replays = replay.Replays(tmp_path, tmp_path / "replay")
+    reads = []
+    real = replay._read_line
+    monkeypatch.setattr(replay, "_read_line", lambda path, offset: reads.append(offset) or real(path, offset))
+    replays._recent = replay.RecentRecords()  # built before the patch: it reads through the module's function
+    first = replays.at(bundle.name, START + 300, 300)
+    graph_reads = len(reads)
+    reads.clear()
+    second = replays.at(bundle.name, START + 310, 300)
+    assert len(reads) < graph_reads / 3  # status, and at most the newest window or two
+    assert first["series"] != second["series"] and second["t"] == START + 310
