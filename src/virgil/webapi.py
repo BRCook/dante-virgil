@@ -337,7 +337,48 @@ class WebApi:
                 self.daemon.recording.delete(str(name))
             except FileNotFoundError:
                 return _error(f"no recording called {name}", 404)
+            self.daemon.replays.forget(str(name))  # and its copy prepared for replay, if any
         return web.json_response({"deleted": len(names)})
+
+    async def start_replay(self, request: web.Request, body: dict) -> web.Response:
+        try:
+            archive = self.daemon.recording.path(str(body.get("name", "")))
+            archive.stat()
+        except (FileNotFoundError, ValueError):
+            return _error("no such recording", 404)
+        return web.json_response(await self.daemon.replays.prepare(archive))
+
+    def _replay_name(self, request: web.Request) -> str | web.Response:
+        if not self.logged_in(request):
+            return _error("log in to replay recordings", 401)
+        name = request.query.get("name", "")
+        try:
+            self.daemon.recording.path(name).stat()
+        except (FileNotFoundError, ValueError):
+            return _error("no such recording", 404)
+        return name
+
+    async def replay_state(self, request: web.Request) -> web.Response:
+        name = self._replay_name(request)
+        if isinstance(name, web.Response):
+            return name
+        state = self.daemon.replays.state(name)
+        if state["state"] == "ready":
+            state["overview"] = await asyncio.to_thread(self.daemon.replays.overview, name)
+        return web.json_response(state)
+
+    async def replay_at(self, request: web.Request) -> web.Response:
+        name = self._replay_name(request)
+        if isinstance(name, web.Response):
+            return name
+        try:
+            t, window = float(request.query["t"]), float(request.query.get("window", 300))
+        except (KeyError, ValueError):
+            return _error("give the moment as t (seconds since the epoch), and optionally a window", 400)
+        moment = await asyncio.to_thread(self.daemon.replays.at, name, t, window)
+        if moment is None:
+            return _error("this recording isn't prepared for replay yet", 409)
+        return web.json_response(moment)
 
     async def recording_summary(self, request: web.Request) -> web.Response:
         if not self.logged_in(request):
@@ -370,6 +411,8 @@ class WebApi:
         app.router.add_get("/api/v1/interfaces", self.interfaces)
         app.router.add_get("/api/v1/recordings", self.list_recordings)
         app.router.add_get("/api/v1/recordings/{name}/summary", self.recording_summary)
+        app.router.add_get("/api/v1/replay", self.replay_state)
+        app.router.add_get("/api/v1/replay/at", self.replay_at)
         app.router.add_get("/api/v1/recordings/{name}", self.download_recording)
         app.router.add_post("/api/v1/login", self.login)
         app.router.add_post("/api/v1/logout", self.logout)
@@ -393,5 +436,6 @@ class WebApi:
             ("/api/v1/recording/stop", self.stop_recording),
             ("/api/v1/recording/note", self.recording_note),
             ("/api/v1/recordings/delete", self.delete_recordings),
+            ("/api/v1/replay", self.start_replay),
         ):
             app.router.add_post(path, self.guarded(handler))

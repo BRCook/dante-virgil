@@ -1561,3 +1561,30 @@ def test_only_one_of_each_pair_pings(tmp_path):
     other_address = "192.168.30.15"
     pinger.addresses_for = other.addresses_for = lambda virgil_id: [other_address]
     assert pinger.ping_targets() == {other_address} and other.ping_targets() == set()
+
+
+def test_each_graph_series_thins_as_combine_for_says(tmp_path):
+    """Replay rebuilds windows from logged readings, which don't say how each series thins: graphs.combine_for does,
+    and must agree with how virgild actually records every series."""
+    from virgil.graphs import combine_for
+
+    paths, identities, configs = make_pair(tmp_path)
+    b = Daemon(paths["B"], identities["B"])
+
+    class Consoles:
+        polls = 1
+
+        def summaries(self):
+            return [{"name": "WingRack", "late_packets": 5, "latency_ns": 1_200_000, "latency_average_ns": 1_100_000,
+                     "latency_setting_ns": 3_000_000, "clock_offset_ppb": -2000, "follows_this_virgil": True}]
+
+    b.consoles = Consoles()
+    b.clock = {"system_offset_ns": 100, "phc_offset_ns": 50}
+    b.sample_graphs(1000.0)
+    b.consoles.polls += 1
+    b.sample_graphs(1002.0)
+    b.on_ping("192.168.30.101", 1_000_000.0)
+    b.on_ping("192.168.30.101", 1_100_000.0)
+    assert {k.split("/")[0] for k in b.graphs.series} >= {"latency", "average", "limit", "late", "console", "rtt", "jitter", "loss"}
+    for key, series in b.graphs.series.items():
+        assert series.combine == combine_for(key), key

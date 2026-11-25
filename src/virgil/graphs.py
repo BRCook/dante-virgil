@@ -19,6 +19,12 @@ MAX_POINTS = 300
 # value matters for latency and jitter; the average is truer for the rest.
 WORST = "worst"
 MEAN = "mean"
+# The series whose thinned points keep the worst reading rather than the average, by key prefix. The rest average.
+WORST_PREFIXES = ("latency/", "rtt/", "jitter/", "late/")
+
+
+def combine_for(key: str) -> str:
+    return WORST if key.startswith(WORST_PREFIXES) else MEAN
 
 
 @dataclass

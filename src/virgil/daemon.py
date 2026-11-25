@@ -34,6 +34,7 @@ from virgil.alerts import EVENTS_PATH, Alerts
 from virgil.events import EventLog
 from virgil.graphs import KEEP_SECONDS, WORST, Recorder, jitter
 from virgil.pinger import Pinger
+from virgil.replay import Replays
 from virgil.recording import RECORDINGS, Session, stamp_now, summary_of, summary_path
 from virgil import ptpv1 as ptpv1_module
 from virgil import timestamping
@@ -201,6 +202,7 @@ class Daemon:
     _timestamping_seen: tuple | None = field(default=None, init=False)
     # Auto-trim's history of the Dante devices' readings, and when the trim last changed (see virgil.autotrim).
     trim_readings: autotrim.ReadingHistory = field(default_factory=autotrim.ReadingHistory, init=False)
+    _replays: Replays | None = field(default=None, init=False)
     removed_notice: str | None = field(default=None, init=False)
     # Where evidence about cards' transmit timestamp slots is kept, and what was seen this session.
     timestamping_path: Path = field(default=timestamping.EVIDENCE_PATH, init=False)
@@ -405,6 +407,13 @@ class Daemon:
         self.link[link] = (rtt_ns, smoothed)
         self.graphs.add(f"rtt/{key}", "rtt", label, "ns", now, rtt_ns, WORST)
         self.graphs.add(f"jitter/{key}", "jitter", label, "ns", now, smoothed, WORST)
+
+    @property
+    def replays(self) -> Replays:
+        """The log prepared for replay, kept beside the saved logs (see virgil.replay)."""
+        if self._replays is None or self._replays.root != self.recordings_root:
+            self._replays = Replays(self.recordings_root, self.recordings_root.parent / "replay")
+        return self._replays
 
     def dante_pinger(self) -> Pinger | None:
         """A pinger for the Dante network, if this Virgil's PTP interface is separate from its management one."""
