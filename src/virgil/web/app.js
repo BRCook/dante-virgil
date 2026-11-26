@@ -168,10 +168,10 @@ function collectWarnings() {
   if (auto.paused) warnings.push({ text: `Auto-trim paused: ${auto.paused}. It resumes within 10 minutes.` });
   const na = status.netaudio;
   if (na && na.interface && ptp.interface && na.interface !== ptp.interface) {
-    warnings.push({ text: `netaudio is running on ${na.interface} until ${ptp.interface} has an address, so it can't see the consoles` });
+    warnings.push({ text: `netaudio is running on ${na.interface} until ${ptp.interface} has an address, so it can't see the Dante devices` });
   }
   if (status.netaudio && status.netaudio.running && status.netaudio.reachable === false) {
-    warnings.push({ text: "Can't reach netaudio's daemon, so consoles aren't being monitored" });
+    warnings.push({ text: "Can't reach netaudio's daemon, so Dante devices aren't being monitored" });
   }
   for (const m of (status.group || {}).members || []) {
     if (m.heard_ago === null || m.heard_ago > QUIET_AFTER) warnings.push({ text: `${m.name} isn't being heard from`, fault: true });
@@ -310,7 +310,7 @@ function renderThisVirgil() {
     const host = mgmt.includes(location.hostname) || !mgmt.length ? location.hostname : mgmt[0];
     actions.append(el("a", { class: "button", href: `https://${host}:${netaudio.ui_port}/`,
       target: "_blank", rel: "noopener noreferrer",
-      title: can ? "netaudio, on this Virgil" : "Log in first: netaudio can change the consoles' settings" },
+      title: can ? "netaudio, on this Virgil" : "Log in first: netaudio can change the Dante devices' settings" },
       "Open netaudio"));
   }
   if (status.state === "follower") {
@@ -322,7 +322,7 @@ function renderThisVirgil() {
       "Start timing"));
   } else {
     actions.append(el("button", { disabled: !can || !managing, onclick: () => {
-      if (confirm(`Stop ${status.name}'s timing services? Its console will lose its clock.`)) act("/api/v1/stop");
+      if (confirm(`Stop ${status.name}'s timing services? Its Dante devices will lose their clock.`)) act("/api/v1/stop");
     } }, "Stop timing"));
   }
   parts.push(actions);
@@ -350,7 +350,7 @@ function renderThisVirgil() {
   const last = auto.last;
   parts.push(el("p", { class: "hint" }, status.state !== "leader" ? "The trim is only used while this Virgil leads."
     : auto.paused ? `Auto-trim paused: ${auto.paused}`
-    : last ? `Last automatic change: ${ppm(last.from_ppb)} to ${ppm(last.to_ppb)}, with consoles at ${ppm(last.consoles_ppb)}`
+    : last ? `Last automatic change: ${ppm(last.from_ppb)} to ${ppm(last.to_ppb)}, with the Dante devices at ${ppm(last.consoles_ppb)}`
     : "No automatic changes yet."));
 
   parts.push(...ptpv1Section(can));
@@ -388,8 +388,8 @@ function renderConsoles() {
   const parts = [];
   if (entries.length === 0) {
     parts.push(el("p", { class: "hint" }, (status.ptp || {}).link_up === false
-      ? "Nothing is plugged into this Virgil's PTP interface, and no other Virgil has reported a console."
-      : "No consoles heard yet."));
+      ? "Nothing is plugged into this Virgil's PTP interface, and no other Virgil has reported a Dante device."
+      : "No Dante devices heard yet."));
   } else {
     parts.push(devicesTable(entries, can));
     for (const { d } of entries.filter((e) => !e.d.mac)) {
@@ -411,7 +411,7 @@ function devicesTable(entries, can) {
     const wanted = settings[d.mac] || {};
     const enforce = (setting, on) => {
       const { name, heading } = ENFORCE[setting];
-      const title = !box.reachable ? `${box.name} isn't being heard from, so its consoles can't be changed`
+      const title = !box.reachable ? `${box.name} isn't being heard from, so its Dante devices can't be changed`
         : enforceTip(name);
       return el("td", { "data-label": heading }, el("input", {
         type: "checkbox", checked: !!on, disabled: !can || !d.mac || !box.reachable, title,
@@ -547,7 +547,7 @@ function timeSection(can) {
     } }, "Cancel") : null));
   if (!armed) {
     parts.push(el("p", { class: "hint" }, "Syncs every Virgil in this group to your device's clock. This affects Virgil's PTP clock, "
-      + "so any connected consoles will need to re-lock. ", el("strong", {}, "This will interrupt audio.")));
+      + "so any connected Dante devices will need to re-lock. ", el("strong", {}, "This will interrupt audio.")));
   }
   return parts;
 }
@@ -634,7 +634,7 @@ function interfacesSection(can) {
     const row = el("div", { class: "interface-choice" }, el("label", { class: "field" }, label, select), facts);
     return { select, row };
   };
-  const ptp = choose("ptp", "PTP (faces the console)",
+  const ptp = choose("ptp", "PTP (faces the Dante devices)",
     interfaces.interfaces.filter((i) => i.ptp_capable), interfaces.ptp_interface);
   const mgmt = choose("mgmt", "Management (communicates with other Virgils)",
     interfaces.interfaces, interfaces.mgmt_interface);
@@ -642,7 +642,7 @@ function interfacesSection(can) {
     ptp.row,
     mgmt.row,
     el("p", { class: "hint" }, "Saving restarts Virgil. Changing the PTP interface resets the clock, so any "
-      + "connected consoles will re-lock. ", el("strong", {}, "This will interrupt audio.")),
+      + "connected Dante devices will re-lock. ", el("strong", {}, "This will interrupt audio.")),
     el("div", { class: "row" }, el("button", { disabled: !can,
       onclick: () => saveInterfaces(ptp.select.value, mgmt.select.value) }, "Save interfaces")));
   const probing = el("input", { type: "checkbox", checked: (status.ptp || {}).probe_timestamps !== false, disabled: !can,
@@ -657,7 +657,7 @@ function interfacesSection(can) {
 async function saveInterfaces(ptp, mgmt) {
   if (!ptp || !mgmt) return notice("Choose both interfaces first", true);
   if (interfaces && interfaces.ptp_interface && ptp !== interfaces.ptp_interface &&
-      !confirm(`Change the PTP interface to ${ptp}? This resets the clock, so any connected consoles will `
+      !confirm(`Change the PTP interface to ${ptp}? This resets the clock, so any connected Dante devices will `
         + "re-lock. This will interrupt audio.")) {
     return;
   }
@@ -821,7 +821,7 @@ function renderEvents() {
   // Alerts and the group's events, in one history, newest first (an older virgild only had alerts).
   const events = status.events || (alerts && alerts.recent) || [];
   const recovering = ((alerts && alerts.recovering) || []).map((a) => el("p", { class: "hint" },
-    `${a.device} recovered from "${a.title}"; netaudio is still confirming it. The console reports it's synchronised.`));
+    `${a.device} recovered from "${a.title}"; netaudio is still confirming it. The device reports it's synchronised.`));
   const notes = [];
   if (!alerts) notes.push(el("p", { class: "hint" }, "Alerts need netaudio running on this Virgil."));
   else if (alerts.supported === false) {
@@ -904,7 +904,7 @@ function renderRecording() {
       } }, "Start logging"),
       el("label", { class: "check" }, group, "Log the other Virgils in the group too")));
     parts.push(el("p", { class: "hint" }, can
-      ? "Logs status every 2 seconds, the graphs, each console's diagnostics, the timing services' logs and your notes. No audio is recorded."
+      ? "Logs status every 2 seconds, the graphs, each Dante device's diagnostics, the timing services' logs and your notes. No audio is recorded."
       : "Log in to start logging."));
   } else if (!rec.here) {
     parts.push(el("p", {}, el("strong", {}, `Logging since ${clockTime(rec.since)}`),
@@ -972,7 +972,7 @@ async function showSummary(name) {
 }
 
 const SUMMARY_CHARTS = { offset: "Clock offset from the leader", phc: "PHC offset from system clock", trim: "Trim",
-  latency: "Receive latency", late: "Late packets", console: "Device clocks", rtt: "Ping round trip",
+  latency: "Receive latency", late: "Late packets", console: "Frequency offset", rtt: "Ping round trip",
   jitter: "Ping jitter", loss: "Ping packet loss" };
 // Status adds what the graphs don't have. (Its offset from the leader and PHC offset are the graphs' too.)
 const SUMMARY_CLOCK = { rms_offset_ns: ["Clock RMS offset", "ns"], skew_ppm: ["Clock skew", "ppm"],
@@ -1013,7 +1013,7 @@ function summaryRow(key, label, unit, stats, extra) {
 
 // The whole group's table: sections of groups (a device, a network, a Virgil) of rows. As virgil.summary.layout does.
 const SUMMARY_ROW_NAMES = [["latency/", "Receive latency: worst flow"], ["average/", "Receive latency: average"],
-  ["late", "Late packets"], ["console", "Clock frequency"]];
+  ["late", "Late packets"], ["console", "Frequency offset"]];
 
 function summaryLayout(virgils) {
   const subject = (key) => (key.includes("/") ? key.slice(key.indexOf("/") + 1) : key);

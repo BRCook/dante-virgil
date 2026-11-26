@@ -12,7 +12,7 @@ const CHARTS = [
   { id: "trim", group: "Clocks", title: "Trim", kind: "ppm", fit: true },
   { id: "latency", group: "Dante devices", title: "Receive latency", kind: "time", wide: true, unit: "ms" },
   { id: "late", group: "Dante devices", title: "Late packets", kind: "rate" },
-  { id: "console", group: "Dante devices", title: "Device clocks", kind: "ppm", signed: true },
+  { id: "console", group: "Dante devices", title: "Frequency offset", kind: "ppm", signed: true },
   { id: "rtt", group: "Link", title: "Ping round trip", kind: "time", unit: "ms" },
   { id: "jitter", group: "Link", title: "Ping jitter", kind: "time", unit: "us" },
   { id: "loss", group: "Link", title: "Ping packet loss", kind: "percent" },

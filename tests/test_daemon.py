@@ -658,7 +658,7 @@ def test_auto_trim_pauses_when_the_consoles_dont_respond(tmp_path, caplog):
         step_at(141.0 + 140 * step)  # the consoles never move
         if a.trim_paused:
             break  # bigger steps while far out get the trim 1 ppm away sooner
-    assert a.trim_paused and "consoles only" in a.trim_paused
+    assert a.trim_paused and "Dante devices only" in a.trim_paused
     paused_at, when = a.config.trim_ppb, a.trim_paused_at
     step_at(when + 300)
     assert a.config.trim_ppb == paused_at

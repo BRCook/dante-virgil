@@ -662,7 +662,7 @@ class Daemon:
         setting, enabled = body.get("setting"), body.get("enabled")
         if mac is None or setting not in ("ptpv2", "aes67") or not isinstance(enabled, bool):
             raise web.HTTPBadRequest()
-        log.info("%s changed a console's setting from its page", self.config.group.members[sender].name)
+        log.info("%s changed a Dante device's setting from its page", self.config.group.members[sender].name)
         return web.json_response(self.set_device(mac, setting, enabled))
 
     # Setting the group's time: on the leader, its system clock and PHC; then every follower resynchronises.
@@ -681,7 +681,7 @@ class Daemon:
             return reply
         atomic_write(SETTIME_REQUEST, json.dumps({"delta": delta}).encode(), mode=0o640)
         await asyncio.to_thread((systemd or roles.Systemd()).start, SETTIME_UNIT)
-        log.warning("Moved the group's clock by %+.3f s; the consoles will re-lock", delta)
+        log.warning("Moved the group's clock by %+.3f s; the Dante devices will re-lock", delta)
         self.events.group("time", f"The group's time was set: moved by {delta:+.3f} s")
         followers = []
         for virgil_id in self._heard_members():
@@ -1387,8 +1387,8 @@ class Daemon:
                             "Use a network card with hardware timestamping")
         if interface and self.ptp_watcher is not None and self._ptp_link_up():
             if not self.ptp_addresses:
-                warnings.append(f"{interface} has no IPv4 address, so ptp4l can't send PTP to the console. "
-                                "Check DHCP on the console's network")
+                warnings.append(f"{interface} has no IPv4 address, so ptp4l can't send PTP to the Dante devices. "
+                                "Check DHCP on the Dante devices' network")
             else:
                 quiet = now - (self.ptp.last_heard if self.ptp.last_heard is not None else self.ptp_watch_started)
                 if quiet >= PTP_QUIET_AFTER:
@@ -1562,7 +1562,7 @@ class Daemon:
             if now - self.trim_paused_at >= autotrim.RESUME_AFTER:
                 self.resume_trim(f"it has been {autotrim.RESUME_AFTER / 60:.0f} minutes")
             elif frozenset(self.console_readings(now)) != self.trim_paused_consoles:
-                self.resume_trim("the consoles it steers by have changed")
+                self.resume_trim("the Dante devices it steers by have changed")
             else:
                 return
         if now - self.election.since < autotrim.INTERVAL:
@@ -1589,20 +1589,20 @@ class Daemon:
         if autotrim.unresponsive(self.trim_history):
             first_trim, first_average = self.trim_history[0]
             self.trim_paused = (
-                f"the trim moved {(self.config.trim_ppb - first_trim) / 1000:+.3f} ppm but the consoles only "
+                f"the trim moved {(self.config.trim_ppb - first_trim) / 1000:+.3f} ppm but the Dante devices only "
                 f"{(self.trim_history[-1][1] - first_average) / 1000:+.3f} ppm"
             )
             self.trim_paused_at = now
             self.trim_paused_wall = time.time()
             self.trim_paused_consoles = frozenset(self.console_readings(now))
-            log.warning("Auto-trim paused: %s. It resumes in %.0f minutes, or as soon as the consoles change",
+            log.warning("Auto-trim paused: %s. It resumes in %.0f minutes, or as soon as the Dante devices change",
                         self.trim_paused, autotrim.RESUME_AFTER / 60)
             return
         new = autotrim.next_trim(self.config.trim_ppb, offsets)
         if new is None:
             return
         old = self.config.trim_ppb
-        log.info("Auto-trim: consoles average %+.3f ppm, so the trim goes from %+.3f to %+.3f ppm",
+        log.info("Auto-trim: Dante devices average %+.3f ppm, so the trim goes from %+.3f to %+.3f ppm",
                  average / 1000, old / 1000, new / 1000)
         self.config.trim_ppb = new
         try:

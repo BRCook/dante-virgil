@@ -592,7 +592,7 @@ def _serving_line(serving: dict) -> str:
 
 
 def _versions(dante: dict) -> str | None:
-    """A console's state on each PTP version, such as "v1 bridging, v2 following"."""
+    """A Dante device's state on each PTP version, such as "v1 bridging, v2 following"."""
     parts = [f"v{n} {dante[f'v{n}']}" for n in (1, 2) if dante.get(f"v{n}")]
     return ", ".join(parts) if parts else None
 
@@ -616,7 +616,7 @@ def _describe_device(dante: dict | None, heard: dict | None, virgil: str = "this
     if dante.get("aes67") is not None:
         parts.append("AES67 " + ("on" if dante["aes67"] else "off"))
     if dante.get("clock_offset_ppb") is not None:
-        parts.append(f"clock {dante['clock_offset_ppb'] / 1000:+.3f} ppm")
+        parts.append(f"frequency offset {dante['clock_offset_ppb'] / 1000:+.3f} ppm")
     return ", ".join(parts)
 
 
@@ -724,7 +724,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  ALERT: {_alert_line(alert)}")
     for alert in (status.get("alerts") or {}).get("recovering") or []:
         print(f"  Recovering: {alert['device']}: {alert['title']} (netaudio is still confirming it; "
-              "the console reports it's synchronised)")
+              "the device reports it's synchronised)")
     for member in (status.get("group") or {}).get("members", []):
         for alert in member.get("alerts") or []:
             print(f"  ALERT from {member['name']}: {_alert_line(alert)}")
@@ -871,7 +871,7 @@ def _auto_trim_line(status: dict) -> str | None:
     if not last:
         return "Auto-trim: on, no changes yet" if status.get("state") == "leader" else None
     return (f"Auto-trim: on, last {last['from_ppb'] / 1000:+.3f} to {last['to_ppb'] / 1000:+.3f} ppm "
-            f"(consoles {last['consoles_ppb'] / 1000:+.3f} ppm), {_ago(last['at'])}")
+            f"(Dante devices {last['consoles_ppb'] / 1000:+.3f} ppm), {_ago(last['at'])}")
 
 
 def cmd_trim(args: argparse.Namespace) -> int:
@@ -888,7 +888,7 @@ def cmd_trim(args: argparse.Namespace) -> int:
             consoles += [(member["name"], d) for d in member.get("dante_devices") or []]
         for virgil, device in consoles:
             if device.get("clock_offset_ppb") is not None:
-                print(f"  {device['name']} (on {virgil}): clock {device['clock_offset_ppb'] / 1000:+.3f} ppm")
+                print(f"  {device['name']} (on {virgil}): frequency offset {device['clock_offset_ppb'] / 1000:+.3f} ppm")
         return 0
 
     config = config_file.load(args.config)

@@ -236,7 +236,7 @@ def test_status(monkeypatch, capsys):
     assert "Virgil C: not heard from, address unknown" in out
     assert "Spare (no group), at 10.10.100.9" in out
     assert "PTP grandmaster: aa:bb:cc:ff:fe:00:00:01" in out
-    assert "Wing Compact (WING) at 10.10.100.50, following this Virgil, PTPv2 on, AES67 off, clock +27.115 ppm" in out
+    assert "Wing Compact (WING) at 10.10.100.50, following this Virgil, PTPv2 on, AES67 off, frequency offset +27.115 ppm" in out
     assert "Dante device at 10.10.100.60: NOT following this Virgil" in out
     assert "WARNING: Stage box has PTPv2 off" in out
     assert "WARNING: Another PTP grandmaster" in out
@@ -400,9 +400,9 @@ def test_trim_show(config_path, monkeypatch, capsys):
     assert cli.main(["--config", str(config_path), "trim"]) == 0
     out = capsys.readouterr().out
     assert "trim +21.500 ppm, leading" in out
-    assert "Auto-trim: on, last +0.600 to +0.100 ppm (consoles +4.750 ppm)" in out
-    assert "Wing Compact (on" in out and "clock +27.115 ppm" in out
-    assert "Wing Rack (on Box B): clock -1.250 ppm" in out
+    assert "Auto-trim: on, last +0.600 to +0.100 ppm (Dante devices +4.750 ppm)" in out
+    assert "Wing Compact (on" in out and "frequency offset +27.115 ppm" in out
+    assert "Wing Rack (on Box B): frequency offset -1.250 ppm" in out
 
 
 def test_trim_set(config_path, monkeypatch, capsys):

@@ -4,7 +4,7 @@ Worked out when a session stops, from every reading in the session's folder:
 
 - graphs.jsonl: every measurement Virgil graphs, at full resolution (in overlapping
   40-second windows, de-duplicated here): offsets, the PHC, the trim, each Dante
-  device's clock correction, latency and late packets, and the link;
+  device's frequency offset, latency and late packets, and the link;
 - status.jsonl: chrony's RMS offset, skew and frequency, and each Dante device's
   state (following this Virgil, synchronised);
 - events.jsonl: alerts, and the group's events;
@@ -213,7 +213,7 @@ def _when(t: float | None) -> str:
 
 
 CHART_NAMES = {"offset": "Clock offset from the leader", "phc": "PHC offset from system clock", "trim": "Trim",
-               "latency": "Receive latency", "late": "Late packets", "console": "Device clocks",
+               "latency": "Receive latency", "late": "Late packets", "console": "Frequency offset",
                "rtt": "Ping round trip", "jitter": "Ping jitter", "loss": "Ping packet loss"}
 # Status adds what the graphs don't have. (Its offset from the leader and PHC offset are the graphs' too.)
 CLOCK_NAMES = {"rms_offset_ns": ("Clock RMS offset", "ns"), "skew_ppm": ("Clock skew", "ppm"),
@@ -229,7 +229,7 @@ def _subject(key: str) -> str:
 
 
 ROW_NAMES = {"latency/": "Receive latency: worst flow", "average/": "Receive latency: average",
-             "late": "Late packets", "console": "Clock frequency"}
+             "late": "Late packets", "console": "Frequency offset"}
 
 
 def _group_of(m: dict[str, Any], section: str) -> tuple[str, str]:

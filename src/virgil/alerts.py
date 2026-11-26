@@ -147,7 +147,7 @@ class Alerts:
         current = {i: a for i, a in fresh.items() if i not in quiet}
         for alert_id, alert in quiet.items():
             if alert_id not in self.recovering:
-                log.info("Recovering: %s: %s (the console reports it's synchronised)", alert.device, alert.title)
+                log.info("Recovering: %s: %s (the device reports it's synchronised)", alert.device, alert.title)
                 if alert_id in self.open:
                     lasted = now - self._opened_at.pop(alert_id, now)
                     self._record("recovering", alert, now, lasted)

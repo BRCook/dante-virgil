@@ -140,3 +140,10 @@ def test_one_table_for_the_group_in_sections_of_groups(tmp_path):
     page = summary.render([summary.summarise(a), summary.summarise(b)])
     assert page.count("<table>") == 3 and page.count("tr class=section") == 3  # one measurements table, then two lists
     assert page.count("<th class=group rowspan=") == 5 and "<th class=group rowspan=2><span>W (Box A)</span>" in page
+
+
+def test_a_devices_rate_correction_is_called_its_frequency_offset(tmp_path):
+    graphs = [{"t": 1100.0, "series": [{"key": "console/W", "chart": "console", "label": "W (Box A)", "unit": "ppm",
+                                        "points": [[-5.0, 2.05]]}]}]
+    sections = summary.layout([summary.summarise(write_session(tmp_path / "s", graphs=graphs))])
+    assert sections[0]["groups"][0]["rows"][0]["label"] == "Frequency offset"

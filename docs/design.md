@@ -51,11 +51,11 @@ Virgil is three programs:
 - **`virgilctl`**, the command-line tool, which can read `virgild`'s status and change its settings.
 - **`virgil-root`**, a small helper for the few jobs that need root.
 
-`virgild` runs as an unprivileged system user, `dante-virgil`. It needs exactly two capabilities, both granted by its systemd unit: `CAP_NET_RAW`, to watch PTP traffic and to serve PTPv1 (see [Watching PTP](#watching-ptp) and [Serving PTPv1](#serving-ptpv1)), and `CAP_NET_BIND_SERVICE`, to listen on ports below 1024 (80 and 443 for the web UI, 319 and 320 for PTP).
+`virgild` runs as an unprivileged system user, `dante-virgil`. It needs exactly two capabilities, both granted by its systemd unit: `CAP_NET_RAW`, to watch PTP traffic and to serve PTPv1 \[see [Watching PTP](#watching-ptp) and [Serving PTPv1](#serving-ptpv1)\], and `CAP_NET_BIND_SERVICE`, to listen on ports below 1024 (80 and 443 for the web UI, 319 and 320 for PTP).
 
 Anything that needs root — writing the timing services' configs, setting the hardware clock, editing network configuration — is done by `virgil-root`, run from one-shot systemd units. `virgild` asks for one of these jobs by writing a small request file and starting the matching unit. It's allowed to start those units (and only those units) by a polkit rule that lets the `dante-virgil` user start and stop units whose names begin with `dante-virgil-`. Before acting on a request, `virgil-root` checks it thoroughly: interface names must match a strict pattern, numbers must be in sensible ranges, and every file it reads is opened without following symlinks and with a size limit. A compromised `virgild` therefore can't use `virgil-root` to do anything beyond what Virgil normally does.
 
-The actual timekeeping is done by three standard programs: **chrony** (NTP), **ptp4l** (PTP) and **phc2sys** (which copies the system clock onto the network card's hardware clock). `virgild` configures them, starts and stops them, and watches them — but it isn't in the timing path itself. If `virgild` stops or crashes, the timing services carry on normally. As Virgil was designed for use in live productions, this "fail-safe" behaviour is essential to prevent possibly catastrophic failure of the Dante system in the event of a Virgil crash. The one exception is PTPv1, which `virgild` serves itself — but only when nothing else on its side of the link can do it instead (see [Serving PTPv1](#serving-ptpv1)).
+The actual timekeeping is done by three standard programs: **chrony** (NTP), **ptp4l** (PTP) and **phc2sys** (which copies the system clock onto the NIC's hardware clock). `virgild` configures them, starts and stops them, and watches them — but it isn't in the timing path itself. If `virgild` stops or crashes, the timing services carry on normally. As Virgil was designed for use in live productions, this "fail-safe" behaviour is essential to prevent possibly catastrophic failure of the Dante system in the event of a Virgil crash. The one exception is PTPv1, which `virgild` serves itself — but only when nothing else on its side of the link can do it instead \[see [Serving PTPv1](#serving-ptpv1)\].
 
 ### Systemd Units
 
@@ -63,20 +63,20 @@ The actual timekeeping is done by three standard programs: **chrony** (NTP), **p
 |---|---|
 | `dante-virgil` | `virgild` itself. |
 | `dante-virgil-prepare` | `virgil-root prepare`, which generates configs for chrony, ptp4l and phc2sys from `virgild`'s request, along with a plan for the steps below. |
-| `dante-virgil-sync` | `virgil-root sync`, which (on a follower) steps the system clock to the leader's, then sets the PHC from the system clock, sets the PHC's rate to the trim (see [Automatic Trim](#automatic-trim)), and saves the time to the hardware clock. |
+| `dante-virgil-sync` | `virgil-root sync`, which (on a follower) steps the system clock to the leader's, then sets the PHC from the system clock, sets the PHC's rate to the trim \[see [Automatic Trim](#automatic-trim)\], and saves the time to the hardware clock. |
 | `dante-virgil-chrony`, `dante-virgil-ptp4l`, `dante-virgil-phc2sys` | The timing services, with the generated configs. Debian's own `chrony.service` is masked, since only one chrony can run at a time. |
 | `dante-virgil-trim` | `virgil-root trim`, which changes a leader's PHC rate without restarting anything. |
-| `dante-virgil-settime` | `virgil-root settime`, which steps a leader's system clock and PHC together (see [Setting the Time](#setting-the-time)). |
-| `dante-virgil-dhcpnames` | `virgil-root dhcpnames`, which tidies the network configuration (see [Networking](#networking)). |
-| `dante-virgil-hwstamp` | `virgil-root hwstamp`, which turns hardware timestamping on when ptp4l won't be running to do it (see [Serving PTPv1 Instead of PTPv2](#serving-ptpv1-instead-of-ptpv2)). |
-| `dante-virgil-netaudio` | netaudio's daemon, which Virgil uses to talk to the Dante devices (see [Dante Devices](#dante-devices)).|
+| `dante-virgil-settime` | `virgil-root settime`, which steps a leader's system clock and PHC together \[see [Setting the Time](#setting-the-time)\]. |
+| `dante-virgil-dhcpnames` | `virgil-root dhcpnames`, which tidies the network configuration \[see [Networking](#networking)\]. |
+| `dante-virgil-hwstamp` | `virgil-root hwstamp`, which turns hardware timestamping on when ptp4l won't be running to do it \[see [Serving PTPv1 Instead of PTPv2](#serving-ptpv1-instead-of-ptpv2)\]. |
+| `dante-virgil-netaudio` | netaudio's daemon, which Virgil uses to talk to the Dante devices \[see [Dante Devices](#dante-devices)\].|
 
 ### Files
 
 | Path | Holds |
 |---|---|
-| `/etc/dante-virgil/virgil.toml` | This Virgil's configuration (see [Configuration](#configuration)). |
-| `/etc/dante-virgil/tls/` | This Virgil's identity certificate and key (see [TLS](#tls)), plus `web/` for an imported web certificate. |
+| `/etc/dante-virgil/virgil.toml` | This Virgil's configuration \[see [Configuration](#configuration)\]. |
+| `/etc/dante-virgil/tls/` | This Virgil's identity certificate and key \[see [TLS](#tls)\], plus `web/` for an imported web certificate. |
 | `/run/dante-virgil/` | Requests for `virgil-root`, the timing services' current state, and the control socket `virgilctl` uses to reach `virgild`. |
 | `/run/dante-virgil-generated/` | The configs `virgil-root prepare` generates. |
 | `/var/lib/dante-virgil/` | `events.jsonl` (the history of alerts and the group's events, which survives reboots), `recordings/` (logging sessions), `timestamping-probe.json` (each NIC's probe results) and `timestamping.json` (NICs caught losing transmit timestamps); see [Transmit Timestamp Slots](#transmit-timestamp-slots). |
@@ -89,20 +89,20 @@ The actual timekeeping is done by three standard programs: **chrony** (NTP), **p
 | 80 | A redirect to HTTPS on port 443. |
 | 443 | The web UI and its API. |
 | 8740 | The same web UI and API, but always with the identity certificate. `virgilctl`, invites and joining use this port, since they check the identity certificate. |
-| 8741 | The group API, which only accepts connections from other members (see [TLS](#tls)). |
+| 8741 | The group API, which only accepts connections from other members \[see [TLS](#tls)\]. |
 | 8742 | netaudio's own web UI, passed through behind Virgil's login (only on the management interface). |
 | 4780 | netaudio's API (on loopback only). |
 | 319, 320 | PTP. ptp4l and Virgil's PTPv1 grandmaster share these. |
 
 ## Timing
 
-The timing setup is broadly the same as  the one described in [wireless-dante](https://github.com/BRCook/wireless-dante). Virgil builds upon this design by adding elections between Clock Boxes (among other things), but the core idea — having a grandmaster on each side of the radio — is unchanged.
+The timing setup is broadly the same as the one described in [wireless-dante](https://github.com/BRCook/wireless-dante). Virgil builds upon this design by adding elections between Clock Boxes (among other things), but the core idea — having a grandmaster on each side of the radio — is unchanged.
 
 ### Leader
 
 On the leader:
 
-- The PHC (the clock on the network card) runs free, at a rate set by the trim (`phc_ctl <phc> -- freq <trim>`). This clock is the reference for the whole deployment.
+- The PHC (the clock on the NIC) runs free, at a rate set by the trim (`phc_ctl <phc> -- freq <trim>`). This clock is the reference for the whole deployment.
 - chrony uses the PHC as its reference clock (`refclock PHC`). The leader's system clock therefore follows its PHC, and chrony then serves the system time to the followers over NTP, on the management interface.
 - ptp4l serves the PHC's time to Dante devices over PTP.
 - phc2sys doesn't run at all, since the PHC is already the reference.
@@ -112,7 +112,7 @@ On the leader:
 On a follower:
 
 - chrony follows the leader over NTP, with the following filtering: `minpoll 0 maxpoll 0 xleave maxdelayquant 0.25 minsamples 64 maxsamples 64 filter 8`, with `corrtimeratio 20` and `maxslewrate 10`. In short, chrony asks the leader for the time once a second, keeps only the quicker replies (the ones least delayed by the radio and thus closest to the "true" time), merges every eight measurements into one sample by their median, and estimates the leader's rate from its last 64 samples: roughly eight minutes of data. `wireless-dante` explains each setting in detail, apart from `filter`, which Virgil added. Chrony keeps at most 64 samples, and discards older ones whenever they suggest the leader's rate has changed; each time it does, its estimate of the rate (and so the follower's clock) jumps. Merging measurements makes each sample cleaner, and lets 64 samples span eight times as long, so the estimate jumps less, at the cost of following real changes (such as the leader's crystal drifting) more slowly. How many are merged is the `chrony_filter` setting (8 by default, 1 turns merging off).
-- phc2sys copies the system clock onto the PHC. Its servo is deliberately gentle (`-P 0.03 -I 0.0005` by default) so that the PHC follows the system clock's average rate and ignores any short-term wobble. With phc2sys's defaults, every small correction chrony makes would appear on the PHC within a second or two, and a Dante device will see its grandmaster's rate jump around. No matter what, a Dante device behind a *follower* will see its grandmaster's rate wander a little — necessarily, as the follower tries to sync to the leader — but we aim to minimize such wandering. The servo's two values are settings (`phc2sys_kp` and `phc2sys_ki`): gentler values make the PHC's rate steadier, at the cost of a larger offset between the PHC and the system clock. phc2sys never steps the PHC by less than 1 ms (`-S 0.001 -F 0`).
+- phc2sys copies the system clock onto the PHC. Its servo is deliberately gentle (`-P 0.03 -I 0.0005` by default) so that the PHC follows the system clock's average rate and ignores any short-term wobble. With phc2sys's defaults, every small correction chrony makes would appear on the PHC within a second or two, and a Dante device would see its grandmaster's rate jump around. No matter what, a Dante device behind a *follower* will see its grandmaster's rate wander a little — necessarily, as the follower tries to sync to the leader — but we aim to minimize such wandering. The servo's two values are settings (`phc2sys_kp` and `phc2sys_ki`): gentler values make the PHC's rate steadier, at the cost of a larger offset between the PHC and the system clock. phc2sys never steps the PHC by less than 1 ms (`-S 0.001 -F 0`).
 - ptp4l serves the PHC's time to the Dante device over PTP.
 
 Every follower follows the leader directly, no matter how many followers there are.
@@ -150,12 +150,12 @@ A *setup from scratch* stops the timing services, sets the clocks again, and sta
 - **after any reboot**, since nothing is running yet;
 - **when `virgild` starts and finds the timing services stopped** (stopped by hand, or crashed);
 - **when timing is started again after "Stop timing"**;
-- **when the PTP interface, or its NIC profile, changes**, since a different card has a different PHC;
-- **on each follower, after "Sync time"** (see [Setting the Time](#setting-the-time)).
+- **when the PTP interface, or its NIC profile, changes**, since a different NIC has a different PHC;
+- **on each follower, after "Sync time"** \[see [Setting the Time](#setting-the-time)\].
 
 Restarting `virgild` on its own (after an update, a crash, or saving interfaces in the web UI) is *not* a setup from scratch, as long as the timing services are still running. `virgild` reads how they were set up (from a record in `/run/dante-virgil/`, which only lasts until the next boot) and carries on from there, so the Dante devices notice nothing. Changing roles, the trim and other settings is applied to the running services too.
 
-A setup from scratch stops everything, then (on a follower) steps the system clock to the leader's time with a one-off `chronyd -q`, sets the PHC from the system clock, and starts the services again. A connected Dante device sees one re-lock while this happens, since its grandmaster disappears and comes back. Before the services start again, Virgil may also probe the PTP interface's transmit timestamp slots (see [Transmit Timestamp Slots](#transmit-timestamp-slots)). Every setup ends by saving the system time to the machine's hardware clock (`hwclock --systohc`). Clock Boxes are designed to run without internet access, so on the next boot, that saved time is the best starting point they have.
+A setup from scratch stops everything, then (on a follower) steps the system clock to the leader's time with a one-off `chronyd -q`, sets the PHC from the system clock, and starts the services again. A connected Dante device sees one re-lock while this happens, since its grandmaster disappears and comes back. Before the services start again, Virgil may also probe the PTP interface's transmit timestamp slots \[see [Transmit Timestamp Slots](#transmit-timestamp-slots)\]. Every setup ends by saving the system time to the machine's hardware clock (`hwclock --systohc`). Clock Boxes are designed to run without internet access, so on the next boot, that saved time is the best starting point they have.
 
 ### Software Timestamping
 
@@ -163,9 +163,9 @@ A Virgil can use a PTP interface without hardware timestamping, but it's not a g
 
 ### Hardware Timestamps for NTP
 
-chrony's NTP measurements across the link would be more precise if the management interface timestamped them in hardware (`hwtimestamp <interface> rxfilter all`). Virgil turns this on only when three things are true: the `ntp_hwtimestamp` setting is on (as it is by default), the management interface can timestamp in hardware, and the management interface is on a different network card from the PTP interface. Different ports aren't enough, since two ports of one card can share one hardware clock, and with it the card's transmit timestamp slots (see [Transmit Timestamp Slots](#transmit-timestamp-slots)).
+chrony's NTP measurements across the link would be more precise if the management interface timestamped them in hardware (`hwtimestamp <interface> rxfilter all`). Virgil turns this on only when three things are true: the `ntp_hwtimestamp` setting is on (as it is by default), the management interface can timestamp in hardware, and the management interface is on a different NIC from the PTP interface. Different ports aren't enough, since two ports of one NIC can share one hardware clock, and with it the NIC's transmit timestamp slots \[see [Transmit Timestamp Slots](#transmit-timestamp-slots)\].
 
-Sharing is possible in principle: a card with enough slots can timestamp for two programs at once, which is how Virgil's PTPv1 grandmaster shares the PTP interface with ptp4l. But on a card with one slot, two programs would fight over it, causing some packets to be dropped. For PTPv1, the risk is worth taking where Virgil determines there are probably enough timestamp slots, since it's the only way to serve devices that need PTPv1. For NTP, it isn't worth it at all. chrony thus never timestamps on the PTP interface's card, regardless of the number of detected timestamp slots. `virgil-root` checks this rule again before writing it into chrony's configuration.
+Sharing is possible in principle: a NIC with enough slots can timestamp for two programs at once, which is how Virgil's PTPv1 grandmaster shares the PTP interface with ptp4l. But on a NIC with one slot, two programs would fight over it, causing some timestamps to be lost. For PTPv1, the risk is worth taking where Virgil determines there are probably enough timestamp slots, since it's the only way to serve devices that need PTPv1. For NTP, it isn't worth it at all. chrony thus never timestamps on the PTP interface's NIC, regardless of the number of detected timestamp slots. `virgil-root` checks this rule again before writing it into chrony's configuration.
 
 Ultimately, software timestamping for chrony is *good enough*, since the averaging we apply takes care of any jitter from the processor.
 
@@ -175,7 +175,7 @@ Exactly one Virgil in the group must be the leader. An election decides which.
 
 ### The Coin Toss
 
-Each Virgil draws a random 64-bit number (the "coin toss") when it starts, and draws a new one whenever it becomes leader. It includes this value — its "coin" — in every heartbeat (see [Heartbeats](#heartbeats)), so every Virgil knows every other Virgil's coin. When an election is needed, the highest coin wins.
+Each Virgil draws a random 64-bit number (the "coin toss") when it starts, and draws a new one whenever it becomes leader. It includes this value — its "coin" — in every heartbeat \[see [Heartbeats](#heartbeats)\], so every Virgil knows every other Virgil's coin. When an election is needed, the highest coin wins.
 
 ### Triggering an Election
 
@@ -184,11 +184,11 @@ A follower that loses the leader doesn't act immediately. It first announces in 
 ### Rules
 
 1. **The incumbent stays leader.** A Virgil that starts up and finds a leader already running follows it. This prevents a reboot or an update from disturbing the rest of the group.
-2. **If the leader is lost,** the followers that lost it (and can still see each other) choose a new leader according to the coin toss (see [The Coin Toss](#the-coin-toss)).
+2. **If the leader is lost,** the followers that lost it (and can still see each other) choose a new leader according to the coin toss \[see [The Coin Toss](#the-coin-toss)\].
 3. **If two or more leaders see each other,** only one may stay leader. To choose between them, Virgil asks whether each leader was *established* (whether it had been part of the group, hearing other members, before it started leading). An established leader always beats one that isn't. Between two established leaders, the one that wins the coin toss stays leader. Every other leader becomes a follower.
 4. **If no Virgil is leading at startup,** the Virgils that can see each other choose a leader by coin toss. 
 
-A Virgil can always be made leader upon request (see [Become Leader](#become-leader)).
+A Virgil can always be made leader upon request \[see [Become Leader](#become-leader)\].
 
 No Virgil is better suited to lead than any other.
 
@@ -198,8 +198,8 @@ No Virgil is better suited to lead than any other.
 |---|---|---|
 | `LISTEN` | Looking for the other members of the group. | `SYNC`, if a leader is already running or another listener wins the coin toss; `LEADER`, if this Virgil wins, or hears nobody before the listening timeout. |
 | `SYNC` | Setting up as a follower of the leader. | `FOLLOWER`, once set up; `LISTEN`, if the leader disappears. |
-| `FOLLOWER` | Following the leader. | `LEADER`, under rule 2 or 5. |
-| `LEADER` | Leading. | `FOLLOWER`, under rule 3 or 5. |
+| `FOLLOWER` | Following the leader. | `LEADER`, under rule 2, or when made leader \[see [Become Leader](#become-leader)\]. |
+| `LEADER` | Leading. | `FOLLOWER`, under rule 3, or when another Virgil is made leader \[see [Become Leader](#become-leader)\]. |
 | `STOPPED` | Stopped from the web UI or `virgilctl`, with the timing services off. | `LISTEN`, when started again. |
 
 ### Timings
@@ -232,7 +232,7 @@ Joining a group uses a one-time invite token:
 
 1. On any member, `virgilctl group invite` (or "Make an invite" in the web UI) creates a token. The token contains the member's addresses, its certificate's fingerprint, and a random secret. The secret works once and expires after an hour.
 2. On the new Virgil, `virgilctl group join <token>` (or "Join group" in the web UI) connects to the member over TLS. Before sending anything, it checks that the member's certificate matches the fingerprint in the token, so the token can't be used to trick the new Virgil into joining an impostor. Then it sends the secret, along with its own certificate.
-3. The member checks the secret, adds the new Virgil to its member list, and replies with the member list and every member's certificate. It then tells every other member about the newcomer (see [Syncing Group Members](#syncing-group-members)).
+3. The member checks the secret, adds the new Virgil to its member list, and replies with the member list and every member's certificate. It then tells every other member about the newcomer \[see [Syncing Group Members](#syncing-group-members)\].
 
 The web UI shows a new invite's token until the invite is used or expires, then closes it. Status lists the group's outstanding invites, and an invitation drops off that list when it's used. A join is refused if a different Virgil with the same Virgil ID is already a member (as would happen if a Clock Box's disk is cloned to make another). The first Virgil of a group creates it with `virgilctl group create`.
 
@@ -242,7 +242,7 @@ The choice to use tokens rather than a password was deliberate: Virgil, when dep
 
 Each Virgil keeps its own list of the group's members, and the group API only accepts members on that list. So every member has to agree on who's in the group, including members that were offline when someone joined or left.
 
-Every entry in the list therefore records when it last changed: a member (with its name and certificate), or a removal (with the removed Virgil's certificate fingerprint). Two lists are merged by keeping, for each Virgil, whichever entry changed most recently. A removal therefore beats the joining that came before it, and re-inviting a removed Virgil beats its removal. Clock Boxes all keep the same time (which is rather the point of them), so "most recently" is reliable here. If a member and a removal changed at exactly the same moment, the removal wins.
+Every entry in the list therefore records when it last changed: a member (with its name and certificate), or a removal (with the removed Virgil's certificate fingerprint). Two lists are merged by keeping, for each Virgil, whichever entry changed most recently. A removal therefore beats the joining that came before it, and re-inviting a removed Virgil beats its removal. Clock Boxes all keep the same time (which is rather the point of them), so "most recently" is reliable here, once a Clock Box's clock has settled; the same rules that protect the shared settings keep one that hasn't from changing the list \[see [Shared Settings](#shared-settings)\]. If a member and a removal changed at exactly the same moment, the removal wins.
 
 Changes spread in two ways:
 
@@ -255,7 +255,7 @@ Any member can change the list, just as any member can invite a newcomer.
 
 "Remove from group" in the web UI and `sudo virgilctl group remove <name>` both remove another member. The removed Virgil is told to leave the group (while it still trusts the member removing it), and then every other member is informed of the departure. If the removed Virgil was the leader, the remaining members drop it from their election straight away, and elect a new leader.
 
-A Virgil that has been removed from a group but was not online at the time of its removal will return to find no other Virgils talking to it. After a minute of no group activity, it will reach out to the other Virgils in its (former) group and ask if has been kicked out. If they reply with yes, the web UI will offer to clear Virgil's group membership and forget its former groupmates.
+A Virgil that has been removed from a group but was not online at the time of its removal will return to find no other Virgils talking to it. After a minute of no group activity, it will reach out to the other Virgils in its (former) group and ask if it has been kicked out. If they reply with yes, the web UI will offer to clear Virgil's group membership and forget its former groupmates.
 
 If the Virgil being removed is the one you are working from, "Remove from group" is replaced with "Leave group" in the web UI or `sudo virgilctl group leave`. Leaving is just like a removal, except instead of being told that it has been removed from the group, Virgil announces its departure.
 
@@ -263,18 +263,18 @@ A removed member's certificate can't be taken out of the group port's running TL
 
 ### Shared Settings
 
-Most settings describe one Clock Box and do not need to be shared, except for two, which are shard by the group:
+Most settings describe one Clock Box and do not need to be shared, except for two, which are shared by the group:
 
 - **`auto_trim`** only matters on the leader, but leadership moves! If it were on in one Clock Box and off in another, auto-trim would switch on and off whenever the lead changed hands.
 - **The web UI's password:** members already trust each other, so it makes sense to set it once for the whole group. Every Clock Box in a Virgil group will thus share the same web UI password. Note that when a Virgil leaves the group, it will keep the group password until changed by another group (or manually by you).
 
 These spread the same way as the member list: each setting records when it was last changed, heartbeats carry the changes, and a member that hears a newer change adopts it. "When" is by the clock of the Clock Box that made the change, which is a problem when a Clock Box first joins a group and hasn't yet aligned its clock. The following two rules prevent such a Clock Box from hijacking the group settings:
 1. A Clock Box joining a group will always adopt the group's settings.
-2. Only a Clock Box whose clock has settled with its group (i.e. it is a leader or a syncronised follower) can change settings.
+2. Only a Clock Box whose clock has settled with its group (i.e. it is a leader or a synchronised follower) can change settings.
 
 A change is always stamped later than the one it replaces. This prevents a group from making a change, setting their clocks back six months, and then being unable to overwrite that change (since it's now six months in the future and will always be the "newest" change). 
 
-Every change to the group settings goes into the event history (see [The Event History](#the-event-history)).
+Every change to the group settings goes into the event history \[see [The Event History](#the-event-history)\].
 
 ### TLS
 
@@ -282,7 +282,7 @@ Each Virgil generates its own self-signed certificate (EC P-256) when it's insta
 
 That certificate is the Virgil's identity. When a Virgil joins a group, every member of that group keeps a copy of the new member's certificate, and the group API (port 8741) will only accept connections presenting a group member's certificate, using mutual TLS. This is how members authenticate each other. This secures clocking groups with two layers of security: explicit, one-time invites, and TLS authentication amongst group members. 
 
-A certificate from your own CA (or a public one) can be imported for use in the web UI (see [Web Certificate](#web-certificate)). It's a second certificate, used only in the context of the web services, so a custom certificate does not change Virgil's identity within its group.
+A certificate from your own CA (or a public one) can be imported for use in the web UI \[see [Web Certificate](#web-certificate)\]. It's a second certificate, used only in the context of the web services, so a custom certificate does not change Virgil's identity within its group.
 
 ### Heartbeats
 
@@ -291,22 +291,22 @@ Every Virgil sends a heartbeat to the group once a second, through the group API
 - `id`: the Virgil's ID.
 - `name`: its display name.
 - `version`: the version of Virgil it's running.
-- `state`: its election state (see [States](#states)).
-- `coin`: its coin value (see [The Coin Toss](#the-coin-toss)).
+- `state`: its election state \[see [States](#states)\].
+- `coin`: its coin value \[see [The Coin Toss](#the-coin-toss)\].
 - `leader`: the ID of the Virgil it's following (or nothing, if it's the leader).
 - `lost_leader`: whether it has lost its leader, and is waiting for the coin to decide who takes over.
-- `handover_to`: the ID of the Virgil it's handing the lead to, while a handover is in progress (see [Become Leader](#become-leader)).
-- `observing`: whether it's only observing the election, rather than taking part (see [Configuration](#configuration)).
-- `established`: whether it had been part of the group before it started leading (see [Rules](#rules)).
+- `handover_to`: the ID of the Virgil it's handing the lead to, while a handover is in progress \[see [Become Leader](#become-leader)\].
+- `observing`: whether it's only observing the election, rather than taking part \[see [Configuration](#configuration)\].
+- `established`: whether it had been part of the group before it started leading \[see [Rules](#rules)\].
 - `ptp_identity`: the identity its ptp4l announces as grandmaster.
-- `ptp_warnings`: any warnings from watching PTP (see [Watching PTP](#watching-ptp)).
+- `ptp_warnings`: any warnings from watching PTP \[see [Watching PTP](#watching-ptp)\].
 - `dante_devices`: its local Dante devices, each with:
   - `name`, `address`, `mac` and `model`;
   - `ptpv2` and `aes67`: whether each is turned on;
   - `v1` and `v2`: what the Dante device is doing on each PTP version (following, leading, bridging, passive or off);
   - `grandmaster` and `servo`: the Dante device's PTPv2 grandmaster, and the state of its clock servo;
-  - `follows_this_virgil`: whether it's following this Virgil (see [What Each Device Sees](#what-each-device-sees));
-  - `clock_offset_ppb`: how hard it's pulling its own clock (see [Automatic Trim](#automatic-trim));
+  - `follows_this_virgil`: whether it's following this Virgil \[see [What Each Device Sees](#what-each-device-sees)\];
+  - `clock_offset_ppb`: its frequency offset, in parts per billion \[see [Automatic Trim](#automatic-trim)\];
   - `latency_ns` and `latency_average_ns`: its worst and average receive latency across its flows;
   - `latency_setting_ns`: its receive latency setting;
   - `late_packets`: its late packets, counted across all its flows;
@@ -318,13 +318,13 @@ Every Virgil sends a heartbeat to the group once a second, through the group API
   - `synchronised`: whether chrony considers itself synchronised;
   - `phc_offset_ns`, `phc_adjustment_ppm`, `phc_locked` and `phc_read_delay_ns`: phc2sys's figures for the PHC, on a follower;
   - `phc_trim_ppm`: the trim, on the leader.
-- `alerts`: its open alerts (see [Alerts](#alerts)), each with an `id`, `kind`, `severity`, `label`, `device`, `title`, `summary`, and the time it opened (`since`).
+- `alerts`: its open alerts \[see [Alerts](#alerts)\], each with an `id`, `kind`, `severity`, `label`, `device`, `title`, `summary`, and the time it opened (`since`).
 - `recording`: whether it's logging (`active`), and how much it has written so far (`size`), or nothing if it isn't logging.
 - `serving`: what it's serving:
   - `v1` and `v2`: whether it's serving each PTP version;
-  - `v1_reason`: why it is or isn't serving PTPv1 (see [Serving PTPv1](#serving-ptpv1)).
-- `members_digest`: a short digest of its member list (see [Syncing Group Members](#syncing-group-members)).
-- `shared_settings`: the settings every member shares, as well as when it was changed (see [Shared Settings](#shared-settings)).
+  - `v1_reason`: why it is or isn't serving PTPv1 \[see [Serving PTPv1](#serving-ptpv1)\].
+- `members_digest`: a short digest of its member list \[see [Syncing Group Members](#syncing-group-members)\].
+- `shared_settings`: the settings every member shares, as well as when it was changed \[see [Shared Settings](#shared-settings)\].
 - `ptp_address`: its PTP interface's address.
 - `device_settings`: its local Dante devices' enforce settings.
 
@@ -333,9 +333,9 @@ Every Virgil sends a heartbeat to the group once a second, through the group API
 Each Virgil listens to all the PTP traffic on its PTP interface. A filter in the kernel passes only PTP (UDP ports 319 and 320) up to Virgil, so it ignores audio streams (which are necessarily on the same interface). From what it hears, Virgil learns:
 
 - **Its own grandmaster identity**, from the Announce messages its own ptp4l sends. When those Announces stop, Virgil knows ptp4l has stopped serving (and gets rightfully upset).
-- **Its local Dante devices.** Anything sending PTP on the PTP interface must be local, since PTP isn't (*shouldn't be*, but that's up to you to sort out) allowed to cross the wireless link. For each device, Virgil notes whether it's sending PTPv1 Sync messages (leading PTPv1), whether those Syncs come from a boundary clock naming this Virgil as their grandmaster (bridging this Virgil's PTPv2 into PTPv1; see [Serving PTPv1](#serving-ptpv1)), whether it's sending PTPv1 Delay Requests (following this Virgil over PTPv1), and whether it's sending PTPv2 Delay Requests (following this Virgil over PTPv2).
-- **Leaks and impostors.** An Announce from another member of the group means PTP is crossing the link, which defeats the whole design, and as such Virgil will complain. An Announce from any other grandmaster gets a warning too (unless it's a local Dante device that has already been reported for making itself the grandmaster; see [Dante Devices](#dante-devices)).
-- **Silence.** If nothing but this Virgil has sent PTP on its PTP interface for 60 seconds, while the interface has a link, Virgil will alert you. This may be a problem with your networking equipment (see [Switches and PTP](#switches-and-ptp)).
+- **Its local Dante devices.** Anything sending PTP on the PTP interface must be local, since PTP isn't (*shouldn't be*, but that's up to you to sort out) allowed to cross the wireless link. For each device, Virgil notes whether it's sending PTPv1 Sync messages (leading PTPv1), whether those Syncs come from a boundary clock naming this Virgil as their grandmaster \[bridging this Virgil's PTPv2 into PTPv1; see [Serving PTPv1](#serving-ptpv1)\], whether it's sending PTPv1 Delay Requests (following this Virgil over PTPv1), and whether it's sending PTPv2 Delay Requests (following this Virgil over PTPv2).
+- **Leaks and impostors.** An Announce from another member of the group means PTP is crossing the link, which defeats the whole design, and as such Virgil will complain. An Announce from any other grandmaster gets a warning too \[unless it's a local Dante device that has already been reported for making itself the grandmaster; see [Dante Devices](#dante-devices)\].
+- **Silence.** If nothing but this Virgil has sent PTP on its PTP interface for 60 seconds, while the interface has a link, Virgil will alert you. This may be a problem with your networking equipment \[see [Switches and PTP](#switches-and-ptp)\].
 
 ## Dante Devices
 
@@ -354,7 +354,7 @@ If netaudio can't be reached, Virgil drops its readings for the Dante devices, r
 netaudio reports what each Dante device itself says about its clock: the state of each of its PTP ports (following, leading, passive or off, for each PTP version), its PTPv2 grandmaster, the state of its clock servo, and its PTPv1 grandmaster. Virgil takes each device at its word wherever it can, since the device (ostensibly) knows best:
 
 - A Dante device is "following this Virgil" if its PTPv2 grandmaster is this Virgil, or (when its PTPv2 port has gone passive) if its PTPv1 grandmaster is this Virgil.
-- A Dante device leading PTPv1 with this Virgil as its grandmaster is bridging this Virgil's PTPv2 into PTPv1 (see [Serving PTPv1](#serving-ptpv1)).
+- A Dante device leading PTPv1 with this Virgil as its grandmaster is bridging this Virgil's PTPv2 into PTPv1 \[see [Serving PTPv1](#serving-ptpv1)\].
 
 Only when those figures are missing does Virgil fall back on the Delay Requests it hears itself.
 
@@ -363,7 +363,7 @@ Virgil warns when a Dante device:
 - has PTPv2 turned off, so it can't follow this Virgil directly (it may still follow over PTPv1);
 - has PTPv2 on, but isn't following this Virgil;
 - is following another grandmaster (which Virgil names, if it's another member of the group);
-- has made itself the grandmaster, which almost always means it can't hear this Virgil's PTP (see [Switches and PTP](#switches-and-ptp));
+- has made itself the grandmaster, which almost always means it can't hear this Virgil's PTP \[see [Switches and PTP](#switches-and-ptp)\];
 - has had PTPv2 on for 20 seconds, but its servo still isn't synchronised;
 - has AES67 mode set, but is waiting for a restart before it takes effect.
 
@@ -380,7 +380,7 @@ A Dante device's settings belong to the Virgil it's plugged into, which includes
 
 ## Serving PTPv1
 
-Dante's native clock runs on PTPv1, but some (all?) Dante devices can use PTPv2. A Dante device with PTPv2 turned on acts as a bridge: it follows its Virgil over PTPv2, and leads PTPv1 for everything else on its side as a *boundary clock*, naming Virgil as the grandmaster. A Dante PTPv2 devices thus acts as a sort of translator, ingesting Virgil's PTPv2 and spitting out PTPv1 for any devices that don't speak PTPv2.
+Dante's native clock runs on PTPv1, but some (all?) Dante devices can use PTPv2. A Dante device with PTPv2 turned on acts as a bridge: it follows its Virgil over PTPv2, and leads PTPv1 for everything else on its side as a *boundary clock*, naming Virgil as the grandmaster. A Dante device with PTPv2 on thus acts as a sort of translator, ingesting Virgil's PTPv2 and spitting out PTPv1 for any devices that don't speak PTPv2.
 
 That said, it's possible that *no* available Dante devices speak PTPv2, so Virgil can serve PTPv1 when necessary.
 
@@ -390,30 +390,30 @@ Serving PTPv1 meant writing a PTPv1 grandmaster, because there isn't a maintaine
 
 Virgil's PTPv1 grandmaster uses the subdomain `_DFLT` (as Dante does) and announces the flags `PTP_EXT_SYNC` (synchronised to an external reference), preferred, and stratum 1. Together, those make Dante devices choose Virgil as their PTPv1 leader (rather than the typical Dante behaviour of electing a leader amongst themselves).
 
-The PTPv1 grandmaster runs inside `virgild` (the only instance where `virgild` is in the timing path) and shares ports 319 and 320 with ptp4l. It uses the network card's hardware timestamps, which are in PHC time — the same clock ptp4l serves over PTPv2 — so Virgil's PTPv1 and PTPv2 agree exactly. ptp4l has already set the network card up to timestamp every packet, so the grandmaster only has to ask to be given those timestamps, and never changes the card's settings. If a card gives no hardware timestamps, the grandmaster falls back on the kernel's software timestamps, and Virgil will display an alert.
+The PTPv1 grandmaster runs inside `virgild` (the only instance where `virgild` is in the timing path) and shares ports 319 and 320 with ptp4l. It uses the NIC's hardware timestamps, which are in PHC time — the same clock ptp4l serves over PTPv2 — so Virgil's PTPv1 and PTPv2 agree exactly. ptp4l has already set the NIC up to timestamp every packet, so the grandmaster only has to ask to be given those timestamps, and never changes the NIC's settings. If a NIC gives no hardware timestamps, the grandmaster falls back on the kernel's software timestamps, and Virgil will display an alert.
 
-Sharing the card's timestamps isn't entirely free, though. When a program asks for an outgoing packet to be timestamped, the card keeps that timestamp in a *transmit timestamp slot* until the program collects it. The Intel i226 (with a recent kernel) has four slots, so ptp4l and the PTPv1 grandmaster can each have a packet waiting without getting in each other's way. Some cards have only one. On those (such as the Realtek RTL8126), a request made while the slot is full is simply ignored. If the ignored request is ptp4l's, ptp4l gives up with "timed out while polling for tx timestamp" and resets its port, which Dante devices see as their grandmaster disappearing. So, on a card with one slot, the PTPv1 grandmaster takes its transmit timestamps from the kernel instead. Timestamps for packets the card *receives* don't use the slots, however.
+Sharing the NIC's timestamps isn't entirely free, though. When a program asks for an outgoing packet to be timestamped, the NIC keeps that timestamp in a *transmit timestamp slot* until the program collects it. The Intel i226 (with a recent kernel) has four slots, so ptp4l and the PTPv1 grandmaster can each have a packet waiting without getting in each other's way. Some NICs have only one. On those (such as the Realtek RTL8126), a request made while the slot is full is simply ignored. If the ignored request is ptp4l's, ptp4l gives up with "timed out while polling for tx timestamp" and resets its port, which Dante devices see as their grandmaster disappearing. So, on a NIC with one slot, the PTPv1 grandmaster takes its transmit timestamps from the kernel instead. Timestamps for packets the NIC *receives* don't use the slots, however.
 
 ### Transmit Timestamp Slots
 
-Virgil plans around what it has *measured* about each card's transmit timestamp slots, since the card itself doesn't report how many it has. Until a card has been measured, Virgil treats it as having one slot: the PTPv1 grandmaster leaves the card's transmit timestamps to ptp4l, and takes its own from the kernel. Virgil is built around PTPv2, so this prevents PTPv1 from overruling PTPv2.
+Virgil plans around what it has *measured* about each NIC's transmit timestamp slots, since the NIC itself doesn't report how many it has. Until a NIC has been measured, Virgil treats it as having one slot: the PTPv1 grandmaster leaves the NIC's transmit timestamps to PTPv2, and takes its own from the kernel. Virgil is built around PTPv2, so this prevents PTPv1 from overruling PTPv2.
 
-Virgil measures a card by probing it, during a setup from scratch (see [Setting Up From Scratch](#setting-up-from-scratch)). At that point ptp4l is stopped and the Dante devices are re-locking anyway, so nothing depends on the card for the few seconds the probe takes. The probe sends small test frames, each asking the card for a hardware transmit timestamp, and counts how many timestamps come back:
+Virgil measures a NIC by probing it, during a setup from scratch \[see [Setting Up From Scratch](#setting-up-from-scratch)\]. At that point ptp4l is stopped and the Dante devices are re-locking anyway, so nothing depends on the NIC for the few seconds the probe takes. The probe sends small test frames, each asking the NIC for a hardware transmit timestamp, and counts how many timestamps come back:
 
-1. **Hardware timestamp capability:** one frame. If no timestamp comes back, the card doesn't support hardware timestamping.
-2. **Slots:** several sender processes, one per CPU core (up to ten), all send one frame at the same time. The number that come back is thus the number of timestamp slots (up to the number of CPU cores). Twenty such rounds are run, and the median is taken as the "true" number of slots. Since this test is limited by the number of CPU cores, if every sender gets its timestamp, all the probe can say is that the card has *at least* that many slots.
-3. **Contention:** two of the above slot processes, (standing in for ptp4l and the PTPv1 grandmaster) each sends a frame at the same instant, 50 times. A card that can't effectively share its PHC would lose a timestamp from nearly every pair; one that can share will lose none. This test decides whether sharing is possible at all.
-4. **Load,** only if the contention test passed: two senders at 100 times their real rates (ptp4l's 8 Syncs a second, and PTPv1's 4) independently hammer the PHC for one second. If any timestamps go missing, the test runs again at 50 times the real rates for two seconds, then at 10 times for five, stopping at the first that passes (no lost timestamps). A fail at 100x but a pass at 50x is likely the NIC (or the CPU) falling behind on sheer volume, rather than running out of slots. The test that passes is the card's margin. If a NIC fails the 10x test, it's not suitable for PHC sharing, and may not even be suitable for serving PTP reliably.
+1. **Hardware timestamp capability:** one frame. If no timestamp comes back, the NIC doesn't support hardware timestamping.
+2. **Slots:** several sender processes, one per CPU core (up to ten), all send one frame at the same time. The number that come back is thus the number of timestamp slots (up to the number of CPU cores). Twenty such rounds are run, and the median is taken as the "true" number of slots. Since this test is limited by the number of CPU cores, if every sender gets its timestamp, all the probe can say is that the NIC has *at least* that many slots.
+3. **Contention:** two of the above sender processes (standing in for ptp4l and the PTPv1 grandmaster) each send a frame at the same instant, 50 times. A NIC that can't effectively share its transmit timestamp slots would lose a timestamp from nearly every pair; one that can share will lose none. This test decides whether sharing is possible at all.
+4. **Load,** only if the contention test passed: two senders at 100 times their real rates (PTPv2's 8 Syncs a second, and PTPv1's 4) independently hammer the NIC for one second. If any timestamps go missing, the test runs again at 50 times the real rates for two seconds, then at 10 times for five, stopping at the first that passes (no lost timestamps). A fail at 100x but a pass at 50x is likely the NIC (or the CPU) falling behind on sheer volume, rather than running out of slots. The test that passes is the NIC's margin. If a NIC fails the 10x test, it's not suitable for sharing its transmit timestamps, and may not even be suitable for serving PTP reliably.
 
 Since all of these tests rely on putting processes on separate CPU cores, they **are not reliable** on single-core machines. 
 
-A timestamp that doesn't reach the probe isn't necessarily one the card dropped: on a busy machine (especially at boot, with few cores), a sender can give up waiting before its timestamp arrives. Each sender therefore waits up to 200 ms for its timestamp, and reads the NIC driver's lost timestamp counters. Drivers that don't keep track of lost timestamps are judged on the losses measured by Virgil, which is more likely to yield a false negative.
+A timestamp that doesn't reach the probe isn't necessarily one the NIC dropped: on a busy machine (especially at boot, with few cores), a sender can give up waiting before its timestamp arrives. Each sender therefore waits up to 200 ms for its timestamp, and reads the NIC driver's lost timestamp counters. Drivers that don't keep track of lost timestamps are judged on the losses measured by Virgil, which is more likely to yield a false negative.
 
 The test frames are plain Ethernet frames with the EtherType reserved for local experiments (`0x88B5`), sent to an unused, locally administered address. They aren't IP or PTP, so Dante devices ignore them, and switches discard them. In the worst case, the probe takes about ten seconds.
 
-The result is saved in `/var/lib/dante-virgil/timestamping-probe.json`. Once saved, a NIC is only probed again after a driver or kernel update. The probe can be turned off with the `probe_timestamps` setting (or "Probe timestamp slots at boot" in the web UI); a card that has never been probed stays unmeasured, and is treated as having one slot. If the probe can't run for any reason, the card stays unmeasured until the next setup from scratch. The probe never stops the timing services from starting.
+The result is saved in `/var/lib/dante-virgil/timestamping-probe.json`. Once saved, a NIC is only probed again after a driver or kernel update. The probe can be turned off with the `probe_timestamps` setting (or "Probe timestamp slots at boot" in the web UI); a NIC that has never been probed stays unmeasured, and is treated as having one slot. If the probe can't run for any reason, the NIC stays unmeasured until the next setup from scratch. The probe never stops the timing services from starting.
 
-Once a card is known to have more than one slot, ptp4l and the PTPv1 grandmaster both use its transmit timestamps. Every 30 seconds, Virgil checks the driver's statistics (`ethtool -S`) for a rising count of skipped or timed-out transmit timestamps, and ptp4l's log for "timed out while polling for tx timestamp". Either one means the card couldn't keep up with both PTPv2 and PTPv1, so the PTPv1 grandmaster moves to software timestamps, and Virgil records the card in `/var/lib/dante-virgil/timestamping.json` as having one slot.
+Once a NIC is known to have more than one slot, ptp4l and the PTPv1 grandmaster both use its transmit timestamps. Every 30 seconds, Virgil checks the driver's statistics (`ethtool -S`) for a rising count of skipped or timed-out transmit timestamps, and ptp4l's log for "timed out while polling for tx timestamp". Either one means the NIC couldn't keep up with both PTPv2 and PTPv1, so the PTPv1 grandmaster moves to software timestamps, and Virgil records the NIC in `/var/lib/dante-virgil/timestamping.json` as having one slot.
 
 ### When It Serves
 
@@ -427,7 +427,7 @@ The `ptpv1` setting chooses when Virgil serves PTPv1:
   After `virgild` starts, it watches the network for 20 seconds before deciding how to use PTPv1.
 - **`always`** serves PTPv1 regardless.
 - **`off`** never serves PTPv1.
-- **`only`** serves PTPv1 *instead of* PTPv2: ptp4l doesn't run at all (see [Serving PTPv1 Instead of PTPv2](#serving-ptpv1-instead-of-ptpv2)).
+- **`only`** serves PTPv1 *instead of* PTPv2: ptp4l doesn't run at all \[see [Serving PTPv1 Instead of PTPv2](#serving-ptpv1-instead-of-ptpv2)\].
 
 Every time Virgil starts or stops serving PTPv1, every PTPv1 device on its side has to choose a new PTPv1 leader. Virgil's PTPv1 and PTPv2 serve the same clock, so the time doesn't jump, but every Dante device still has to change leaders and settle again. Virgil therefore avoids switching on a whim: under `fallback`, it re-checks every five seconds whether it should be serving PTPv1, but only switches once the answer has been "yes" or "no" for 15 seconds without a break. Virgil re-classifies a device as non-bridging after 15 seconds of silence, and then only decides to change PTPv1 modes once that state holds for another 15 seconds, so Virgil steps in after about half a minute. If the Dante device comes back before then, the pending switch is simply dropped. A change made from the web UI applies straight away, since we assume you know what you're doing.
 
@@ -435,7 +435,7 @@ Every time Virgil starts or stops serving PTPv1, every PTPv1 device on its side 
 
 Some deployments have no Dante devices that can speak PTPv2 at all. Serving PTPv2 here would be a waste of resources for Virgil — especially the precious hardware timestamp slot. The `only` setting ("Instead of PTPv2" in the web UI) turns ptp4l (and thus PTPv2) **off**, and leaves PTPv1 to serve on its own.
 
-Nothing else changes. ptp4l normally turns the card's hardware timestamping on when it starts, so without it, `virgil-root hwstamp` does that instead (run by `dante-virgil-hwstamp`, after a setup from scratch, and whenever ptp4l stops). With the NIC's transmit timestamp slots to itself, PTPv1 uses hardware timestamps. PTPv1 also serves straight away (without the usual 20 seconds of watching).
+Nothing else changes. ptp4l normally turns the NIC's hardware timestamping on when it starts, so without it, `virgil-root hwstamp` does that instead (run by `dante-virgil-hwstamp`, after a setup from scratch, and whenever ptp4l stops). With the NIC's transmit timestamp slots to itself, PTPv1 uses hardware timestamps. PTPv1 also serves straight away (without the usual 20 seconds of watching).
 
 Switching into or out of `only` mode is *make before break*. PTPv1 and PTPv2 both serve the same clock — so they already agree on the time — and thus the switch doesn't need a setup from scratch:
 
@@ -448,29 +448,29 @@ Starting or stopping ptp4l does not affect chrony or phc2sys.
 
 ### What Dante Devices Report
 
-Each Dante device reports how hard it's pulling its own clock to follow PTP, in parts per billion (netaudio's `clock_frequency_offset_parts_per_billion`). A positive figure means the device is speeding its clock up to keep pace, so the grandmaster is running faster than the device's oscillator would like.
+Each Dante device reports its *frequency offset*: how far it's adjusting its own clock's rate to follow PTP, in parts per billion (netaudio's `clock_frequency_offset_parts_per_billion`). A positive frequency offset means the device is speeding its clock up to keep pace, so the grandmaster is running faster than the device's oscillator would like.
 
-A Dante device that has to pull hard all the time has less margin for error, and is more likely to lose lock when something disturbs it. The leader can relieve them by moving its own rate (its *trim*) towards what the devices prefer. Virgil's auto-trim handles this automatically, so that the stress of an unusually fast or slow crystal falls on the Clock Box rather than the Dante devices.
+A Dante device with a large frequency offset all the time has less margin for error, and is more likely to lose lock when something disturbs it. The leader can relieve them by moving its own rate (its *trim*) towards what the devices prefer. Virgil's auto-trim handles this automatically, so that the stress of an unusually fast or slow crystal falls on the Clock Box rather than the Dante devices.
 
 ### The Rule
 
-While it leads, a Virgil records the frequency offset of every Dante device in the group every five seconds, ignoring any figure beyond ±100 ppm (which is unsalvageable). Once a minute, it considers a trim step:
+While it leads, a Virgil records the frequency offset of every Dante device in the group every five seconds, ignoring any frequency offset beyond ±100 ppm (which is unsalvageable). Once a minute, it considers a trim step:
 
 1. It averages the frequency offset of all Dante devices over the last five minutes.
 2. If the average is within ±0.2 ppm (of zero), it does nothing.
 3. Otherwise, it moves the trim 30% of the way towards cancelling the average, but by no more than 0.1 ppm in one step (or 0.3 ppm while the average is more than 1 ppm out), and never beyond ±100 ppm in total. It applies the new trim through `virgil-root trim` without restarting anything, and saves it to Virgil's configuration file to persist across reboots.
 
-Two Dante devices can't always both be satisfied. Each has its own crystal, and two crystals can differ by a few ppm, so a shared clock would never be able to accommodate both. The solution is to take the average of the whole group and try to match that; this minimizes the total offset amongst the group, even if it means individual devices might have larger offsets than if they were individually targeted.
+Two Dante devices can't always both be satisfied. Each has its own crystal, and two crystals can differ by a few ppm, so a shared clock would never be able to accommodate both. The solution is to take the average of the whole group and try to match that; this brings the group's average frequency offset to zero, even if it means individual devices have larger frequency offsets than if they were individually targeted.
 
 ### Why It's Slow
 
-These trim changes are deliberately small and slow. Each trim step on the Leader necessarily changes the rate that every follower is measuring. chrony on the followers averages its measurements over several minutes, to filter out the jitter from the link (which is ultimately why any of this works in the first place). That means a change of rate on the leader takes tens of seconds, or longer, to show up on the followers. Large or frequent steps leave the followers unsure of the rate they're following.
+These trim changes are deliberately small and slow. Each trim step on the leader necessarily changes the rate that every follower is measuring. chrony on the followers averages its measurements over several minutes, to filter out the jitter from the link (which is ultimately why any of this works in the first place). That means a change of rate on the leader takes tens of seconds, or longer, to show up on the followers. Large or frequent steps leave the followers unsure of the rate they're following.
 
-So, auto-trim is slow: it considers a step at most once a minute, and only when chrony on every follower reports an RMS offset under 20 µs (which shows the followers have caught up with the previous step). It also waits a full minute after the trimming Virgil takes the lead, to let things settle after a leadership change. From a cold start, auto trim can take up to half an hour to settle to the lowest group offset, but the system should typically be ready to pass audio within only a few minutes. Half an hour is a good warm-up target to be production-ready.
+So, auto-trim is slow: it considers a step at most once a minute, and only when chrony on every follower reports an RMS offset under 20 µs (which shows the followers have caught up with the previous step). It also waits a full minute after the trimming Virgil takes the lead, to let things settle after a leadership change. From a cold start, auto-trim can take up to half an hour to settle to the lowest group offset, but the system should typically be ready to pass audio within only a few minutes. Half an hour is a good warm-up target to be production-ready.
 
 ### When Dante Devices Don't Respond
 
-If the trim has moved by 1 ppm or more over its last 16 steps, but the Dante devices' average has moved by less than a fifth of that, then the devices aren't responding to the trim at all. This makes auto-trim effectively blind, and if left unchecked, auto-trim would keep pulling harder and harder with no change in group offset. In this case, auto-trim pauses, and Virgil will display an alert. The pause ends after 10 minutes, or as soon as Virgil detects the Dante devices are responding to trim again, whichever comes first.
+If the trim has moved by 1 ppm or more over its last 16 steps, but the Dante devices' average has moved by less than a fifth of that, then the devices aren't responding to the trim at all. This makes auto-trim effectively blind, and if left unchecked, auto-trim would keep pushing the trim further and further with no change in the devices' frequency offsets. In this case, auto-trim pauses, and Virgil will display an alert. The pause ends after 10 minutes, or as soon as Virgil detects the Dante devices are responding to trim again, whichever comes first.
 
 (A small but important detail: `phc_ctl` reads a negative number as a command-line option, so every `phc_ctl` command Virgil runs puts `--` before its arguments. Without it, any negative trim would fail.)
 
@@ -478,7 +478,7 @@ If the trim has moved by 1 ppm or more over its last 16 steps, but the Dante dev
 
 netaudio's daemon already detects audio problems on Dante devices — lost clock locks, muted audio, late packets and failed subscriptions — and reports them as *issues* (from netaudio 2.0 onwards). Every three seconds, Virgil reads the open issues for its local Dante devices.
 
-When a new issue opens, Virgil logs it as an error, shows it on every Virgil's web UI in a red banner, and includes it in its heartbeats. When the issue closes, Virgil logs how long it lasted. Every opening and closing is also written to the event history (see [The Event History](#the-event-history)). To keep the banner readable, alerts are grouped into one bar per device, with at most three bars visible at a time.
+When a new issue opens, Virgil logs it as an error, shows it on every Virgil's web UI in a red banner, and includes it in its heartbeats. When the issue closes, Virgil logs how long it lasted. Every opening and closing is also written to the event history \[see [The Event History](#the-event-history)\]. To keep the banner readable, alerts are grouped into one bar per device, with at most three bars visible at a time.
 
 ### Out-of-Date Issues
 
@@ -488,13 +488,13 @@ netaudio keeps an issue open until it sees the problem clear. If the device or f
 
 When a Dante device's clock comes back after a lost lock, netaudio keeps the issue open — summarised as "Recovering; waiting for five seconds of continuous healthy clock status" — until it has seen five healthy seconds in a row. The cause is in netaudio: its five-second count starts again whenever two healthy observations are further apart than its freshness window, so a device it observes less often than that can never complete the count.
 
-Virgil therefore shows a "Recovering" issue quietly (as a note in Events, rather than a red banner), but only while the device itself reports that it's synchronised and following its Virgil. If the devices stops reporting as synchronised, the issue becomes a full alert again immediately.
+Virgil therefore shows a "Recovering" issue quietly (as a note in Events, rather than a red banner), but only while the device itself reports that it's synchronised and following its Virgil. If the device stops reporting as synchronised, the issue becomes a full alert again immediately.
 
 ### The Event History
 
 Alerts share one history with the things the group does, so the order of events is clear: a lock lost just after a new leader took over, for example, will make it abundantly clear if there is a causal relationship. Each Virgil records what it sees:
 
-- Virgils joining, leaving, or being removed (and by whom) (see [Syncing Group Members](#syncing-group-members));
+- Virgils joining, leaving, or being removed (and by whom) \[see [Syncing Group Members](#syncing-group-members)\];
 - a new leader, whoever it is;
 - the group's time being set (on the leader) and each follower resynchronising to it;
 - PTPv1 starting or stopping, and switching into or out of PTPv1-only mode;
@@ -506,7 +506,7 @@ Everything goes into `/var/lib/dante-virgil/events.jsonl` with one event per lin
 
 ### Reading and Changing
 
-Anyone who can reach a Virgil can read its web UI. Changing anything requires the password, which is set with `sudo virgilctl password` (on any member: it's shared by the whole group; see [Shared Settings](#shared-settings)) and stored as a scrypt hash. Until a password is set, the web UI is read-only.
+Anyone who can reach a Virgil can read its web UI. Changing anything requires the password, which is set with `sudo virgilctl password` \[on any member: it's shared by the whole group; see [Shared Settings](#shared-settings)\] and stored as a scrypt hash. Until a password is set, the web UI is read-only.
 
 Logging in gives a session cookie that lasts 12 hours. The cookie is marked `Secure`, `HttpOnly` and `SameSite=Strict`. After five wrong passwords in a minute from one address, further attempts from that address are refused (even with the right password) until the minute is up. Every change also needs an `X-Virgil-Request` header, so no other page can make changes on a logged-in user's behalf. Changing the password logs everyone out.
 
@@ -529,11 +529,11 @@ Port 8740 and the group port keep using the identity certificate, since `virgilc
 Each Virgil keeps the last ten minutes of its own measurements in memory:
 
 - its clock offsets;
-- its local Dante devices' clock corrections, receive latency (the worst flow, and the average across flows, against the device's latency setting) and late packets;
+- its local Dante devices' frequency offsets, receive latency (the worst flow, and the average across flows, against the device's latency setting) and late packets;
 - the trim, while it leads; and
 - the link's round trip, jitter and packet loss, from four small pings a second between each pair of members. 
 
-Note: A round trip *should be* the same from either end, so only one member of each pair pings: the one whose Virgil ID sorts first. When a Virgil's PTP interface is separate from its management interface, it also pings each member's PTP interface. These can be told apart by the "(Dante)" and "(Mgmt)" labels. These pings do not use the network card's transmit timestamp slots.
+Note: A round trip *should be* the same from either end, so only one member of each pair pings: the one whose Virgil ID sorts first. When a Virgil's PTP interface is separate from its management interface, it also pings each member's PTP interface. These can be told apart by the "(Dante)" and "(Mgmt)" labels. These pings do not use the NIC's transmit timestamp slots.
 
 When a web UI asks for graphs, its Virgil fetches every other member's measurements through the group API, and merges them with its own. That way, a Dante device on the far side of the link is graphed in as much detail as a local one. When there are more points than fit on a chart, latency, round trip, jitter and late packets keep each stretch's worst value (so a spike is never averaged away), while the others keep the average.
 
@@ -545,11 +545,11 @@ Each line in a chart's legend shows its current value, and a summary that descri
 | Receive latency (worst flow) | Max |
 | Receive latency (average) | Median and spread |
 | Late packets | Total in the window |
-| Device clocks, trim | Range, lowest to highest |
+| Frequency offset, trim | Range, lowest to highest |
 | Ping round trip, jitter | Max |
 | Ping packet loss | Mean |
 
-The page draws the charts itself, on canvases, with windows from 30 seconds to 10 minutes. They're arranged in three labelled rows of related charts: **Clocks** (offset from the leader, PHC offset, and the trim), **Dante devices** (receive latency across the full width, then late packets and each device's clock correction), and **Link** (round trip, jitter and packet loss). A chart that measures time has its own unit, chosen by clicking the unit beside its title. Clock offsets start in the page's unit (nanoseconds, by default), receive latency and round trip in milliseconds, and jitter in microseconds.
+The page draws the charts itself, on canvases, with windows from 30 seconds to 10 minutes. They're arranged in three labelled rows of related charts: **Clocks** (offset from the leader, PHC offset, and the trim), **Dante devices** (receive latency across the full width, then late packets and each device's frequency offset), and **Link** (round trip, jitter and packet loss). A chart that measures time has its own unit, chosen by clicking the unit beside its title. Clock offsets start in the page's unit (nanoseconds, by default), receive latency and round trip in milliseconds, and jitter in microseconds.
 
 ### Logging
 
@@ -576,7 +576,7 @@ Every 30 seconds, the web UI compares its Virgil's clock with the clock of the d
 
 1. On a follower, the request is passed to the leader.
 2. On the leader, `virgil-root settime` steps the system clock by the correction, sets the PHC to match, and saves the new time to the hardware clock.
-3. The leader then tells each follower to set up its timing services from scratch (see [Setting Up From Scratch](#setting-up-from-scratch)), so the follower steps its clock straight to the leader's new time. Without this, chrony on the follower would slew towards the new time instead, which could take hours.
+3. The leader then tells each follower to set up its timing services from scratch \[see [Setting Up From Scratch](#setting-up-from-scratch)\], so the follower steps its clock straight to the leader's new time. Without this, chrony on the follower would slew towards the new time instead, which could take hours.
 
 It is **extremely important** that you understand what happens if you press the big red button. By forcibly stepping Virgil's clock this way, you will force every device following that clock to step to the new time. This **will** interrupt Dante audio.
 
@@ -584,13 +584,13 @@ It is **extremely important** that you understand what happens if you press the 
 
 ### Choosing Interfaces
 
-Any interface can be the management interface. For the PTP interface, Virgil sorts the interfaces by what the kernel reports about their timestamping: hardware timestamping or software only (which is bad; see [Software Timestamping](#software-timestamping)).
+Any interface can be the management interface. For the PTP interface, Virgil sorts the interfaces by what the kernel reports about their timestamping: hardware timestamping or software only \[which is bad; see [Software Timestamping](#software-timestamping)\].
 
-Each interface is shown with its network card's real name, such as "Intel I226-V", rather than its interface name. Virgil finds the card's PCI IDs in `/sys/class/net/<interface>/device/`, and looks them up in the PCI ID database (Debian's `pci.ids`, which the installer adds if it can). A card the database doesn't know yet is shown with its driver's name instead.
+Each interface is shown with its NIC's real name, such as "Intel I226-V", rather than its interface name. Virgil finds the NIC's PCI IDs in `/sys/class/net/<interface>/device/`, and looks them up in the PCI ID database (Debian's `pci.ids`, which the installer adds if it can). A NIC the database doesn't know yet is shown with its driver's name instead.
 
-Some network cards need different settings. When the chosen PTP interface's driver has a *profile*, Virgil explains the difference and offers to apply it:
+Some NICs need different settings. When the chosen PTP interface's driver has a *profile*, Virgil explains the difference and offers to apply it:
 
-| Driver | Network card | Status | Differences |
+| Driver | NIC | Status | Differences |
 |---|---|---|---|
 | `igc` | Intel i225 and i226 | Tested (i226) | None. |
 | `r8126` | Realtek RTL8126 | Tested | `hwstamp_ctl` must run before the PHC runs. Only one pending transmit timestamp. |
@@ -607,7 +607,7 @@ On the management interface, a self-assigned address (in `169.254.0.0/16`) only 
 
 Virgil is designed for Debian's default network setup, ifupdown with dhcpcd. At startup, and whenever the chosen interfaces change, `virgil-root dhcpnames` does three things:
 
-- **It names each DHCP lease.** It adds `hostname <hostname>-ptp` (or `-mgmt`) to each chosen interface's stanza in `/etc/network/interfaces`, marked `# Set by Virgil`, making a router's list of leases shows which address belongs to which interface. The new names take effect the next time each interface comes up.
+- **It names each DHCP lease.** It adds `hostname <hostname>-ptp` (or `-mgmt`) to each chosen interface's stanza in `/etc/network/interfaces`, marked `# Set by Virgil`, which makes a router's list of leases show which address belongs to which interface. The new names take effect the next time each interface comes up.
 - **It adds missing stanzas, when asked.** The Debian installer only configures the interface it installed through, so a Clock Box's other interface may never come up at boot. The web UI flags such an interface as "Interface not set up in OS", and choosing it offers to add a standard DHCP stanza (marked `# Added by Virgil`) and bring the interface up.
 - **It keeps the PTP interface from becoming the default route.** It adds a marked block to `/etc/dhcpcd.conf` with `nogateway` for the PTP interface, and removes any existing default route through it straight away (as long as the management interface has a default route of its own, to prevent breaking single-interface deployments \[which are a bad idea but whatever\]).
 
@@ -623,21 +623,21 @@ You could always plug the PTP interface of a Clock Box directly into a Dante dev
 
 ## Configuration
 
-Each Virgil has one configuration file, `/etc/dante-virgil/virgil.toml`. The web UI and `virgilctl` both edit it. Every setting applies only to that Virgil, except `auto_trim` and `web_password`, which are shared by the whole group (see [Shared Settings](#shared-settings)).
+Each Virgil has one configuration file, `/etc/dante-virgil/virgil.toml`. The web UI and `virgilctl` both edit it. Every setting applies only to that Virgil, except `auto_trim` and `web_password`, which are shared by the whole group \[see [Shared Settings](#shared-settings)\].
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `id` | generated at install | The Virgil ID, which identifies this Virgil within its group. |
 | `name` | the host name | The name shown in the web UI and in other Virgils' status. |
-| `ptp_interface`, `mgmt_interface` | none | The chosen interfaces (see [Choosing Interfaces](#choosing-interfaces)). |
-| `nic_profile` | none | The network card profile in use, if any. |
+| `ptp_interface`, `mgmt_interface` | none | The chosen interfaces \[see [Choosing Interfaces](#choosing-interfaces)\]. |
+| `nic_profile` | none | The NIC profile in use, if any. |
 | `trim_ppb` | 0 | The PHC's rate while this Virgil leads, in parts per billion.|
-| `auto_trim` | true | Whether to steer the trim towards the Dante devices' preferred rate while leading (see [Automatic Trim](#automatic-trim)). Shared by the group. |
-| `ntp_hwtimestamp` | true | Whether chrony may use hardware timestamps on the management interface, where it's safe (see [Hardware Timestamps for NTP](#hardware-timestamps-for-ntp)). |
-| `ptpv1` | `fallback` | When to serve PTPv1: `fallback`, `always`, `off`, or `only` (instead of PTPv2) (see [When It Serves](#when-it-serves)). |
-| `probe_timestamps` | true | Whether to probe the PTP interface's transmit timestamp slots during a setup from scratch (see [Transmit Timestamp Slots](#transmit-timestamp-slots)). |
-| `phc2sys_kp`, `phc2sys_ki` | 0.03, 0.0005 | phc2sys's servo on a follower (see [Follower](#follower)). Gentler values make the PHC's rate steadier, at the cost of a larger offset from the system clock. |
-| `chrony_filter` | 8 | How many measurements chrony on a follower merges into each sample, by their median, from 1 (none) to 16 (see [Follower](#follower)). |
+| `auto_trim` | true | Whether to steer the trim towards the Dante devices' preferred rate while leading \[see [Automatic Trim](#automatic-trim)\]. Shared by the group. |
+| `ntp_hwtimestamp` | true | Whether chrony may use hardware timestamps on the management interface, where it's safe \[see [Hardware Timestamps for NTP](#hardware-timestamps-for-ntp)\]. |
+| `ptpv1` | `fallback` | When to serve PTPv1: `fallback`, `always`, `off`, or `only` (instead of PTPv2) \[see [When It Serves](#when-it-serves)\]. |
+| `probe_timestamps` | true | Whether to probe the PTP interface's transmit timestamp slots during a setup from scratch \[see [Transmit Timestamp Slots](#transmit-timestamp-slots)\]. |
+| `phc2sys_kp`, `phc2sys_ki` | 0.03, 0.0005 | phc2sys's servo on a follower \[see [Follower](#follower)\]. Gentler values make the PHC's rate steadier, at the cost of a larger offset from the system clock. |
+| `chrony_filter` | 8 | How many measurements chrony on a follower merges into each sample, by their median, from 1 (none) to 16 \[see [Follower](#follower)\]. |
 | `observe_only` | false | Only take part in the election as an observer; roles are then set by hand with `virgilctl role`. Meant for testing. |
 | `web_password` | none | The web UI's password, as a scrypt hash. Shared by the group. |
 | `auto_trim_changed`, `web_password_changed` | 0 | When each shared setting was last changed, so the latest change wins across the group. |
@@ -663,25 +663,25 @@ The web UI's API is on ports 443 and 8740. Reading is open to anyone who can rea
 | `GET`, `POST /api/v1/interfaces` | Listing and choosing interfaces. |
 | `POST /api/v1/group/create`, `/invite`, `/join` | Creating a group, inviting a Virgil into it, and joining one. |
 | `POST /api/v1/group/remove`, `/leave` | Removing another member, and leaving the group. |
-| `POST /api/v1/time/sync` | Setting the group's time (see [Setting the Time](#setting-the-time)). |
+| `POST /api/v1/time/sync` | Setting the group's time \[see [Setting the Time](#setting-the-time)\]. |
 | `POST /api/v1/recording/start`, `/stop`, `/note`, `GET /api/v1/recordings[/<name>]`, `GET /api/v1/recordings/<name>/summary`, `POST /api/v1/recordings/delete` | Logging sessions. |
 | `POST /api/v1/replay`, `GET /api/v1/replay[/at]` | Replaying a saved log: preparing it, its overview, and any moment of it. |
 
 ### Group
 
-The group API is on port 8741, and only accepts connections from other members (see [TLS](#tls)). Its paths are `/group/v1/heartbeat`, `/members`, `/ping`, `/handover`, `/device`, `/graphs`, `/settime`, `/resync`, `/recording`, `/recordings/<name>` and `/recordings/delete`.
+The group API is on port 8741, and only accepts connections from other members \[see [TLS](#tls)\]. Its paths are `/group/v1/heartbeat`, `/members`, `/ping`, `/handover`, `/device`, `/graphs`, `/settime`, `/resync`, `/recording`, `/recordings/<name>` and `/recordings/delete`.
 
 ### virgilctl
 
 | Command | Does |
 |---|---|
-| `status`, `events` | Show the group, its Dante devices, clocks and alerts, or the recent history of alerts. |
-| `interfaces` | List the interfaces, with their network cards, timestamping and profiles. |
-| `config show`, `config set <key> <value>` | Show or change a setting. Choosing an interface offers its network card's profile, and a missing stanza, where needed. |
+| `status`, `events` | Show the group, its Dante devices, clocks and alerts, or the recent history of alerts and the group's events. |
+| `interfaces` | List the interfaces, with their NICs, timestamping and profiles. |
+| `config show`, `config set <key> <value>` | Show or change a setting. Choosing an interface offers its NIC's profile, and a missing stanza, where needed. |
 | `role lead`, `role stop`, `role show` | Make this Virgil the leader, stop it, or show its role. With `observe_only` set, `role leader` and `role follower` set the role by hand. |
 | `group create`, `invite`, `join <token>`, `show`, `remove <name>`, `leave` | Manage the group. |
 | `device <device> [ptpv2\|aes67] [on\|off]` | Show or change a local Dante device's enforce settings. |
-| `trim [ppm]` | Show the trim and each Dante device's clock correction, or set the trim. |
+| `trim [ppm]` | Show the trim and each Dante device's frequency offset, or set the trim. |
 | `password [--clear]` | Set (or clear) the web UI's password. |
 | `tls init`, `show`, `import-web`, `remove-web` | Manage certificates. |
 
@@ -708,7 +708,7 @@ Running it again from a newer copy of the repository updates Virgil, keeping its
 
 ### Packages
 
-Each release comes as a Debian package for each amd64 and arm64.
+Each release comes as a Debian package for each of amd64 and arm64.
 
 The package serves the same function as `install.sh`, with three differences:
 
@@ -729,4 +729,4 @@ Only consoles have been tested so far. Other Dante devices should be well-behave
 ## Known Limitations
 
 - **Two radio hops** haven't been tested.
-- **Dante devices other than consoles** haven't been tested yet (see [Testing](#testing)).
+- **Dante devices other than consoles** haven't been tested yet \[see [Testing](#testing)\].
