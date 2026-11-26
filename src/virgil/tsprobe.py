@@ -137,7 +137,7 @@ def probe(card: Card, clock: Callable[[], float] = time.monotonic,
             sent, got = _load(card, multiple, seconds, clock, sleep)
             after = card.dropped()
             dropped = None if before is None or after is None else after - before
-            result.losses[f"{multiple}x"] = f"{sent - got}/{sent}" + ("" if dropped is None else f" ({dropped} by the card)")
+            result.losses[f"{multiple}x"] = f"{sent - got}/{sent}" + ("" if dropped is None else f" ({dropped} by the NIC)")
             if got == sent or dropped == 0:
                 result.margin = multiple
                 break

@@ -63,6 +63,8 @@ class Config:
     ptpv1: str = "fallback"
     # Measure the PTP interface's transmit timestamp slots during a setup from scratch (see virgil.tsprobe).
     probe_timestamps: bool = True
+    # Whether to ask GitHub once a day for a newer Virgil, and say so (see virgil.updates). Nothing is installed.
+    check_updates: bool = True
     # phc2sys's servo on a follower: how firmly the PHC follows the system clock (see the design document's
     # "Follower"). Gentler values make the PHC's rate steadier, at the cost of a larger offset from the system clock.
     phc2sys_kp: float = 0.03
@@ -144,6 +146,7 @@ def from_dict(data: dict[str, Any]) -> Config:
         ntp_hwtimestamp=_expect(data, "ntp_hwtimestamp", bool, optional=True) is not False,
         ptpv1=_ptpv1_mode(data.get("ptpv1", "fallback")),
         probe_timestamps=_expect(data, "probe_timestamps", bool, optional=True) is not False,
+        check_updates=_expect(data, "check_updates", bool, optional=True) is not False,
         web_password=_expect(data, "web_password", str, optional=True),
         auto_trim_changed=_time(data, "auto_trim_changed"),
         phc2sys_kp=_servo(data, "phc2sys_kp", 0.03),
@@ -170,6 +173,7 @@ def to_dict(config: Config) -> dict[str, Any]:
     data["ntp_hwtimestamp"] = config.ntp_hwtimestamp
     data["ptpv1"] = config.ptpv1
     data["probe_timestamps"] = config.probe_timestamps
+    data["check_updates"] = config.check_updates
     data["phc2sys_kp"] = config.phc2sys_kp
     data["phc2sys_ki"] = config.phc2sys_ki
     data["chrony_filter"] = config.chrony_filter

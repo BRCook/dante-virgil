@@ -624,3 +624,8 @@ def test_shared_settings_wait_for_a_settled_clock_in_a_group(config_path, monkey
 
     monkeypatch.setattr(cli, "fetch_status", not_running)
     assert cli.main(["--config", str(config_path), "password", "--clear"]) != 0
+
+
+def test_check_updates_setting(config_path):
+    assert config_file.load(config_path).check_updates is True  # on by default
+    assert _set(config_path, "check_updates", "false") == 0 and config_file.load(config_path).check_updates is False

@@ -190,7 +190,7 @@ def probe_slots(step: dict, run: Runner = _run, card=None, path: Path | None = N
         count = f"at least {result.slots}" if result.slots == result.senders else str(result.slots)
         print(f"{interface}: {count} transmit timestamp slots ({result.senders} senders at once); "
               f"{result.pairs_lost} of {2 * tsprobe.PAIRS} timestamps lost from simultaneous pairs"
-              f"{'' if result.pairs_dropped is None else f' ({result.pairs_dropped} by the card)'}; "
+              f"{'' if result.pairs_dropped is None else f' ({result.pairs_dropped} by the NIC)'}; "
               f"load {result.losses or 'not tested'}; {'shares safely' if result.shareable else 'cannot share'} "
               f"({result.seconds} s)", flush=True)
 

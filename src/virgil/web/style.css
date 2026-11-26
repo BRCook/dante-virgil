@@ -303,3 +303,6 @@ table.summary tr.first > * { border-top: 1px solid var(--muted); }
   border-radius: 4px; background: var(--bg); }
 .replay p.hint { margin: 0.4rem 0 0; }
 .replay-jump { display: inline-flex; align-items: center; gap: 0.4rem; }
+
+/* A newer Virgil's release notes (see softwareSection in app.js). */
+.update a, .update a:visited { color: var(--focus); font-weight: 600; }

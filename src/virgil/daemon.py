@@ -29,7 +29,7 @@ from aiohttp import web
 
 from virgil import __version__
 from virgil import config as config_file
-from virgil import autotrim, clocks, discovery, ptpwatch, roles, tls
+from virgil import autotrim, clocks, discovery, ptpwatch, roles, tls, updates
 from virgil.alerts import EVENTS_PATH, Alerts
 from virgil.events import EventLog
 from virgil.graphs import KEEP_SECONDS, WORST, Recorder, jitter
@@ -203,6 +203,9 @@ class Daemon:
     # Auto-trim's history of the Dante devices' readings, and when the trim last changed (see virgil.autotrim).
     trim_readings: autotrim.ReadingHistory = field(default_factory=autotrim.ReadingHistory, init=False)
     _replays: Replays | None = field(default=None, init=False)
+    # The latest release GitHub told us of, and when we last asked (see virgil.updates).
+    update_check: dict = field(default_factory=dict, init=False)
+    _update_wake: asyncio.Event = field(default_factory=asyncio.Event, init=False)
     removed_notice: str | None = field(default=None, init=False)
     # Where evidence about cards' transmit timestamp slots is kept, and what was seen this session.
     timestamping_path: Path = field(default=timestamping.EVIDENCE_PATH, init=False)
@@ -347,8 +350,10 @@ class Daemon:
         if mtime == self.config_mtime:
             return False
         old_password, old_ptpv1 = self.config.web_password, self.config.ptpv1
-        old_shared = shared.snapshot(self.config)
+        old_shared, old_check_updates = shared.snapshot(self.config), self.config.check_updates
         self.config = config_file.load(self.config_path)
+        if self.config.check_updates and not old_check_updates:
+            self.wake_update_check()  # turned back on with virgilctl: check now, as from the web UI
         for name, entry in shared.snapshot(self.config).items():
             if entry["changed"] > old_shared[name]["changed"] and entry["value"] != old_shared[name]["value"]:
                 self.events.group("settings", f"This Virgil {shared.describe(name, entry['value'])} (with virgilctl)")
@@ -414,6 +419,35 @@ class Daemon:
         if self._replays is None or self._replays.root != self.recordings_root:
             self._replays = Replays(self.recordings_root, self.recordings_root.parent / "replay")
         return self._replays
+
+    async def check_for_updates(self) -> None:
+        """Ask GitHub for the latest release, once (see virgil.updates)."""
+        try:
+            found = await updates.fetch_latest(__version__)
+        except Exception as error:  # no internet access is normal for a Clock Box: try again tomorrow, quietly
+            self.update_check = {**self.update_check, "checked": time.time(), "error": str(error) or type(error).__name__}
+            log.info("Couldn't check for a newer Virgil: %s", self.update_check["error"])
+            return
+        self.update_check = {**found, "checked": time.time()}
+        if found["available"]:
+            log.info("Virgil %s is available (this is %s): %s", found["latest"], __version__, found["url"])
+
+    def wake_update_check(self) -> None:
+        """Check now, rather than waiting for tomorrow's check (when the setting is turned back on)."""
+        self._update_wake.set()
+
+    async def watch_updates(self, first: float = updates.FIRST_CHECK, every: float = updates.CHECK_EVERY) -> None:
+        """Once a day, while check_updates is on: is there a newer Virgil? Nothing is ever installed."""
+        wait = first
+        while True:
+            try:
+                await asyncio.wait_for(self._update_wake.wait(), wait)
+            except TimeoutError:
+                pass
+            self._update_wake.clear()
+            wait = every
+            if self.config.check_updates:
+                await self.check_for_updates()
 
     def dante_pinger(self) -> Pinger | None:
         """A pinger for the Dante network, if this Virgil's PTP interface is separate from its management one."""
@@ -1384,7 +1418,7 @@ class Daemon:
         if interface and self.ptp_timestamping(now) is Timestamping.SOFTWARE:
             # Lasting, not just when it's chosen: heartbeats carry it, so every page in the group shows it.
             warnings.append(f"{interface} only has software timestamping, which isn't stable enough for live use. "
-                            "Use a network card with hardware timestamping")
+                            "Use a NIC with hardware timestamping")
         if interface and self.ptp_watcher is not None and self._ptp_link_up():
             if not self.ptp_addresses:
                 warnings.append(f"{interface} has no IPv4 address, so ptp4l can't send PTP to the Dante devices. "
@@ -1849,6 +1883,8 @@ class Daemon:
                     "switching": self.ptpv1_switching is not None and not self.ptpv1_switching.done(),
                     "v1_followers": self.ptpv1_server.current_followers() if self.ptpv1_server else [],
                 },
+                # A newer release, if GitHub has told us of one (see virgil.updates).
+                "updates": {"enabled": self.config.check_updates, "running": __version__, **self.update_check},
                 "ptp": {
                     "interface": self.config.ptp_interface,
                     "tx_slots": self.ptp_slots().as_dict() if self.config.ptp_interface else None,
@@ -2191,7 +2227,7 @@ async def serve(daemon: Daemon, host: str) -> None:
     jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election(),
             daemon.tidy_ptp(), daemon.watch_consoles(), daemon.watch_clock(), daemon.watch_trim(),
             daemon.watch_alerts(), daemon.watch_graphs(Pinger(daemon.on_ping), daemon.dante_pinger()), daemon.watch_ptpv1(),
-            daemon.watch_membership()]
+            daemon.watch_membership(), daemon.watch_updates()]
     if daemon.timing is not None:
         jobs.append(daemon.timing.run())
     tasks = [asyncio.create_task(job) for job in jobs]

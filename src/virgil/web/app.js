@@ -355,6 +355,7 @@ function renderThisVirgil() {
 
   parts.push(...ptpv1Section(can));
   parts.push(...timeSection(can));
+  parts.push(...softwareSection(can));
   // Two columns on a wide screen: running this Virgil on the left, setting it up on the right.
   const setup = [...interfacesSection(can), ...certificateSection()];
   replace("this-virgil", el("div", { class: "this-columns" },
@@ -506,6 +507,35 @@ function spanOfTime(seconds) {
   return `${m} min ${Math.round(s % 60)} s`;
 }
 
+// This Virgil's version, a newer one if GitHub has it, and members running other versions (see virgil.updates).
+// Nothing is installed from here: updating a Clock Box is always someone's deliberate choice.
+const RELEASES = "https://github.com/BRCook/dante-virgil/releases/";
+
+function softwareSection(can) {
+  const found = status.updates || {};
+  const parts = [el("h3", {}, "Software"), el("p", {}, `Virgil ${status.version}`)];
+  if (found.available && typeof found.url === "string" && found.url.startsWith(RELEASES)) {
+    parts.push(el("p", { class: "update" }, el("strong", {}, `Virgil ${found.latest} is available. `),
+      el("a", { href: found.url, target: "_blank", rel: "noopener noreferrer" }, "Release notes")));
+  }
+  for (const member of ((status.group || {}).members || [])) {
+    if (member.version && member.version !== status.version) {
+      parts.push(el("p", { class: "hint" }, `${member.name} runs Virgil ${member.version}.`));
+    }
+  }
+  const checking = el("input", { type: "checkbox", checked: found.enabled !== false, disabled: !can,
+    onchange: (event) => act("/api/v1/check-updates", { enabled: event.target.checked },
+      event.target.checked ? "Checking for updates" : "Won't check for updates") });
+  parts.push(el("label", { class: "check", title: "Once a day, ask GitHub whether there's a newer release of Virgil, "
+    + "and say so here. Nothing is downloaded or installed." }, checking, "Check for updates daily"));
+  if (found.enabled !== false && found.checked) {
+    parts.push(el("p", { class: "hint" }, found.error
+      ? `Couldn't reach GitHub at ${clockTime(found.checked)}; it tries again daily.`
+      : `Last checked at ${clockTime(found.checked)}.`));
+  }
+  return parts;
+}
+
 function timeSection(can) {
   const parts = [el("h3", {}, "Time")];
   if (timeOffset === null) return [...parts, el("p", { class: "hint" }, "Comparing with your device…")];
@@ -602,7 +632,7 @@ function interfaceFacts(i, forPtp) {
       : slots.count === 0 ? "None (no hardware transmit timestamps)"
         : slots.short.replace(/ TX slots?/, "");
     facts.push(["TX slots", value, slots.can_share ? "" : "caution",
-      `${slots.description}. ptp4l and Virgil's PTPv1 can only both use the card's transmit timestamps if it can `
+      `${slots.description}. ptp4l and Virgil's PTPv1 can only both use the NIC's transmit timestamps if it can `
         + "hold more than one at a time."]);
   }
   if (!i.link_up) facts.push(["Link", "None", "caution"]);
@@ -649,7 +679,7 @@ function interfacesSection(can) {
     onchange: (event) => act("/api/v1/probe-timestamps", { enabled: event.target.checked },
       event.target.checked ? "Will probe timestamp slots at the next setup" : "Won't probe timestamp slots") });
   parts.push(el("label", { class: "check", title: "While ptp4l is stopped during a setup from scratch, send a few seconds "
-    + "of test frames to measure how many transmit timestamps the PTP interface's card can hold at once. Each card is "
+    + "of test frames to measure how many transmit timestamps the PTP interface's NIC can hold at once. Each NIC is "
     + "only probed once per driver and kernel." }, probing, "Probe timestamp slots at boot"));
   return parts;
 }
@@ -1163,6 +1193,7 @@ function render() {
   const typing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
   if (!typing) {
     if (changed("this", [own, session, interfaces, unit, timeOffset && Math.round(timeOffset * 2), syncArmedUntil > Date.now(),
+      ((group || {}).members || []).map((m) => m.version),
       Date.now() - syncCancelledAt < GOOD_CHOICE_FOR])) renderThisVirgil();
     // An invite this page is showing that's no longer outstanding has been used (or has expired): close it.
     if (lastInvite && group && !(group.invites || []).some((i) => i.id === lastInvite.invite_id)) {

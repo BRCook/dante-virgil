@@ -143,7 +143,7 @@ class Server:
         self.hardware_tx = hardware_tx
         if self._event is not None:
             self._event.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPING, timestamping_flags(hardware_tx))
-        log.info("PTPv1 now takes its transmit timestamps from %s", "the card" if hardware_tx else "the kernel")
+        log.info("PTPv1 now takes its transmit timestamps from %s", "the NIC" if hardware_tx else "the kernel")
 
     @property
     def running(self) -> bool:

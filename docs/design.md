@@ -636,6 +636,7 @@ Each Virgil has one configuration file, `/etc/dante-virgil/virgil.toml`. The web
 | `ntp_hwtimestamp` | true | Whether chrony may use hardware timestamps on the management interface, where it's safe \[see [Hardware Timestamps for NTP](#hardware-timestamps-for-ntp)\]. |
 | `ptpv1` | `fallback` | When to serve PTPv1: `fallback`, `always`, `off`, or `only` (instead of PTPv2) \[see [When It Serves](#when-it-serves)\]. |
 | `probe_timestamps` | true | Whether to probe the PTP interface's transmit timestamp slots during a setup from scratch \[see [Transmit Timestamp Slots](#transmit-timestamp-slots)\]. |
+| `check_updates` | true | Whether to ask GitHub once a day for a newer Virgil, and say so \[see [Checking for Updates](#checking-for-updates)\]. Nothing is installed. |
 | `phc2sys_kp`, `phc2sys_ki` | 0.03, 0.0005 | phc2sys's servo on a follower \[see [Follower](#follower)\]. Gentler values make the PHC's rate steadier, at the cost of a larger offset from the system clock. |
 | `chrony_filter` | 8 | How many measurements chrony on a follower merges into each sample, by their median, from 1 (none) to 16 \[see [Follower](#follower)\]. |
 | `observe_only` | false | Only take part in the election as an observer; roles are then set by hand with `virgilctl role`. Meant for testing. |
@@ -658,7 +659,7 @@ The web UI's API is on ports 443 and 8740. Reading is open to anyone who can rea
 | `GET /api/v1/membership?id=<Virgil ID>` | Whether a Virgil is a member of this Virgil's group, or was removed from it. |
 | `GET /api/v1/session`, `POST /api/v1/login`, `POST /api/v1/logout` | Logging in and out. |
 | `POST /api/v1/lead`, `/stop`, `/start` | Becoming leader, and stopping and starting the timing services. |
-| `POST /api/v1/trim`, `/auto-trim`, `/ptpv1`, `/probe-timestamps` | Settings. |
+| `POST /api/v1/trim`, `/auto-trim`, `/ptpv1`, `/probe-timestamps`, `/check-updates` | Settings. |
 | `POST /api/v1/device` | A Dante device's enforce settings. With `virgil` set to another member's ID, the change is passed to that member. |
 | `GET`, `POST /api/v1/interfaces` | Listing and choosing interfaces. |
 | `POST /api/v1/group/create`, `/invite`, `/join` | Creating a group, inviting a Virgil into it, and joining one. |
@@ -721,6 +722,10 @@ As with `install.sh`, installing or upgrading the package only restarts `virgild
 Installing the package over a git installation removes `install.sh`'s copies in `/usr/local` (which would otherwise take precedence), and keeps the configuration, ID and certificate.
 
 For Clock Boxes without internet access, each release also has an offline bundle.
+
+### Checking for Updates
+
+Once a day, while the `check_updates` setting is on (as it is by default), `virgild` asks GitHub for Virgil's latest release. It also checks a minute after starting, and as soon as the setting is turned back on. If a new release is available, Virgil will alert you. There is no option to download an update from within Virgil; as a critical piece of production infrastructure, Virgil should only be updated manually.
 
 ## Testing
 

@@ -270,6 +270,17 @@ class WebApi:
         self.daemon.change_ptpv1_mode(old, mode)  # someone asked: no need to wait for the usual hold
         return web.json_response({"mode": mode, **self.daemon.serving()})
 
+    async def set_check_updates(self, request: web.Request, body: dict) -> web.Response:
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            return _error("enabled must be true or false", 400)
+        turned_on = enabled and not self.daemon.config.check_updates
+        self.daemon.config.check_updates = enabled
+        self.daemon.save()
+        if turned_on:
+            self.daemon.wake_update_check()  # check now, not tomorrow
+        return web.json_response({"check_updates": enabled})
+
     async def set_probe_timestamps(self, request: web.Request, body: dict) -> web.Response:
         enabled = body.get("enabled")
         if not isinstance(enabled, bool):
@@ -434,6 +445,7 @@ class WebApi:
             ("/api/v1/group/leave", self.leave_group),
             ("/api/v1/ptpv1", self.set_ptpv1),
             ("/api/v1/probe-timestamps", self.set_probe_timestamps),
+            ("/api/v1/check-updates", self.set_check_updates),
             ("/api/v1/recording/start", self.start_recording),
             ("/api/v1/recording/stop", self.stop_recording),
             ("/api/v1/recording/note", self.recording_note),

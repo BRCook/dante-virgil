@@ -119,7 +119,7 @@ def cmd_interfaces(args: argparse.Namespace) -> int:
     if single:
         print()
         print(f"{', '.join(single)}: {slots[single[0]].describe()}. ptp4l and Virgil's PTPv1 can't both use "
-              "the card's transmit timestamps, so when both run, PTPv1 takes its transmit timestamps from the kernel.")
+              "the NIC's transmit timestamps, so when both run, PTPv1 takes its transmit timestamps from the kernel.")
 
     unknown = [i for i in interfaces if i.ptp_capable and i.profile is None]
     if unknown:
@@ -209,7 +209,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         if not low <= number <= high:
             raise CliError(f"{key} must be from {low} to {high}")
         setattr(config, key, number)
-    elif key in ("observe_only", "auto_trim", "ntp_hwtimestamp", "probe_timestamps"):
+    elif key in ("observe_only", "auto_trim", "ntp_hwtimestamp", "probe_timestamps", "check_updates"):
         if value.lower() not in ("true", "false"):
             raise CliError(f"{key} must be true or false")
         if key == "auto_trim":
@@ -710,6 +710,18 @@ def _describe(state: str | None, leader: str | None) -> str:
     return f"{state} of {leader}" if leader else state
 
 
+def _update_lines(status: dict) -> list[str]:
+    """A newer Virgil, if GitHub has one (see virgil.updates), and members running other versions than this one."""
+    lines = []
+    found = status.get("updates") or {}
+    if found.get("available"):
+        lines.append(f"Virgil {found['latest']} is available (this is {found.get('running')}): {found.get('url')}")
+    for member in (status.get("group") or {}).get("members", []):
+        if member.get("version") and status.get("version") and member["version"] != status["version"]:
+            lines.append(f"{member['name']} runs Virgil {member['version']}, and this Virgil {status['version']}")
+    return lines
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     status = fetch_status(args.tls_dir)
     if args.json:
@@ -728,6 +740,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     for member in (status.get("group") or {}).get("members", []):
         for alert in member.get("alerts") or []:
             print(f"  ALERT from {member['name']}: {_alert_line(alert)}")
+    for line in _update_lines(status):
+        print(f"  {line}")
     # Member addresses, so a follower's clock source can be shown by name.
     names = {address: "this Virgil" for address in status.get("addresses") or []}
     for member in (status.get("group") or {}).get("members", []):
@@ -994,7 +1008,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_commands.add_parser("show", help="print the config file").set_defaults(func=cmd_config_show)
     config_set = config_commands.add_parser("set", help="change a setting")
     config_set.add_argument("key", choices=["name", "ptp_interface", "mgmt_interface", "trim_ppb", "observe_only",
-                                            "auto_trim", "ntp_hwtimestamp", "ptpv1", "probe_timestamps",
+                                            "auto_trim", "ntp_hwtimestamp", "ptpv1", "probe_timestamps", "check_updates",
                                             "phc2sys_kp", "phc2sys_ki", "chrony_filter"])
     config_set.add_argument("value")
     config_set.add_argument("--yes", action="store_true", help="accept warnings and NIC profiles without asking")

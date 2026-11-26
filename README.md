@@ -30,7 +30,7 @@ Virgil does all of that for you. Install it on each Clock Box, put them in a gro
 | **Alerts**          | Lost locks, muted audio and late packets are all reported in Virgil's UI for quick reference.                                        |
 | **Data**            | The last 10 minutes of clock offsets, receive latency, late packets, and the link's round trip, jitter and loss are graphed in the web UI. |
 | **Logging**         | Records logs and performance data on both Clock Boxes at once, with optional notes. Built for soak testing.                          |
-| **Housekeeping**    | Real NIC names, custom DHCP lease names, missing interface setup, sync time from your device, your own TLS certificate, and netaudio's UI behind Virgil's login. |
+| **Housekeeping**    | Real NIC names, custom DHCP lease names, missing interface setup, sync time from your device, your own TLS certificate, netaudio's UI behind Virgil's login, and a notice when a newer version is released. |
 
 ![Graphs of clock offsets, receive latency, late packets and the link](docs/images/graphs.png)
 
@@ -123,7 +123,7 @@ Every Clock Box serves the same web UI, showing the whole group. Anyone who can 
 |------------------|------------------------------------------------------------------------------------------------------|
 | **Alerts**       | Anything wrong with any Dante device.                                                                  |
 | **Timing chain** | Both Clock Boxes, how far apart they are, and each detected Dante device. The **v1** and **v2** badges show which PTP version each Clock Box serves, and which each Dante device follows. |
-| **This Virgil**  | Its clock, **Become leader**, the trim, PTPv1, **Sync time**, its interfaces, and its certificate.    |
+| **This Virgil**  | Its clock, **Become leader**, the trim, PTPv1, **Sync time**, its interfaces, its certificate, and its version.    |
 | **Dante devices** | Every Dante device in the group and its settings.                                                         |
 | **Logging**      | Start, add notes, stop, download, see a summary of every measurement, and replay the session.                           |
 | **Graphs**       | The last 30 seconds to 10 minutes of everything.                                                     |
