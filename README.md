@@ -165,7 +165,25 @@ Other NICs with hardware timestamping should work, but I've only tested the i226
 
 - Only one radio hop has been tested. Multiple are *probably* possible with a sufficient latency budget.
 
-## Contributing and license
+## Support the project
+
+Virgil is free, and always will be. If it's useful to you, there are two ways to help cover what it cost to make, since it needed testing on a lot of different hardware.
+
+### Sponsorship
+
+You can sponsor Virgil's development through [GitHub Sponsors](https://github.com/sponsors/BRCook), once or monthly.
+
+### Ready-made kits
+
+Don't want to build your own? I can supply a ready-to-use kit: two Clock Boxes with Virgil installed and already grouped, and a pair of Cambium cnWave V1000 radios configured as a point-to-point bridge. I can also provide preconfigured switches and access points, for an all-in-one wireless Dante deployment.
+
+Each kit runs exactly the same Virgil as this repository, under the same licence. It comes with a username of your choosing and a temporary password, which you'll be asked to change when you first log in, and you set the web UI's password yourself. Nothing is locked down: change anything, or start afresh, as with any other Clock Box.
+
+While every kit is configured and tested by me, I can't guarantee it will work with *your* Dante devices on *your* network.
+
+[Get in touch](mailto:info@highpass.ca) for pricing and availability. Kits aren't affiliated with or endorsed by any manufacturer, including Audinate and Cambium Networks.
+
+## Contributing and licence
 
 Bug reports and pull requests are welcome; please open an [issue](https://github.com/BRCook/dante-virgil/issues) first for anything big. Virgil is released under the [AGPL-3.0-or-later](LICENSE).
 
