@@ -19,6 +19,8 @@
 #   dante-virgil-offline_VERSION_ARCH.tar      the .deb, those Debian packages too, and install.sh to install offline
 
 set -euo pipefail
+# A cache is no use to a one-off build (and in GitHub's container, its folder belongs to another user).
+export PIP_NO_CACHE_DIR=1
 
 die() { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
 
@@ -82,6 +84,8 @@ for script in postinst prerm postrm; do
 done
 sed -e "s/@VERSION@/$VERSION/" -e "s/@ARCH@/$ARCH/" -e "s/@SIZE@/$(du -sk --exclude=DEBIAN "$ROOT" | cut -f1)/" \
     "$REPO/packaging/debian/control" > "$ROOT/DEBIAN/control"
+# dpkg-deb refuses a control file without a final newline, which an editor can easily drop.
+[[ -z $(tail -c 1 "$ROOT/DEBIAN/control") ]] || echo >> "$ROOT/DEBIAN/control"
 
 DEB=$OUT/dante-virgil_${VERSION}_${ARCH}.deb
 dpkg-deb --root-owner-group -Zxz --build "$ROOT" "$DEB" >/dev/null
