@@ -14,7 +14,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from virgil import __version__
+from virgil import __version__, shared
 from virgil import config as config_file
 from virgil.config import ConfigError
 from virgil.files import UnsafeFileError
@@ -212,9 +212,10 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     elif key in ("observe_only", "auto_trim", "ntp_hwtimestamp", "probe_timestamps"):
         if value.lower() not in ("true", "false"):
             raise CliError(f"{key} must be true or false")
-        setattr(config, key, value.lower() == "true")
         if key == "auto_trim":
-            config.auto_trim_changed = time.time()  # shared across the group: the latest change wins
+            _check_settled(config, args)  # shared across the group (see virgil.shared)
+            config.auto_trim_changed = shared.next_stamp(config.auto_trim_changed, time.time())
+        setattr(config, key, value.lower() == "true")
     config_file.save(config, args.config)
     print(f"Set {key}")
     if key in ("ptp_interface", "mgmt_interface"):
@@ -802,6 +803,21 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _check_settled(config, args: argparse.Namespace) -> None:
+    """Refuse to change what the group shares unless this Virgil's clock has settled with its group: virgild knows,
+    so ask it (see virgil.shared's clock_settled)."""
+    if config.group is None:
+        return
+    try:
+        status = fetch_status(args.tls_dir)
+    except CliError:
+        raise CliError("virgild isn't running, so this Virgil can't tell whether its clock has settled with its group "
+                       "(see virgil.shared): start it (systemctl start dante-virgil), or make the change on another "
+                       "member") from None
+    if not shared.clock_settled(True, status.get("state"), bool((status.get("clock") or {}).get("synchronised"))):
+        raise CliError(shared.UNSETTLED)
+
+
 # password
 
 
@@ -811,9 +827,10 @@ def cmd_password(args: argparse.Namespace) -> int:
     from virgil.webauth import MIN_PASSWORD, hash_password
 
     config = config_file.load(args.config)
+    _check_settled(config, args)  # shared across the group (see virgil.shared)
     if args.clear:
         config.web_password = None
-        config.web_password_changed = time.time()  # shared across the group: the latest change wins
+        config.web_password_changed = shared.next_stamp(config.web_password_changed, time.time())
         config_file.save(config, args.config)
         print("Cleared the web password. The web UI is read-only until a new one is set.")
         return 0
@@ -823,7 +840,7 @@ def cmd_password(args: argparse.Namespace) -> int:
     if getpass.getpass("Again: ") != first:
         raise CliError("the passwords didn't match")
     config.web_password = hash_password(first)
-    config.web_password_changed = time.time()  # shared across the group: the latest change wins
+    config.web_password_changed = shared.next_stamp(config.web_password_changed, time.time())
     config_file.save(config, args.config)
     print("Set the web password. Anyone already logged in to the web UI will need to log in again.")
     return 0

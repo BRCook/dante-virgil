@@ -1,0 +1,8 @@
+# Virgil lives in /opt/dante-virgil, as it does when installed from a git checkout (install.sh), so either kind of
+# install upgrades the other in place.
+dante-virgil: dir-or-file-in-opt [opt/*]
+# Deliberate: installing or upgrading restarts virgild alone.
+dante-virgil: maintainer-script-calls-systemctl *
+# virgilctl --help, and netaudio --help, say how to use them.
+dante-virgil: no-manual-page [usr/bin/*]
+dante-virgil: recursive-privilege-change "chown -R" [postinst:*]

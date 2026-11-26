@@ -185,6 +185,7 @@ def test_join_through_the_web(tmp_path, virgil):
 
     async def main():
         a, b = Daemon(path_a, identity_a), Daemon(path_b, identity_b)
+        a.election.resume(State.LEADER, None, 0.0)  # A's clock is the group's: it can take in a newcomer
         runner_a, base_a = await _serve(a)
         runner_b, base_b = await _serve(b)
         a.public_port = int(base_a.rsplit(":", 1)[1])
@@ -518,3 +519,24 @@ def test_the_page_loads_its_replay_script(virgil):
 
     page, served, script = run(virgil, scenario)
     assert '<script src="/static/replay.js" defer></script>' in page and served == 200 and "function startReplay" in script
+
+
+def test_auto_trim_waits_for_a_settled_clock_in_a_group(virgil):
+    """Auto-trim is shared by the group, so changing it needs a clock that has settled with it (see virgil.shared)."""
+    from virgil import group as groups
+
+    async def scenario(daemon, session, base):
+        daemon.config.group = groups.create(daemon.config.id, daemon.config.name, daemon.identity.cert_pem, time.time())
+        await _login(session, base)
+        wanted = not daemon.config.auto_trim
+        async with session.post(f"{base}/api/v1/auto-trim", json={"enabled": wanted}, headers=HEADERS) as reply:
+            listening = (reply.status, (await reply.json()).get("error", ""))
+        daemon.election.resume(State.FOLLOWER, "a" * 32, 0.0)
+        daemon.clock = {"synchronised": True}
+        async with session.post(f"{base}/api/v1/auto-trim", json={"enabled": wanted}, headers=HEADERS) as reply:
+            following = reply.status
+        return listening, following, daemon.config.auto_trim == wanted
+
+    (status, error), following, changed = run(virgil, scenario)
+    assert status == 409 and "hasn't settled" in error
+    assert following == 200 and changed

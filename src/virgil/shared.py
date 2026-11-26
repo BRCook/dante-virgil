@@ -14,6 +14,16 @@ Dante devices), so they stay with it. Two don't:
 Each records when it was last changed. Heartbeats carry them, and a member that
 hears a newer change adopts it, so a change made anywhere reaches everyone,
 including members that were offline at the time.
+
+"When" is by the clock of the Virgil that made the change, so three rules keep a
+wrong clock from winning every comparison (a newcomer whose clock is years ahead,
+say, whose every change would otherwise look the newest):
+
+- A Virgil joining a group takes on the group's settings outright (take_on_joining).
+- Only a Virgil whose clock has settled with its group can change them
+  (clock_settled).
+- A change is always stamped later than the one it replaces (next_stamp), so a
+  group whose time was once ahead, and then corrected, can still be changed.
 """
 
 from __future__ import annotations
@@ -29,6 +39,11 @@ SCRYPT_HASH = re.compile(r"^scrypt\$\d{1,7}\$\d{1,3}\$\d{1,3}\$[A-Za-z0-9+/_=-]{
 
 class SharedError(ValueError):
     pass
+
+
+# Why a Virgil whose clock hasn't settled refuses to change what its group shares (see clock_settled).
+UNSETTLED = ("this Virgil's clock hasn't settled with its group yet, so it can't change what the group shares: "
+             "wait a minute or so, or do it on another member")
 
 
 def snapshot(config: Config) -> dict[str, dict[str, Any]]:
@@ -65,6 +80,36 @@ def adopt(config: Config, theirs: dict[str, tuple[Any, float]]) -> list[tuple[st
                 setattr(config, name, value)
                 adopted.append((name, value))
     return adopted
+
+
+def clock_settled(in_group: bool, state: str | None, synchronised: bool) -> bool:
+    """Whether a Virgil's clock can stamp changes its group shares (these settings, and the member list): when it
+    isn't in a group (it has nothing to share), when it leads (its clock is the group's time), or when it follows
+    with chrony synchronised to the leader. Anything else (listening for a leader, setting the clock, stopped) could
+    stamp a change years out, which would then win every comparison. virgild and virgilctl both decide by this."""
+    return not in_group or state == "leader" or (state == "follower" and synchronised)
+
+
+def next_stamp(previous: float, now: float) -> float:
+    """When a change made now is stamped: now, unless that wouldn't be later than the change it replaces (as after
+    the group's time was corrected backwards), in which case just after it."""
+    return max(now, previous + 0.001)
+
+
+def take_on_joining(config: Config, theirs: dict[str, tuple[Any, float]] | None, their_now: float | None) -> None:
+    """On a Virgil joining a group: take on the group's settings, whatever this Virgil had, and however recent its
+    own changes claim to be. A setting the group has never set keeps this Virgil's value, with its stamp no later
+    than the inviting Virgil's clock, so nothing this Virgil brings can claim to be from the future. (Without the
+    group's settings, from an older Virgil, this Virgil's stamps are cleared, so the group's win.)"""
+    for name in ("auto_trim", "web_password"):
+        stamp = f"{name}_changed"
+        if theirs is not None and name in theirs and theirs[name][1] > 0:
+            setattr(config, name, theirs[name][0])
+            setattr(config, stamp, theirs[name][1])
+        elif their_now is not None:
+            setattr(config, stamp, min(getattr(config, stamp), their_now))
+        else:
+            setattr(config, stamp, 0.0)
 
 
 def describe(name: str, value: Any) -> str:

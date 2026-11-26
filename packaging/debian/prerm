@@ -1,0 +1,16 @@
+#!/bin/sh
+# Before Virgil is removed: stop it, and the timing services it runs. (Not when upgrading: then postinst
+# restarts virgild alone, so the timing services, and the audio, carry on.)
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        if [ -d /run/systemd/system ]; then
+            systemctl disable --now dante-virgil.service >/dev/null 2>&1 || true
+            for unit in dante-virgil-netaudio dante-virgil-phc2sys dante-virgil-ptp4l dante-virgil-chrony; do
+                systemctl stop "$unit.service" 2>/dev/null || true
+            done
+        fi
+        ;;
+esac
+exit 0

@@ -9,6 +9,7 @@ import pytest
 from virgil import config as config_file
 from virgil import membership, tls
 from virgil.daemon import Daemon, Peer
+from virgil.election import State
 from virgil.group import Group, GroupError, Member, Removed
 from virgil.joining import handle_join, join_request
 from tests.test_daemon import introduce, make_pair, start
@@ -191,6 +192,7 @@ def test_removing_a_member_tells_it_and_everyone(tmp_path):
             connect_all(daemons)
             await daemons["A"].push_members()
             daemons["B"].peers[configs["C"].id] = Peer(daemons["C"].heartbeat(), time.monotonic())
+            daemons["A"].election.resume(State.LEADER, None, 0.0)  # settled: it can change the member list
             name = await daemons["A"].remove_member(configs["C"].id)
             return name, daemons
         finally:
@@ -266,3 +268,34 @@ def test_a_new_leader_goes_in_the_history(tmp_path):
     a._log_change(Change(State.FOLLOWER, State.LEADER, configs["B"].id, None))
     a._log_change(Change(State.LEADER, State.FOLLOWER, None, configs["B"].id))
     assert [e["title"] for e in a.events.recent][:2] == ["Virgil B became the leader", "This Virgil became the leader"]
+
+
+def test_an_unsettled_virgil_can_leave_but_cant_remove_or_stamp_the_future(tmp_path, monkeypatch):
+    """Removing is refused until the clock settles; leaving isn't (a Virgil with a broken clock is just the one that
+    might want out), but it's stamped just after the latest change known, not by the broken clock."""
+    import virgil.daemon as daemon_module
+
+    paths, identities, configs = make_three(tmp_path)
+
+    async def scenario():
+        daemons, runners = await three_running(paths, identities)
+        try:
+            c_joins_through_a(daemons, identities)
+            connect_all(daemons)
+            daemons["A"].election.resume(State.LEADER, None, 0.0)
+            await daemons["A"].push_members()  # B learns of C
+            b = daemons["B"]  # in the group, still listening: not settled
+            with pytest.raises(RuntimeError, match="hasn't settled"):
+                await b.remove_member(configs["C"].id)
+            latest = membership.latest(b.config.group)
+            real = time.time
+            monkeypatch.setattr(daemon_module.time, "time", lambda: real() + 5 * 365 * 86400)  # years ahead
+            await b.leave_group()
+            return latest, daemons["A"].config.group  # what the others were told
+        finally:
+            for runner in runners:
+                await runner.cleanup()
+
+    latest, group = asyncio.run(scenario())
+    assert configs["B"].id not in group.members  # B left
+    assert group.removed[configs["B"].id].changed == pytest.approx(latest + 0.001)  # not five years on

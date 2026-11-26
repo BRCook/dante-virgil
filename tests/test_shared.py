@@ -78,3 +78,42 @@ def test_software_timestamping_is_warned_about_for_as_long_as_it_lasts(tmp_path)
     assert any("only has software timestamping" in w for w in a.ptp_warnings(100.0))
     a.ptp_timestamping = lambda now: Timestamping.HARDWARE
     assert not any("software timestamping" in w for w in a.ptp_warnings(100.0))
+
+
+# A wrong clock mustn't win: see virgil.shared.
+
+def test_which_clocks_have_settled():
+    from virgil.shared import clock_settled
+
+    assert clock_settled(False, "listen", False)  # not in a group: nothing to share
+    assert clock_settled(True, "leader", False)  # its clock is the group's time
+    assert clock_settled(True, "follower", True) and not clock_settled(True, "follower", False)
+    assert not any(clock_settled(True, state, True) for state in ("listen", "sync", "stopped", None))
+
+
+def test_a_change_is_always_stamped_later_than_the_one_it_replaces():
+    from virgil.shared import next_stamp
+
+    assert next_stamp(1000.0, 2000.0) == 2000.0
+    years_ahead = 2000.0 + 5 * 365 * 86400  # the group's time was ahead, then corrected
+    assert next_stamp(years_ahead, 2000.0) == pytest.approx(years_ahead + 0.001)
+
+
+def test_a_newcomer_takes_on_the_groups_settings_whatever_its_own_claim():
+    from virgil.config import new_config
+    from virgil.shared import take_on_joining
+
+    now, future = 1_800_000_000.0, 1_800_000_000.0 + 5 * 365 * 86400
+    newcomer = new_config()
+    newcomer.auto_trim, newcomer.auto_trim_changed = False, future
+    newcomer.web_password, newcomer.web_password_changed = "theirs", future
+    # The group turned auto-trim on, and never set a password.
+    take_on_joining(newcomer, {"auto_trim": (True, now - 100), "web_password": (None, 0.0)}, now)
+    assert (newcomer.auto_trim, newcomer.auto_trim_changed) == (True, now - 100)
+    # What the group never set stays, but can't claim to be newer than the inviting Virgil's clock.
+    assert (newcomer.web_password, newcomer.web_password_changed) == ("theirs", now)
+
+    older = new_config()
+    older.auto_trim_changed = future
+    take_on_joining(older, None, None)  # an inviting Virgil from before this: the group's settings win
+    assert older.auto_trim_changed == 0.0

@@ -12,6 +12,7 @@ from virgil import config as config_file
 from virgil import group as groups
 from virgil import tls
 from virgil.daemon import Daemon
+from virgil.election import State
 from virgil.group import GroupError, InviteToken
 from virgil.joining import JoinError, handle_join, join
 
@@ -74,6 +75,7 @@ def test_join_through_a_running_daemon(virgils):
 
     async def scenario():
         daemon = Daemon(path_a, id_a)
+        daemon.election.resume(State.LEADER, None, 0.0)  # its clock is the group's: it can take in a newcomer
         public, group_port, stop = await start(daemon)
         try:
             token = invite(path_a, id_a, public)
@@ -195,3 +197,59 @@ def test_daemon_picks_up_config_changes(virgils):
     daemon.reload_if_changed()
     assert daemon.config.group is not None
     assert tls.fingerprint(id_a.cert_pem) in daemon.trusted
+
+
+def test_a_newcomer_with_a_clock_years_ahead_cant_impose_its_settings(virgils):
+    """B's clock is five years ahead, so everything it changed claims to be the newest. Joining, it takes on the
+    group's settings anyway, and its own never come back through its heartbeats."""
+    from virgil import shared
+    from virgil.webauth import hash_password
+
+    path_a, id_a = virgils["a"]
+    path_b, id_b = virgils["b"]
+    create_group(path_a, id_a)
+    config_a = config_file.load(path_a)
+    config_a.auto_trim, config_a.auto_trim_changed = True, time.time() - 3600
+    config_a.web_password, config_a.web_password_changed = hash_password("the group's password"), time.time() - 3600
+    config_file.save(config_a, path_a)
+    future = time.time() + 5 * 365 * 86400
+    config_b = config_file.load(path_b)
+    config_b.auto_trim, config_b.auto_trim_changed = False, future
+    config_b.web_password, config_b.web_password_changed = hash_password("the newcomer's password"), future
+    config_file.save(config_b, path_b)
+
+    async def scenario():
+        daemon = Daemon(path_a, id_a)
+        daemon.election.resume(State.LEADER, None, 0.0)
+        public, group_port, stop = await start(daemon)
+        try:
+            config_b = config_file.load(path_b)
+            await join(invite(path_a, id_a, public), config_b, id_b.cert_pem)
+            # Later, B's heartbeats carry its settings, as every member's do: nothing in them is newer.
+            daemon.adopt_shared_settings(shared.parse(shared.snapshot(config_b)), config_b.id)
+            return config_b, daemon.config
+        finally:
+            await stop()
+
+    newcomer, group = asyncio.run(scenario())
+    assert (newcomer.auto_trim, newcomer.web_password) == (True, group.web_password)
+    assert newcomer.auto_trim_changed < future and newcomer.web_password_changed < future
+    assert (group.auto_trim, group.web_password) == (True, config_a.web_password)  # unchanged
+
+
+def test_an_unsettled_virgil_takes_no_one_in(virgils):
+    path_a, id_a = virgils["a"]
+    create_group(path_a, id_a)
+
+    async def scenario():
+        daemon = Daemon(path_a, id_a)  # in a group, but still listening for a leader
+        public, group_port, stop = await start(daemon)
+        try:
+            config_b = config_file.load(virgils["b"][0])
+            with pytest.raises(GroupError, match="hasn't settled"):
+                await join(invite(path_a, id_a, public), config_b, virgils["b"][1].cert_pem)
+            return config_b
+        finally:
+            await stop()
+
+    assert asyncio.run(scenario()).group is None

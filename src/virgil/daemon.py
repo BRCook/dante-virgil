@@ -734,9 +734,16 @@ class Daemon:
         if self.web is not None and self.config.web_password != old_password:
             self.web.sessions.end_all()
 
+    def clock_settled(self) -> bool:
+        """Whether this Virgil's clock can stamp changes its group shares (see virgil.shared's clock_settled)."""
+        return shared.clock_settled(self.config.group is not None, self.election.state.value,
+                                    bool((self.clock or {}).get("synchronised")))
+
     def shared_setting_changed_here(self, name: str, value, how: str) -> None:
-        """A shared setting changed on this Virgil: stamp it, so it spreads, and record it."""
-        setattr(self.config, f"{name}_changed", time.time())
+        """A shared setting changed on this Virgil: stamp it, so it spreads, and record it. Only once its clock has
+        settled (see clock_settled): callers check first."""
+        stamp = f"{name}_changed"
+        setattr(self.config, stamp, shared.next_stamp(getattr(self.config, stamp), time.time()))
         self.events.group("settings", f"This Virgil {shared.describe(name, value)} ({how})")
 
     def apply_member_list(self, data, source: str) -> list[tuple[str, str]]:
@@ -801,9 +808,12 @@ class Daemon:
             raise RuntimeError("a Virgil can't remove itself; it can leave the group instead")
         if virgil_id not in group.members:
             raise RuntimeError("that Virgil isn't a member of this group")
+        if not self.clock_settled():
+            raise RuntimeError(shared.UNSETTLED)
         name = group.members[virgil_id].name
         updated = copy.deepcopy(group)
-        membership.remove(updated, virgil_id, time.time(), by=self.config.id)
+        stamp = shared.next_stamp(group.members[virgil_id].changed, time.time())  # later than the joining it undoes
+        membership.remove(updated, virgil_id, stamp, by=self.config.id)
         told = await self.push_members([virgil_id], updated)  # so it leaves, if it can be reached
         self._member_list_changed(membership.merge(group, updated.members, updated.removed), "this Virgil")
         others = await self.push_members()
@@ -817,7 +827,15 @@ class Daemon:
         if group is None:
             raise RuntimeError("this Virgil isn't in a group")
         updated = copy.deepcopy(group)
-        membership.remove(updated, self.config.id, time.time(), by=self.config.id)
+        # Leaving is always allowed, even before this Virgil's clock has settled (a Virgil with a broken clock is
+        # just the one that might want out), but then it's stamped just after the latest change this Virgil knows
+        # of, rather than by its own clock, so it can't claim to be from the future either.
+        joined = group.members[self.config.id].changed if self.config.id in group.members else 0.0
+        if self.clock_settled():
+            stamp = shared.next_stamp(joined, time.time())
+        else:
+            stamp = max(membership.latest(group), joined) + 0.001
+        membership.remove(updated, self.config.id, stamp, by=self.config.id)
         told = await self.push_members(group=updated)
         log.info("Left the group (told %s)", ", ".join(told) or "no member")
         self.events.group("left", "This Virgil left the group, and carries on alone")
@@ -1878,6 +1896,9 @@ class Daemon:
             body = await request.json()
         except ValueError:
             return web.json_response({"error": "the request must be JSON"}, status=400)
+        if not self.clock_settled():
+            # The newcomer is stamped by this Virgil's clock, and takes on its settings (see virgil.shared).
+            return web.json_response({"error": shared.UNSETTLED}, status=409)
         async with self.lock:
             # Invites are made by virgilctl, so read the latest config first.
             self.reload_if_changed()

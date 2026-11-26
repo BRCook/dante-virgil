@@ -115,6 +115,11 @@ def merge(group: Group, members: dict[str, Member], removed: dict[str, Removed])
     return changes
 
 
+def latest(group: Group) -> float:
+    """The latest change this Virgil knows of, to anyone's membership."""
+    return max([m.changed for m in group.members.values()] + [r.changed for r in group.removed.values()] + [0.0])
+
+
 def remove(group: Group, virgil_id: str, now: float, by: str | None = None) -> None:
     """Record a member's removal, as of now, by another member (or by itself, when it leaves)."""
     member = group.members.pop(virgil_id, None)

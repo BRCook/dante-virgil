@@ -1,0 +1,40 @@
+#!/bin/sh
+# After Virgil is removed: what uninstall.sh does. Removing keeps the config (/etc/dante-virgil) and the logs and
+# history (/var/lib/dante-virgil); purging removes those too, and the dante-virgil user.
+set -e
+
+PREFIX=/opt/dante-virgil
+APPARMOR_PROFILE=/etc/apparmor.d/usr.sbin.chronyd
+APPARMOR_LOCAL=/etc/apparmor.d/local/usr.sbin.chronyd
+
+case "$1" in
+    remove|purge)
+        # The Python environment was built when installing, so dpkg doesn't know its files.
+        rm -rf "$PREFIX/venv" /run/dante-virgil /run/dante-virgil-generated
+        rmdir "$PREFIX" 2>/dev/null || true
+        if [ -e /etc/network/interfaces ] && grep -q '# Set by Virgil' /etc/network/interfaces; then
+            sed -i '/^[[:space:]]*# Set by Virgil$/{N;/\n[[:space:]]*hostname /d}' /etc/network/interfaces
+        fi
+        if [ -e /etc/dhcpcd.conf ] && grep -q '^# Begin: set by Virgil$' /etc/dhcpcd.conf; then
+            sed -i '/^# Begin: set by Virgil$/,/^# End: set by Virgil$/d' /etc/dhcpcd.conf
+        fi
+        if [ -e "$APPARMOR_LOCAL" ]; then
+            sed -i -e '\|^# Added by Virgil$|d' -e '\|^/run/dante-virgil-generated/chrony\.conf r,$|d' "$APPARMOR_LOCAL"
+            if [ -e "$APPARMOR_PROFILE" ] && [ -d /sys/kernel/security/apparmor ] && command -v apparmor_parser >/dev/null; then
+                apparmor_parser -r "$APPARMOR_PROFILE" || true
+            fi
+        fi
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+            # Timekeeping goes back to Debian's chrony.
+            systemctl unmask chrony.service >/dev/null 2>&1 || true
+            systemctl enable --now chrony.service >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+
+if [ "$1" = purge ]; then
+    rm -rf /etc/dante-virgil /var/lib/dante-virgil
+    userdel dante-virgil 2>/dev/null || true
+fi
+exit 0

@@ -14,6 +14,7 @@ from typing import Any
 
 import aiohttp
 
+from virgil import shared
 from virgil.config import Config
 from virgil.membership import parse, snapshot
 from virgil.group import Group, GroupError, InviteToken, Member, redeem_invite
@@ -62,7 +63,8 @@ def handle_join(config: Config, body: Any, now: float) -> dict[str, Any]:
     # Joining now beats any earlier removal of the same Virgil (see virgil.membership).
     config.group.members[virgil_id] = Member(name, cert, now)
     config.group.removed.pop(virgil_id, None)
-    return snapshot(config.group)
+    # The group's shared settings, and the time here, which the newcomer takes on (see virgil.shared).
+    return {**snapshot(config.group), "shared_settings": shared.snapshot(config), "now": now}
 
 
 def apply_join_response(config: Config, token: InviteToken, response: Any) -> None:
@@ -77,7 +79,16 @@ def apply_join_response(config: Config, token: InviteToken, response: Any) -> No
         raise GroupError("the inviting Virgil didn't add this Virgil to the group")
     if not any(fingerprint(m.cert) == token.fingerprint for m in members.values()):
         raise GroupError("the inviting Virgil isn't in its own member list")
+    theirs, their_now = None, None
+    if "shared_settings" in response:
+        try:
+            theirs = shared.parse(response["shared_settings"])
+        except shared.SharedError as error:
+            raise GroupError(f"the inviting Virgil sent bad shared settings: {error}") from error
+    if isinstance(response.get("now"), (int, float)) and not isinstance(response.get("now"), bool):
+        their_now = float(response["now"])
     config.group = Group(id=token.group_id, members=members, removed=removed)
+    shared.take_on_joining(config, theirs, their_now)
 
 
 async def join(token: InviteToken, config: Config, cert: str, timeout: float = 10.0) -> None:

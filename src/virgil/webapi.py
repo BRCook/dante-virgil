@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from virgil import group as groups
-from virgil import joining
+from virgil import joining, shared
 from virgil.config import DeviceSettings
 from virgil.consoles import normalise_mac
 from virgil.group import GroupError, InviteToken
@@ -143,6 +143,8 @@ class WebApi:
         if not isinstance(enabled, bool):
             return _error("enabled must be true or false", 400)
         if enabled != self.daemon.config.auto_trim:
+            if not self.daemon.clock_settled():
+                return _error(shared.UNSETTLED, 409)
             self.daemon.shared_setting_changed_here("auto_trim", enabled, "from its page")
         self.daemon.config.auto_trim = enabled
         if not enabled:

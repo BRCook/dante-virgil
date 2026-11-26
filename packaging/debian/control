@@ -1,0 +1,14 @@
+Package: dante-virgil
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: Benjamin Cook <BRCook@users.noreply.github.com>
+Installed-Size: @SIZE@
+Section: net
+Priority: optional
+Depends: python3 (>= 3.13), python3 (<< 3.14), python3-venv, chrony, linuxptp, ethtool, iproute2, openssl, polkitd, util-linux-extra
+Recommends: pci.ids
+Homepage: https://github.com/BRCook/dante-virgil
+Description: PTPv2 clocking for Dante over wireless links
+ Virgil runs on a group of identical Clock Boxes, which find each other, elect
+ a leader and serve PTP to their local Dante devices, bridging Dante across a
+ wireless link.

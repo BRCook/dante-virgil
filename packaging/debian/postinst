@@ -1,0 +1,99 @@
+#!/bin/sh
+# Install or upgrade Virgil: what install.sh does from a git checkout, done the package's way. Only virgild
+# (and netaudio's daemon, when netaudio changes) is restarted: never the timing services, so audio carries on.
+set -e
+
+PREFIX=/opt/dante-virgil
+VENV=$PREFIX/venv
+WHEELS=$PREFIX/wheels
+SERVICE_USER=dante-virgil
+CONFIG_DIR=/etc/dante-virgil
+APPARMOR_PROFILE=/etc/apparmor.d/usr.sbin.chronyd
+APPARMOR_LOCAL=/etc/apparmor.d/local/usr.sbin.chronyd
+APPARMOR_RULE='/run/dante-virgil-generated/chrony.conf r,'
+
+[ "$1" = configure ] || exit 0
+systemd_running() { [ -d /run/systemd/system ]; }
+
+if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
+    useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$SERVICE_USER"
+fi
+# phc2sys has no query interface; virgild reads its reports from the journal.
+usermod -a -G systemd-journal "$SERVICE_USER"
+
+# The Python environment, from the wheels in the package: no network, and every file checked against its hash.
+# It's only rebuilt when the dependencies (or Python) change; otherwise only Virgil itself is reinstalled.
+stamp="$(sha256sum "$PREFIX/requirements.lock" | cut -d' ' -f1) $(python3 --version)"
+rebuilt=""
+if [ -x "$VENV/bin/python" ] && [ "$(cat "$VENV/.requirements.sha256" 2>/dev/null)" = "$stamp" ]; then
+    echo "Updating Virgil in $VENV"
+else
+    echo "Installing Virgil and its dependencies into $VENV (this takes a few minutes)"
+    python3 -m venv --clear "$VENV"
+    "$VENV/bin/pip" install --quiet --no-index --find-links "$WHEELS" --no-deps --require-hashes \
+        -r "$PREFIX/requirements.lock"
+    echo "$stamp" > "$VENV/.requirements.sha256"
+    rebuilt=1
+fi
+"$VENV/bin/pip" install --quiet --no-index --find-links "$WHEELS" --no-deps --require-hashes --force-reinstall \
+    -r "$PREFIX/virgil.lock"
+
+# An install from a git checkout (install.sh) put these where they'd override the package's: take them away.
+rm -f /usr/local/lib/systemd/system/dante-virgil.service /usr/local/lib/systemd/system/dante-virgil-*.service \
+    /usr/local/lib/tmpfiles.d/dante-virgil.conf /etc/polkit-1/rules.d/50-dante-virgil.rules
+for link in virgilctl netaudio; do
+    if [ "$(readlink "/usr/local/bin/$link" 2>/dev/null)" = "$VENV/bin/$link" ]; then
+        rm -f "/usr/local/bin/$link"
+    fi
+done
+
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/dante-virgil.conf || true
+
+if [ -e "$APPARMOR_PROFILE" ]; then
+    # Debian's profile includes this local file, which is meant for additions like this one.
+    if ! grep -qxF "$APPARMOR_RULE" "$APPARMOR_LOCAL" 2>/dev/null; then
+        mkdir -p "$(dirname "$APPARMOR_LOCAL")"
+        printf '# Added by Virgil\n%s\n' "$APPARMOR_RULE" >> "$APPARMOR_LOCAL"
+    fi
+    if [ -d /sys/kernel/security/apparmor ] && command -v apparmor_parser >/dev/null; then
+        apparmor_parser -r "$APPARMOR_PROFILE" || true
+    fi
+fi
+
+# 751: anyone can reach the public certificate inside (for virgilctl status), but only dante-virgil can list
+# the directory. The config and key stay private.
+install -d -m 751 -o "$SERVICE_USER" -g "$SERVICE_USER" "$CONFIG_DIR"
+if [ ! -e "$CONFIG_DIR/virgil.toml" ]; then
+    "$VENV/bin/virgilctl" config init
+fi
+"$VENV/bin/virgilctl" tls init
+chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR/tls"
+chmod 755 "$CONFIG_DIR/tls"
+chmod 644 "$CONFIG_DIR/tls/cert.pem"
+chmod 600 "$CONFIG_DIR/tls/key.pem"
+
+if systemd_running; then
+    systemctl daemon-reload
+    # Timekeeping passes from Debian's chrony to Virgil's.
+    systemctl disable --now chrony.service >/dev/null 2>&1 || true
+    systemctl mask chrony.service >/dev/null 2>&1 || true
+    systemctl enable dante-virgil.service >/dev/null 2>&1
+    systemctl restart dante-virgil.service
+    # A rebuilt environment may hold a new netaudio, but its service runs on its own, so restart it to use it.
+    # That only pauses monitoring and alerts for a few seconds: netaudio isn't in the timing path.
+    if [ -n "$rebuilt" ] && systemctl is-active --quiet dante-virgil-netaudio.service; then
+        systemctl restart dante-virgil-netaudio.service
+    fi
+fi
+
+if ! grep -q '^ptp_interface' "$CONFIG_DIR/virgil.toml"; then
+    cat << MESSAGE
+
+Virgil is installed. Next, choose the interface that faces the console:
+
+  virgilctl interfaces
+  sudo virgilctl config set ptp_interface <name>
+
+MESSAGE
+fi
+exit 0

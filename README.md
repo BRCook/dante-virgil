@@ -68,7 +68,16 @@ Virgil's PTP is not immune to the multicast handling issues that regular Dante c
 
 ## Install
 
-On each Clock Box:
+On each Clock Box, running Debian 13, download the package for its architecture (amd64 or arm64) from the [latest release](https://github.com/BRCook/dante-virgil/releases/latest), then:
+
+```bash
+sudo apt install ./dante-virgil_1.0.0_amd64.deb   # Install, or update: keeps your settings
+sudo apt remove dante-virgil                       # Uninstall (purge, instead of remove, deletes your settings too)
+```
+
+Without internet access, use the release's `dante-virgil-offline` bundle instead: it also holds every Debian package Virgil needs. Copy it to the Clock Box, unpack it, and run `sudo ./install.sh` inside.
+
+Or, to install from a copy of the source:
 
 ```bash
 git clone https://github.com/BRCook/dante-virgil.git
@@ -80,6 +89,8 @@ sudo ./install.sh
 git pull && sudo ./install.sh     # Update: keeps your settings
 sudo ./uninstall.sh               # Uninstall (add --purge to remove your settings too)
 ```
+
+Either way of installing updates the other in place.
 
 ## Getting started
 

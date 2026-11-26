@@ -1,6 +1,6 @@
-import shutil
-
 import json
+import shutil
+import time
 
 import pytest
 
@@ -597,3 +597,30 @@ def test_chrony_filter_setting(config_path):
     assert _set(config_path, "chrony_filter", "0") != 0
     assert _set(config_path, "chrony_filter", "17") != 0
     assert config_file.load(config_path).chrony_filter == 4
+
+
+def test_shared_settings_wait_for_a_settled_clock_in_a_group(config_path, monkeypatch):
+    """virgilctl asks virgild whether this Virgil's clock has settled with its group (see virgil.shared)."""
+    from virgil import group as groups
+
+    config = config_file.load(config_path)
+    config.group = groups.create(config.id, config.name, "cert", time.time())
+    years_ahead = time.time() + 5 * 365 * 86400
+    config.auto_trim_changed = years_ahead  # the group's time was once ahead
+    config_file.save(config, config_path)
+    state = {"state": "listen", "clock": {"synchronised": False}}
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: state)
+    assert _set(config_path, "auto_trim", "false") != 0
+    assert cli.main(["--config", str(config_path), "password", "--clear"]) != 0
+    assert config_file.load(config_path).auto_trim_changed == years_ahead  # nothing changed
+
+    state.update(state="follower", clock={"synchronised": True})
+    assert _set(config_path, "auto_trim", "false") == 0
+    after = config_file.load(config_path)
+    assert after.auto_trim is False and after.auto_trim_changed > years_ahead  # later than the one it replaces
+
+    def not_running(tls_dir):
+        raise cli.CliError("couldn't reach virgild")
+
+    monkeypatch.setattr(cli, "fetch_status", not_running)
+    assert cli.main(["--config", str(config_path), "password", "--clear"]) != 0
