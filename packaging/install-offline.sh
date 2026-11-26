@@ -28,5 +28,8 @@ for deb in debs/*.deb; do
     fi
     needed+=("./$deb")
 done
-echo "Installing Virgil, and ${#needed[@]} Debian packages this machine doesn't have yet"
-apt-get install -y --no-download --no-install-recommends "${needed[@]}" "./${virgil[0]}"
+if [[ ${#needed[@]} -eq 1 ]]; then noun=package; else noun=packages; fi
+echo "Installing Virgil, and ${#needed[@]} Debian $noun this machine doesn't have yet"
+# Every package needed is given to apt as a file, so it has nothing to fetch. (apt's --no-download would make that
+# explicit, but it refuses packages given as files altogether.)
+apt-get install -y --no-install-recommends "${needed[@]}" "./${virgil[0]}"
