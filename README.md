@@ -34,6 +34,8 @@ Virgil does all of that for you. Install it on each Clock Box, put them in a gro
 
 ![Graphs of clock offsets, receive latency, late packets and the link](docs/images/graphs.png)
 
+![A logging session's summary: every measurement from a night, at a glance](docs/images/summary.png)
+
 ## How it works
 
 ```

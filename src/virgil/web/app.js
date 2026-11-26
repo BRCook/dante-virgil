@@ -404,7 +404,7 @@ function devicesTable(entries, can) {
   const header = el("tr", {},
     el("th", { scope: "col", class: "name" }, "Device"),
     el("th", { scope: "col", title: "The Clock Box it's plugged into, which keeps its settings" }, "Clock Box"),
-    ["Model", "Address", "PTPv2", "AES67", "Clock (ppm)"].map((h) => el("th", { scope: "col" }, h)),
+    ["Model", "Address", "PTPv2", "AES67", "Frequency offset (ppm)"].map((h) => el("th", { scope: "col" }, h)),
     el("th", { scope: "col", title: "What it's doing on each PTP version" }, "PTP"),
     Object.values(ENFORCE).map((e) => el("th", { scope: "col", title: enforceTip(e.name) }, e.heading)));
   const rows = entries.map(({ d, box, settings }) => {
@@ -430,7 +430,7 @@ function devicesTable(entries, can) {
       el("td", { "data-label": "Address" }, d.address),
       el("td", { "data-label": "PTPv2" }, onOff(d.ptpv2)),
       el("td", { "data-label": "AES67" }, onOff(d.aes67)),
-      el("td", { "data-label": "Clock (ppm)" }, d.clock_offset_ppb === null || d.clock_offset_ppb === undefined
+      el("td", { "data-label": "Frequency offset (ppm)" }, d.clock_offset_ppb === null || d.clock_offset_ppb === undefined
         ? "" : ppmValue(d.clock_offset_ppb)),
       el("td", { "data-label": "PTP" }, deviceBadges(d) || ""),
       enforce("ptpv2", wanted.native_ptpv2),
