@@ -171,7 +171,7 @@ Virgil is free, and always will be. If it's useful to you, there are two ways to
 
 ### Sponsorship
 
-You can sponsor Virgil's development through [GitHub Sponsors](https://github.com/sponsors/BRCook), once or monthly.
+~~You can sponsor Virgil's development through [GitHub Sponsors](https://github.com/sponsors/BRCook), once or monthly.~~ (Pending approval)
 
 ### Ready-made kits
 
