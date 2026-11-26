@@ -444,3 +444,68 @@ def test_without_ptp4l_the_plan_turns_timestamping_on_itself(tmp_path):
     assert plan["hwstamp"] == ["/usr/sbin/hwstamp_ctl", "-i", "enp1s0", "-t", "1", "-r", "1"]
     plan = json.loads((_prepare(tmp_path / "profiled", _leader("enp191s0", serve_ptpv2=False)) / "plan.json").read_text())
     assert plan["hwstamp"] == ["/usr/sbin/hwstamp_ctl", "-i", "enp191s0", "-t", "1", "-r", "12"]  # its profile's
+
+
+@pytest.mark.parametrize("request_data", [
+    {"ptp_interface": "enp1s0\n", "mgmt_interface": None},   # a name ending in a newline used to pass
+    {"ptp_interface": "enp1s0", "mgmt_interface": "-a"},     # as did one ifup would read as an option
+    {"ptp_interface": "enp1s0", "mgmt_interface": None, "add": ["--force"]},
+    ["not", "an", "object"],
+])
+def test_dhcpnames_refuses_names_that_arent_plain(tmp_path, request_data):
+    from tests.test_dhcpnames import BOX
+    from virgil.rootctl import dhcpnames
+
+    interfaces = tmp_path / "interfaces"
+    interfaces.write_text(BOX)
+    request = tmp_path / "dhcp-names.json"
+    request.write_text(json.dumps(request_data))
+    assert dhcpnames(request, interfaces, "x", tmp_path / "dhcpcd.conf", no_commands) == 1
+    assert interfaces.read_text() == BOX and not (tmp_path / "dhcpcd.conf").exists()
+
+
+def test_dhcpnames_keeps_the_interfaces_files_permissions(tmp_path):
+    """/etc/network/interfaces is often 0600, for the Wi-Fi passphrase in it: rewriting it mustn't open it up."""
+    from tests.test_dhcpnames import BOX
+    from virgil.rootctl import dhcpnames
+
+    interfaces = tmp_path / "interfaces"
+    interfaces.write_text(BOX)
+    interfaces.chmod(0o600)
+    request = tmp_path / "dhcp-names.json"
+    request.write_text(json.dumps({"ptp_interface": "enp1s0", "mgmt_interface": "enp5s0"}))
+    assert dhcpnames(request, interfaces, "debian-server-1", tmp_path / "dhcpcd.conf", no_commands) == 0
+    assert "hostname debian-server-1-ptp" in interfaces.read_text()
+    assert interfaces.stat().st_mode & 0o777 == 0o600
+
+
+def test_saving_a_probe_never_follows_a_symlink(tmp_path):
+    """The probe is saved by root. A symlink left where it used to write its temporary file must not be followed:
+    it once let whoever owned the directory have root overwrite any file on the machine."""
+    from virgil import timestamping
+
+    victim = tmp_path / "victim"
+    victim.write_text("untouched")
+    victim.chmod(0o600)
+    folder = tmp_path / "state"
+    folder.mkdir()
+    (folder / "timestamping-probe.new").symlink_to(victim)  # where 1.1.0 wrote, by a fixed name
+    timestamping.save_probe("enp1s0|igc|6.12", {"hardware": True, "slots": 4}, folder / "timestamping-probe.json")
+    assert victim.read_text() == "untouched" and victim.stat().st_mode & 0o777 == 0o600
+    assert "enp1s0|igc|6.12" in timestamping.load_probes(folder / "timestamping-probe.json")
+
+
+def test_root_wont_save_a_probe_in_someone_elses_directory(tmp_path, monkeypatch):
+    import os
+
+    from virgil import timestamping
+
+    folder = tmp_path / "state"
+    folder.mkdir()
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    real = os.lstat
+    # As root would see a directory belonging to the dante-virgil user.
+    monkeypatch.setattr(os, "lstat", lambda path: os.stat_result((real(path).st_mode, 0, 0, 1, 999, 999, 0, 0, 0, 0)))
+    with pytest.raises(PermissionError, match="only root can write"):
+        timestamping.save_probe("enp1s0|igc|6.12", {"hardware": True}, folder / "timestamping-probe.json")
+    assert not (folder / "timestamping-probe.json").exists()

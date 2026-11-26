@@ -4,6 +4,8 @@ import gzip
 import aiohttp
 from aiohttp import web
 
+import pytest
+
 from virgil.webextra import netaudio_app, redirect_app
 
 
@@ -104,6 +106,42 @@ def test_netaudio_needs_virgils_login_and_passes_everything_through():
     assert encoding == "gzip" and gzip.decompress(body) == b"console.log(1)"
     assert results["events"] == "data: 0\n\ndata: 1\n\ndata: 2\n\n"
     assert results["post"] == 200 and fake.seen[-1] == ("POST", "/set-aes67", {"device": "Wing", "enabled": True})
+
+
+# What browsers send with each kind of request to the proxy, and whether it should get through. The session cookie
+# is sent with all of them: it's the same host, and SameSite only tells sites apart, not ports or neighbours.
+@pytest.mark.parametrize("method, headers, allowed", [
+    ("GET", {"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "navigate"}, True),   # the link on Virgil's page
+    ("GET", {"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate"}, True),        # typed, or a bookmark
+    ("POST", {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Origin": "https://ORIGIN"}, True),
+    ("POST", {}, True),                                                             # curl, or a script
+    ("POST", {"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "no-cors", "Origin": "https://ORIGIN"}, False),
+    ("POST", {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}, False),  # another page's form
+    ("GET", {"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "cors"}, False),      # another page's fetch()
+    ("POST", {"Origin": "https://other.example:8742"}, False),                      # no Sec-Fetch-Site: by Origin
+    ("POST", {"Origin": "https://ORIGIN"}, True),
+])
+def test_netaudio_refuses_requests_another_page_made(method, headers, allowed):
+    fake = FakeNetaudio()
+
+    async def scenario():
+        upstream_runner, upstream = await _serve(fake.app())
+        proxy_runner, proxy = await _serve(netaudio_app(lambda token: token == "good", upstream=upstream))
+        own = proxy.removeprefix("http://")
+        sent = {key: value.replace("ORIGIN", own) for key, value in headers.items()}
+        try:
+            async with aiohttp.ClientSession() as session:
+                path, body = ("/", None) if method == "GET" else ("/set-aes67", {"device": "Wing", "enabled": True})
+                async with session.request(method, f"{proxy}{path}", json=body, headers=sent,
+                                           cookies={"virgil_session": "good"}) as reply:
+                    return reply.status
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    status = asyncio.run(scenario())
+    assert status == (200 if allowed else 403)
+    assert bool(fake.seen) == allowed  # a refused request never reaches netaudio
 
 
 def test_netaudio_not_running():

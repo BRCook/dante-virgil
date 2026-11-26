@@ -36,7 +36,7 @@ if [[ "$(readlink /usr/local/bin/netaudio 2>/dev/null)" == "$PREFIX/venv/bin/net
 fi
 rm -f "$UNIT_DIR"/dante-virgil.service "$UNIT_DIR"/dante-virgil-*.service "$TMPFILES_DIR/dante-virgil.conf" \
     "$POLKIT_DIR/50-dante-virgil.rules" /usr/local/bin/virgilctl
-rm -rf "$PREFIX" /run/dante-virgil /run/dante-virgil-generated /var/lib/dante-virgil
+rm -rf "$PREFIX" /run/dante-virgil /run/dante-virgil-generated /var/lib/dante-virgil /var/lib/dante-virgil-root
 systemctl daemon-reload
 
 if [[ -e /etc/network/interfaces ]] && grep -q '# Set by Virgil' /etc/network/interfaces; then

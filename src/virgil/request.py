@@ -22,7 +22,11 @@ MAX_REQUEST_BYTES = 64 * 1024
 MAX_ALLOW = 64
 MAX_TRIM_PPB = 1_000_000
 
-INTERFACE_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,15}$")
+# An interface name, checked with fullmatch() or match(). Two things matter here, since virgil-root puts these
+# names into config files and command lines as root:
+# - it ends with \Z, not $: in Python, $ also matches just before a final newline, so "eth0\n" used to pass;
+# - it can't start with "-", which a command such as ifup would read as an option ("-a": every interface).
+INTERFACE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}\Z")
 
 # (minimum, maximum) for each tuning field.
 TUNING_LIMITS: dict[str, tuple[float, float]] = {
@@ -126,17 +130,21 @@ def from_json(text: str | bytes) -> TimingRequest:
         raise RequestError("role must be 'leader' or 'follower'") from error
 
     interface = _require(data, "ptp_interface", str)
-    if not INTERFACE_NAME.match(interface):
+    if not INTERFACE_NAME.fullmatch(interface):
         raise RequestError("ptp_interface is not a valid interface name")
 
     leader = data.get("leader")
     if leader is not None:
         if not isinstance(leader, str):
             raise RequestError("leader must be an address")
+        # IPv4 only, and deliberately so. Virgil only ever uses IPv4 (discovery, heartbeats and PTP are all
+        # IPv4), and Python accepts an IPv6 address with a scope ID ("fe80::1%eth0") in which the scope can be
+        # any text at all, newlines included. That text went straight into chrony.conf, which root's chronyd
+        # reads, so a request could add chrony directives of its own. An IPv4 address is only digits and dots.
         try:
-            leader = str(ipaddress.ip_address(leader))
+            leader = str(ipaddress.IPv4Address(leader))
         except ValueError as error:
-            raise RequestError("leader must be an IP address") from error
+            raise RequestError("leader must be an IPv4 address") from error
     if role is Role.FOLLOWER and leader is None:
         raise RequestError("a follower needs a leader")
     if role is Role.LEADER and leader is not None:
@@ -150,9 +158,9 @@ def from_json(text: str | bytes) -> TimingRequest:
         if not isinstance(entry, str):
             raise RequestError("allow entries must be addresses or networks")
         try:
-            network = ipaddress.ip_network(entry, strict=False)
+            network = ipaddress.IPv4Network(entry, strict=False)  # IPv4 only: see the leader, above
         except ValueError as error:
-            raise RequestError(f"allow entry {entry!r} is not an address or network") from error
+            raise RequestError(f"allow entry {entry!r} is not an IPv4 address or network") from error
         allow.append(str(network.network_address) if network.num_addresses == 1 else str(network))
 
     trim = data.get("trim_ppb", 0)
@@ -164,7 +172,7 @@ def from_json(text: str | bytes) -> TimingRequest:
         raise RequestError("use_nic_profile must be true or false")
 
     hwtimestamp = data.get("ntp_hwtimestamp")
-    if hwtimestamp is not None and (not isinstance(hwtimestamp, str) or not INTERFACE_NAME.match(hwtimestamp)):
+    if hwtimestamp is not None and (not isinstance(hwtimestamp, str) or not INTERFACE_NAME.fullmatch(hwtimestamp)):
         raise RequestError("ntp_hwtimestamp is not a valid interface name")
 
     probe = data.get("probe_timestamps", True)

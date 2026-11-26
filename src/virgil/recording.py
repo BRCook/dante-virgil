@@ -44,8 +44,9 @@ GRAPHS_EVERY = 15  # status readings (30 s)
 DIAGNOSTICS_EVERY = 150  # status readings (5 minutes)
 UNITS = ["dante-virgil", "dante-virgil-chrony", "dante-virgil-ptp4l", "dante-virgil-phc2sys",
          "dante-virgil-netaudio", "dante-virgil-trim", "dante-virgil-sync"]
-ARCHIVE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,150}\.tar(\.gz)?$")
-STAMP = re.compile(r"^[0-9]{8}-[0-9]{6}$")
+# Both end with \Z, not $: in Python, $ also matches just before a final newline, so "x.tar\n" used to pass.
+ARCHIVE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,150}\.tar(\.gz)?\Z")
+STAMP = re.compile(r"^[0-9]{8}-[0-9]{6}\Z")
 
 
 def stamp_now() -> str:

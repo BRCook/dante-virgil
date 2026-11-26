@@ -88,3 +88,31 @@ def test_ntp_hwtimestamp():
     assert from_json(to_json(request)) == request
     with pytest.raises(RequestError):
         from_json(_with(ntp_hwtimestamp="enp1s0; reboot"))
+
+
+# Whatever passes these checks goes into config files and command lines that root uses, so nothing may smuggle
+# in a newline (a new line of chrony.conf), or anything else that isn't the plain name or address it claims to be.
+
+@pytest.mark.parametrize("leader", [
+    "fe80::1%eth0",                          # IPv6 at all: a scope ID can hold any text
+    "fe80::1%x\nuser root\ncmdallow all",    # which is how extra chrony directives got in
+    "192.168.20.21\n",
+    "192.168.20.21 iburst",
+])
+def test_the_leader_must_be_a_plain_ipv4_address(leader):
+    with pytest.raises(RequestError, match="leader"):
+        from_json(json.dumps({**FOLLOWER, "leader": leader}))
+
+
+@pytest.mark.parametrize("entry", ["fe80::/64", "fe80::2%y\nlocal stratum 1", "10.0.0.0/8\n"])
+def test_allow_entries_must_be_plain_ipv4(entry):
+    with pytest.raises(RequestError, match="allow entry"):
+        from_json(json.dumps({**FOLLOWER, "allow": [entry]}))
+
+
+@pytest.mark.parametrize("name", ["enp1s0\n", "-a", "--force", "", "a" * 16])
+def test_interface_names_are_strict(name):
+    with pytest.raises(RequestError, match="ptp_interface"):
+        from_json(json.dumps({**FOLLOWER, "ptp_interface": name}))
+    with pytest.raises(RequestError, match="ntp_hwtimestamp"):
+        from_json(json.dumps({**FOLLOWER, "ntp_hwtimestamp": name}))

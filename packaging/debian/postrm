@@ -34,7 +34,7 @@ case "$1" in
 esac
 
 if [ "$1" = purge ]; then
-    rm -rf /etc/dante-virgil /var/lib/dante-virgil
+    rm -rf /etc/dante-virgil /var/lib/dante-virgil /var/lib/dante-virgil-root
     userdel dante-virgil 2>/dev/null || true
 fi
 exit 0

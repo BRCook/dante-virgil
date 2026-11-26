@@ -64,13 +64,15 @@ fi
 # the directory. The config and key stay private.
 install -d -m 751 -o "$SERVICE_USER" -g "$SERVICE_USER" "$CONFIG_DIR"
 if [ ! -e "$CONFIG_DIR/virgil.toml" ]; then
-    "$VENV/bin/virgilctl" config init
+    # As the service user, like the certificate below.
+    runuser -u "$SERVICE_USER" -- "$VENV/bin/virgilctl" config init
 fi
-"$VENV/bin/virgilctl" tls init
-chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR/tls"
-chmod 755 "$CONFIG_DIR/tls"
-chmod 644 "$CONFIG_DIR/tls/cert.pem"
-chmod 600 "$CONFIG_DIR/tls/key.pem"
+# From here on, everything in $CONFIG_DIR is done as $SERVICE_USER, never as root. The directory belongs to that
+# user, and root working in a directory someone else owns can be misdirected with a symlink: the chmod and chown
+# that used to follow here (on tls, tls/cert.pem and tls/key.pem) would have changed whatever those names had been
+# pointed at. Made by the service user, the certificate and key are already its own, with the right permissions
+# (see virgil.tls.generate), so there's nothing left for root to adjust.
+runuser -u "$SERVICE_USER" -- "$VENV/bin/virgilctl" tls init
 
 if systemd_running; then
     systemctl daemon-reload

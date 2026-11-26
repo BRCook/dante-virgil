@@ -198,34 +198,94 @@ def covers(info: dict, name: str) -> bool:
     return False
 
 
+def _open_web_folder(directory: Path, create: bool = False) -> int:
+    """Open the web certificate's folder, for working inside it without following any symlink.
+
+    `virgilctl tls import-web` and `remove-web` run as root, but the TLS directory belongs to the dante-virgil
+    user, who could swap "web", or a file inside it, for a symlink to somewhere else. So neither the TLS
+    directory nor "web" is opened if it's a symlink (O_NOFOLLOW), and everything after that is done relative to
+    the opened folder (dir_fd), never by a path that could be changed between one step and the next.
+    """
+    import os
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        parent = os.open(directory, flags)
+    except FileNotFoundError:
+        raise
+    except OSError as error:
+        raise TlsError(f"{directory} isn't a plain directory: {error.strerror}") from error
+    try:
+        if create:
+            try:
+                os.mkdir(WEB_DIR, 0o755, dir_fd=parent)
+            except FileExistsError:
+                pass
+        try:
+            return os.open(WEB_DIR, flags, dir_fd=parent)
+        except FileNotFoundError:
+            raise
+        except OSError as error:
+            raise TlsError(f"{directory / WEB_DIR} isn't a plain directory: {error.strerror}") from error
+    finally:
+        os.close(parent)
+
+
 def install_web(cert_path: Path, key_path: Path, directory: Path = TLS_DIR, owner: str | None = None) -> Identity:
-    """Copy a web certificate and key into place, the key readable only by virgild."""
+    """Copy a web certificate and key into place, the key readable only by virgild.
+
+    Each file is written under a new, random name that must not exist yet (O_EXCL), given its permissions and
+    owner through the open file itself, and only then renamed into place. The old way wrote to a fixed name
+    ("key.new") and then changed that path's owner: with a symlink waiting at that name, root wrote the key over
+    whatever it pointed to, and handed that file to the dante-virgil user.
+    """
     import os
     import pwd
-    import shutil
+    import secrets
 
-    folder = directory / WEB_DIR
-    folder.mkdir(mode=0o755, exist_ok=True)
-    identity = Identity(folder / "cert.pem", folder / "key.pem")
-    for source, target, mode in ((cert_path, identity.cert_path, 0o644), (key_path, identity.key_path, 0o600)):
-        temporary = target.with_suffix(".new")
-        shutil.copyfile(source, temporary)
-        os.chmod(temporary, mode)
-        if owner is not None and target is identity.key_path:
-            user = pwd.getpwnam(owner)
-            os.chown(temporary, user.pw_uid, user.pw_gid)
-        os.replace(temporary, target)
-    return identity
+    user = pwd.getpwnam(owner) if owner is not None else None
+    folder = _open_web_folder(directory, create=True)
+    try:
+        for source, name, mode in ((cert_path, "cert.pem", 0o644), (key_path, "key.pem", 0o600)):
+            data = Path(source).read_bytes()
+            temporary = f".{name}.{secrets.token_hex(8)}.new"
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
+                         dir_fd=folder)
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    if user is not None and name == "key.pem":
+                        os.fchown(f.fileno(), user.pw_uid, user.pw_gid)
+                    os.fchmod(f.fileno(), mode)
+                    f.write(data)
+                os.replace(temporary, name, src_dir_fd=folder, dst_dir_fd=folder)
+            except BaseException:
+                try:
+                    os.unlink(temporary, dir_fd=folder)
+                except FileNotFoundError:
+                    pass
+                raise
+    finally:
+        os.close(folder)
+    return Identity(directory / WEB_DIR / "cert.pem", directory / WEB_DIR / "key.pem")
 
 
 def remove_web(directory: Path = TLS_DIR) -> bool:
-    folder = directory / WEB_DIR
+    import os
+
+    try:
+        folder = _open_web_folder(directory)
+    except FileNotFoundError:
+        return False
     removed = False
-    for name in ("cert.pem", "key.pem"):
-        path = folder / name
-        if path.exists():
-            path.unlink()
-            removed = True
+    try:
+        for name in ("cert.pem", "key.pem"):
+            try:
+                os.unlink(name, dir_fd=folder)  # removes a symlink itself, never what it points to
+                removed = True
+            except FileNotFoundError:
+                pass
+    finally:
+        os.close(folder)
     return removed
 
 

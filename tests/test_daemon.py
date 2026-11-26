@@ -1588,3 +1588,86 @@ def test_each_graph_series_thins_as_combine_for_says(tmp_path):
     assert {k.split("/")[0] for k in b.graphs.series} >= {"latency", "average", "limit", "late", "console", "rtt", "jitter", "loss"}
     for key, series in b.graphs.series.items():
         assert series.combine == combine_for(key), key
+
+
+def _follower_of_b(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.ptp_interface = "enp1s0"
+    config_file.save(config, paths["A"])
+    return Daemon(paths["A"], identities["A"]), configs["B"]
+
+
+def test_a_follower_only_gives_chrony_an_address_its_leader_has_proven(tmp_path):
+    """Anyone on the management network can send an mDNS advert with the leader's Virgil ID. NTP isn't
+    authenticated, so an advert alone must never decide where a follower's time comes from."""
+    a, b = _follower_of_b(tmp_path)
+    forged = discovery.Advert(b.id, "Virgil B", "1.1.0", a.config.group.id, 8740, 8741, ("10.10.100.66",))
+    a.on_advert(forged)
+    assert a.build_request(Target(Role.FOLLOWER, b.id)) is None  # not yet heard from over the group's TLS
+    a.learned[b.id] = "10.10.100.20"  # where B's heartbeats come from
+    assert a.build_request(Target(Role.FOLLOWER, b.id)).leader == "10.10.100.20"
+    a.on_advert(forged)  # and a later advert doesn't change that
+    assert a.build_request(Target(Role.FOLLOWER, b.id)).leader == "10.10.100.20"
+
+
+def test_a_members_proven_address_comes_before_any_advertised(tmp_path):
+    a, b = _follower_of_b(tmp_path)
+    a.on_advert(discovery.Advert(b.id, "Virgil B", "1.1.0", a.config.group.id, 8740, 8741,
+                                 ("10.10.100.66", "10.10.100.20")))
+    assert a.addresses_for(b.id) == ["10.10.100.66", "10.10.100.20"]  # only adverts so far: somewhere to look
+    a.learned[b.id] = "10.10.100.20"
+    assert a.addresses_for(b.id) == ["10.10.100.20", "10.10.100.66"]
+
+
+def test_a_heartbeat_teaches_the_senders_address_even_with_an_advert(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        b = Daemon(paths["B"], identities["B"])
+        runners = await start(a) + await start(b)
+        introduce(a, b)
+        introduce(b, a)
+        a.adverts[configs["B"].id] = discovery.Advert(  # a forged advert for B, pointing somewhere else
+            configs["B"].id, "Virgil B", "1.1.0", a.config.group.id, b.public_port, b.group_port, ("127.0.0.66",))
+        try:
+            await b._member_call(configs["A"].id, "POST", HEARTBEAT_PATH, b.heartbeat().encode())
+            return a.verified_address(configs["B"].id), a.addresses_for(configs["B"].id)
+        finally:
+            for runner in runners:
+                await runner.cleanup()
+
+    verified, addresses = asyncio.run(scenario())
+    assert verified == "127.0.0.1" and addresses == ["127.0.0.1", "127.0.0.66"]
+
+
+@pytest.mark.parametrize("name", ["../../A/virgil.toml", "/etc/passwd", "log.tar.gz\n", "..", 7])
+def test_a_members_log_with_a_name_that_isnt_an_archives_is_ignored(tmp_path, name):
+    """A member names the log it sends back, and that name becomes a file on the coordinator: it mustn't be
+    able to name anything but an archive in the recordings folder."""
+    paths, identities, configs = make_pair(tmp_path)
+    before = paths["A"].read_bytes()
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        a.recordings_root = tmp_path / "rec-a"
+        a.public_app()
+        a.recording.units = None  # no journal in tests
+        calls = []
+
+        async def call(virgil_id, method, path, body=None, timeout=10.0, as_bytes=False):
+            calls.append((method, path))
+            return b"overwritten" if as_bytes else {"archive": name}
+
+        a._member_call = call
+        await a.start_recording(group=False)
+        a.recording_members = [configs["B"].id]
+        return await a.stop_recording(), calls
+
+    stopped, calls = asyncio.run(scenario())
+    assert stopped["archive"].endswith(".tar.gz")  # A's own log, alone
+    assert [method for method, _ in calls] == ["POST"]  # asked to stop; its log never fetched, nothing deleted
+    assert paths["A"].read_bytes() == before
+    assert sorted(p.name for p in (tmp_path / "rec-a").iterdir()) == sorted(
+        [stopped["archive"], stopped["archive"] + ".summary.json"])

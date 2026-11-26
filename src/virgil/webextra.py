@@ -6,7 +6,8 @@
   on loopback. netaudio's daemon treats loopback callers as its owner, with
   full control over the consoles, so this is behind Virgil's login: the
   session cookie a browser gets from Virgil's page is sent to every port on
-  the same host.
+  the same host. Since the cookie alone lets a request through, requests that
+  another site's page made are refused (see from_elsewhere).
 """
 
 from __future__ import annotations
@@ -55,6 +56,34 @@ def _login_page(request: web.Request) -> web.Response:
     return web.Response(text=page, content_type="text/html", status=401)
 
 
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def from_elsewhere(request: web.Request) -> bool:
+    """Whether another origin's page made this request, using the browser's cookie behind the person's back.
+
+    Virgil's own API asks for a header that only its own page can send. netaudio's page can't be asked for
+    that, and the session cookie's SameSite setting only keeps out other *sites*: a page on another port of
+    this host, or on a neighbouring host name under the same domain, counts as the same site, and its requests
+    carry the cookie. So this checks what the browser itself says about where a request came from:
+
+    - Sec-Fetch-Site (every current browser sends it): "same-origin" is netaudio's own page, and "none" is the
+      person's own doing (typing the address, a bookmark). Anything else is another origin's page, which may
+      only open netaudio's page, as the link on Virgil's page does (a GET that navigates), and nothing more.
+    - Origin, for browsers without Sec-Fetch-Site: on anything that could change something, it must be this
+      very host and port.
+
+    Requests from tools that aren't browsers (curl, scripts) carry neither header, and aren't affected: they
+    hold the cookie because someone gave it to them.
+    """
+    site = request.headers.get("Sec-Fetch-Site")
+    if site is not None and site not in ("same-origin", "none"):
+        if not (request.method == "GET" and request.headers.get("Sec-Fetch-Mode") == "navigate"):
+            return True
+    origin = request.headers.get("Origin")
+    return request.method not in SAFE_METHODS and origin is not None and origin != f"https://{request.host}"
+
+
 def netaudio_app(logged_in: Callable[[str | None], bool], upstream: str = NETAUDIO_URL) -> web.Application:
     """netaudio's web UI and API, for logged-in Virgil users only."""
     session: aiohttp.ClientSession | None = None
@@ -72,6 +101,10 @@ def netaudio_app(logged_in: Callable[[str | None], bool], upstream: str = NETAUD
     async def proxy(request: web.Request) -> web.StreamResponse:
         if not logged_in(request.cookies.get(COOKIE)):
             return _login_page(request)
+        if from_elsewhere(request):
+            log.warning("Refused a request for netaudio's %s that another page made (%s)", request.path,
+                        request.headers.get("Origin") or request.headers.get("Sec-Fetch-Site"))
+            return web.Response(text="Refused: this request didn't come from netaudio's own page.", status=403)
         headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP and k.lower() != "cookie"}
         headers["X-Forwarded-Proto"] = "https"
         body = await request.read() if request.can_read_body else None

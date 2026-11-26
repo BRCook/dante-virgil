@@ -35,7 +35,7 @@ from virgil.events import EventLog
 from virgil.graphs import KEEP_SECONDS, WORST, Recorder, jitter
 from virgil.pinger import Pinger
 from virgil.replay import Replays
-from virgil.recording import RECORDINGS, Session, stamp_now, summary_of, summary_path
+from virgil.recording import ARCHIVE, RECORDINGS, Session, stamp_now, summary_of, summary_path
 from virgil import ptpv1 as ptpv1_module
 from virgil import timestamping
 from virgil.ptpwatch import mac_of_identity
@@ -146,7 +146,9 @@ class Daemon:
     election: Election = field(init=False)
     peers: dict[str, Peer] = field(default_factory=dict, init=False)
     adverts: dict[str, discovery.Advert] = field(default_factory=dict, init=False)
-    # Addresses to try for each member, by Virgil ID, for members without an mDNS advert.
+    # The address each member was last heard from, by Virgil ID: where its latest heartbeat (or its joining) came
+    # from, over a connection only that member could have made. These are the addresses Virgil trusts; mDNS
+    # adverts, which anyone on the network can send, only help to find a member in the first place.
     learned: dict[str, str] = field(default_factory=dict, init=False)
     discovery: discovery.Discovery | None = field(default=None, init=False)
     timing: TimingManager | None = field(default=None, init=False)
@@ -293,10 +295,15 @@ class Daemon:
                                  probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2(),
                                  tuning=Tuning(phc2sys_kp=config.phc2sys_kp, phc2sys_ki=config.phc2sys_ki,
                                              filter=config.chrony_filter))
-        addresses = self.addresses_for(target.leader_id) if target.leader_id else []
-        if not addresses:
+        # chrony follows this address, and NTP isn't authenticated, so it must be one the leader has proven is
+        # its own: where its heartbeats come from (see verified_address). An address from an mDNS advert won't
+        # do: anyone on the management network could advertise the leader's Virgil ID with their own address,
+        # and this Virgil's clock (and its Dante devices') would have followed them. A follower has always
+        # heard its leader's heartbeat, so this is only ever missing for a moment after virgild starts, and
+        # the timing manager tries again every second until it's there.
+        leader = self.verified_address(target.leader_id) if target.leader_id else None
+        if leader is None:
             return None
-        leader = addresses[0]
         return TimingRequest(Role.FOLLOWER, config.ptp_interface, leader, tuple(networks or [leader]),
                              config.trim_ppb, config.nic_profile is not None,
                              ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
@@ -618,16 +625,23 @@ class Daemon:
         for virgil_id in self.recording_members:
             reply = await self._member_call(virgil_id, "POST", RECORDING_PATH, {"action": "stop"},
                                             timeout=LOG_PACK_TIMEOUT)
-            if not reply or not reply.get("archive"):
+            name = reply.get("archive") if isinstance(reply, dict) else None
+            if not name:
                 continue
-            data = await self._member_call(virgil_id, "GET", f"{RECORDINGS_PATH}/{reply['archive']}",
+            # The name comes from the member, and becomes a file here, so it must be a plain archive name: the
+            # same pattern this Virgil's own archives are held to. Unchecked, a name such as
+            # "../../../etc/dante-virgil/virgil.toml" wrote the member's data over this Virgil's own files.
+            if not isinstance(name, str) or not ARCHIVE.fullmatch(name):
+                log.warning("Ignored a log from %s: %r isn't an archive's name", self.name_of(virgil_id), name)
+                continue
+            data = await self._member_call(virgil_id, "GET", f"{RECORDINGS_PATH}/{name}",
                                            timeout=LOG_SEND_TIMEOUT, as_bytes=True)
             if data is None:
                 continue
-            path = self.recordings_root / reply["archive"]
+            path = self.recordings_root / name
             path.write_bytes(data)
             archives.append(path)
-            await self._member_call(virgil_id, "POST", f"{RECORDINGS_PATH}/delete", {"name": reply["archive"]})
+            await self._member_call(virgil_id, "POST", f"{RECORDINGS_PATH}/delete", {"name": name})
         self.recording_members = []
         if len(archives) == 1:
             return {"archive": own}
@@ -1489,8 +1503,11 @@ class Daemon:
             log.warning("%s sent a heartbeat claiming to be %s", self.name_of(sender), beat.id)
             return web.json_response({"error": "that isn't your Virgil ID"}, status=403)
         self.peers[sender] = Peer(beat, time.monotonic(), request.remote)
-        if sender not in self.adverts and request.remote:
+        # Always, not only for members without an advert: this address is proven, and an advert's isn't.
+        if request.remote and self.learned.get(sender) != request.remote:
             self.learned[sender] = request.remote
+            if self.timing is not None and sender == self.election.leader:
+                self.timing.poke()  # the leader has moved: point chrony at its new address
         if beat.shared_settings:
             self.adopt_shared_settings(shared.parse(beat.shared_settings), sender)
         if beat.members_digest and self.config.group and beat.members_digest != membership.digest(self.config.group):
@@ -1500,12 +1517,26 @@ class Daemon:
                 asyncio.ensure_future(self.sync_members_from(sender))
         return web.Response(status=204)
 
+    def verified_address(self, virgil_id: str) -> str | None:
+        """The address a member was last heard from over the group's TLS, where only it holds the key."""
+        return self.learned.get(virgil_id)
+
     def addresses_for(self, virgil_id: str) -> list[str]:
-        advert = self.adverts.get(virgil_id)
-        if advert is not None:
-            return list(advert.addresses)
+        """Addresses to try for a member: the proven one first (see verified_address), then any advertised.
+
+        Advertised addresses are still worth trying, since that's how members find each other to begin with,
+        and whatever answers there still has to present the member's certificate. But they never come before
+        an address the member has proven, so a forged advert can't draw this Virgil's requests away from it.
+        """
+        addresses = []
         learned = self.learned.get(virgil_id)
-        return [learned] if learned else []
+        if learned:
+            addresses.append(learned)
+        advert = self.adverts.get(virgil_id)
+        for address in advert.addresses if advert is not None else ():
+            if address not in addresses:
+                addresses.append(address)
+        return addresses
 
     async def send_heartbeats(self) -> None:
         session: aiohttp.ClientSession | None = None

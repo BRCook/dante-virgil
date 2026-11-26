@@ -159,7 +159,7 @@ def probe_slots(step: dict, run: Runner = _run, card=None, path: Path | None = N
 
     path = path or timestamping.PROBE_PATH
     interface = step.get("interface")
-    if not isinstance(interface, str) or not INTERFACE_NAME.match(interface):
+    if not isinstance(interface, str) or not INTERFACE_NAME.fullmatch(interface):
         return
     found = get_interface(interface, timestamping=lambda name: None)
     key = timestamping.card_key(interface, found.driver if found else None)
@@ -183,7 +183,12 @@ def probe_slots(step: dict, run: Runner = _run, card=None, path: Path | None = N
     except OSError as error:
         print(f"Couldn't probe {interface}'s transmit timestamp slots: {error}", flush=True)
         return
-    timestamping.save_probe(key, result.as_dict(), path)
+    try:
+        timestamping.save_probe(key, result.as_dict(), path)
+    except OSError as error:
+        # Such as a directory that isn't root's alone (see timestamping.save_probe). The card stays unmeasured.
+        print(f"Couldn't save {interface}'s probe: {error}", flush=True)
+        return
     if not result.hardware:
         print(f"{interface} gave no hardware transmit timestamps", flush=True)
     else:
@@ -250,7 +255,6 @@ def dhcpnames(request_path: Path | None = None, interfaces_file: Path | None = N
     interfaces_file = interfaces_file or INTERFACES_FILE
     dhcpcd_conf = dhcpcd_conf or DHCPCD_CONF
     run = run or SYSTEM_RUN
-    import re
     import shutil
     import socket
 
@@ -263,15 +267,23 @@ def dhcpnames(request_path: Path | None = None, interfaces_file: Path | None = N
         data = json.loads(read_small_file(request_path, 4096))
     except FileNotFoundError:
         data = {}
+    except ValueError:
+        print("virgil-root: the request isn't valid JSON", file=sys.stderr)
+        return 1
+    if not isinstance(data, dict):
+        print("virgil-root: the request must be an object", file=sys.stderr)
+        return 1
+    # Every name below ends up in /etc/network/interfaces, in dhcpcd.conf or on ifup's command line, as root, so
+    # each is checked against the same strict pattern as the timing request's (see virgil.request): this used a
+    # looser copy of it, which let through a name ending in a newline, and one starting with "-".
     adding = data.get("add") or []
-    if not isinstance(adding, list) or not all(isinstance(a, str) and re.match(r"^[A-Za-z0-9_.:-]{1,15}$", a)
-                                                for a in adding):
+    if not isinstance(adding, list) or not all(isinstance(a, str) and INTERFACE_NAME.fullmatch(a) for a in adding):
         print("virgil-root: add must be a list of interface names", file=sys.stderr)
         return 1
     wanted = {}
     for key in ("ptp_interface", "mgmt_interface"):
         value = data.get(key)
-        if value is not None and not (isinstance(value, str) and re.match(r"^[A-Za-z0-9_.:-]{1,15}$", value)):
+        if value is not None and not (isinstance(value, str) and INTERFACE_NAME.fullmatch(value)):
             print(f"virgil-root: {key} isn't a valid interface name", file=sys.stderr)
             return 1
         wanted[key] = value

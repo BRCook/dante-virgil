@@ -113,3 +113,29 @@ def test_browsers_get_the_web_certificate_and_trust_it(ca, tls_dir):
     tls.remove_web(tls_dir)
     plain = tls.web_server_context(tls.default_identity(tls_dir), tls_dir)
     assert isinstance(plain, ssl.SSLContext)
+
+
+def test_installing_never_follows_a_symlink(ca, tls_dir, tmp_path):
+    """import-web runs as root, in a directory the dante-virgil user owns. Symlinks left where it writes (as 1.1.0
+    did, by the fixed names cert.new and key.new) must not send the key, or its ownership, anywhere else."""
+    victim = tmp_path / "victim"
+    victim.write_text("untouched")
+    web = tls_dir / "web"
+    web.mkdir()
+    for name in ("cert.new", "key.new", "key.pem"):
+        (web / name).symlink_to(victim)
+    tls.install_web(ca / "fullchain.pem", ca / "leaf.key", tls_dir)
+    assert victim.read_text() == "untouched"
+    assert not (web / "key.pem").is_symlink() and (web / "key.pem").read_bytes() == (ca / "leaf.key").read_bytes()
+    assert [p.name for p in web.iterdir() if p.name.startswith(".")] == []  # no temporary files left behind
+
+
+def test_a_symlink_for_the_web_folder_is_refused(ca, tls_dir, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tls_dir / "web").symlink_to(elsewhere)
+    with pytest.raises(tls.TlsError, match="isn't a plain directory"):
+        tls.install_web(ca / "fullchain.pem", ca / "leaf.key", tls_dir)
+    with pytest.raises(tls.TlsError, match="isn't a plain directory"):
+        tls.remove_web(tls_dir)
+    assert list(elsewhere.iterdir()) == []
