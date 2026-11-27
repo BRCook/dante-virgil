@@ -311,6 +311,18 @@ async def _control(method: str, path: str, socket_path: Path, body: dict | None 
 
 
 def cmd_role(args: argparse.Namespace) -> int:
+    if args.role == "lead":
+        # Asking virgild to take the lead goes through its control socket, and needs nothing from systemd. It
+        # used to ask systemd what was running first, like the other role commands, so on a machine without
+        # systemctl (the test container, for one) it failed before it had even checked the config.
+        if config_file.load(args.config).observe_only:
+            raise CliError("observe_only is set, so virgild doesn't manage roles. Use 'virgilctl role leader'.")
+        status, body = asyncio.run(_control("POST", LEAD_PATH, args.control))
+        if status >= 300:
+            raise CliError(body.get("error", f"virgild refused ({status})"))
+        print(body.get("message", "Done"))
+        return 0
+
     systemd = Systemd()
     old = current_request(systemd, args.request)
     if args.role == "show":
@@ -325,14 +337,6 @@ def cmd_role(args: argparse.Namespace) -> int:
         return 0
 
     managed = not config_file.load(args.config).observe_only
-    if args.role == "lead":
-        if not managed:
-            raise CliError("observe_only is set, so virgild doesn't manage roles. Use 'virgilctl role leader'.")
-        status, body = asyncio.run(_control("POST", LEAD_PATH, args.control))
-        if status >= 300:
-            raise CliError(body.get("error", f"virgild refused ({status})"))
-        print(body.get("message", "Done"))
-        return 0
     if args.role == "stop":
         if managed:
             # Otherwise virgild would start them again.

@@ -169,3 +169,18 @@ def test_a_role_change_leaves_ptp4l_off_in_ptpv1_only_mode():
 
     steps = transition(replace(FOLLOWER, serve_ptpv2=False), replace(LEADER, serve_ptpv2=False))
     assert start(PTP4L) not in steps and steps[-2:] == [stop(PTP4L), start(HWSTAMP)]
+
+
+def test_a_machine_without_systemctl_is_reported_plainly():
+    """As in the container the tests run in on GitHub: no systemd at all."""
+    import pytest
+
+    from virgil.roles import ServiceError, Systemd
+
+    def missing(args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "systemctl")
+
+    systemd = Systemd(run=missing)
+    assert systemd.is_active("dante-virgil-chrony.service") is False
+    with pytest.raises(ServiceError, match="systemctl isn't installed"):
+        systemd.start("dante-virgil-chrony.service")
