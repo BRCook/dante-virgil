@@ -44,8 +44,9 @@ GRAPHS_EVERY = 15  # status readings (30 s)
 DIAGNOSTICS_EVERY = 150  # status readings (5 minutes)
 UNITS = ["dante-virgil", "dante-virgil-chrony", "dante-virgil-ptp4l", "dante-virgil-phc2sys",
          "dante-virgil-netaudio", "dante-virgil-trim", "dante-virgil-sync"]
-ARCHIVE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,150}\.tar(\.gz)?$")
-STAMP = re.compile(r"^[0-9]{8}-[0-9]{6}$")
+# Both end with \Z, not $: in Python, $ also matches just before a final newline, so "x.tar\n" used to pass.
+ARCHIVE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,150}\.tar(\.gz)?\Z")
+STAMP = re.compile(r"^[0-9]{8}-[0-9]{6}\Z")
 
 
 def stamp_now() -> str:
@@ -160,6 +161,15 @@ class Session:
         self.notes = 0
         self._task: asyncio.Task | None = None
         self._journal: asyncio.subprocess.Process | None = None
+        # What stops the session when it stops itself (after MAX_SECONDS, or when the disk is nearly full). virgild
+        # sets this to its own stop_recording, so a group's session is stopped on every member and bundled, just
+        # as when someone presses Stop: left to stop() alone, the coordinator's log was saved by itself, the
+        # members were never told, and Stop then answered "not logging".
+        self.on_auto_stop: Callable[[], Any] | None = None
+        # The archive from a session that stopped itself, until someone collects it (see take_auto_stopped).
+        self.auto_stopped: str | None = None
+        # Set while the session is being stopped and packed, so a second stop() waits for the first (see stop).
+        self._stopping: asyncio.Future | None = None
 
     # State
 
@@ -192,6 +202,7 @@ class Session:
         folder = self.root / f"virgil-{stamp}-{re.sub(r'[^A-Za-z0-9-]+', '-', self.name).strip('-')}"
         folder.mkdir(parents=True, exist_ok=False)
         self.folder, self.since, self.group, self.notes = folder, self.clock(), group, 0
+        self.auto_stopped = None
         if self.units:
             try:
                 args = ["journalctl", "-f", "-n", "0", "-o", "short-iso-precise"]
@@ -206,9 +217,26 @@ class Session:
         return folder.name
 
     async def stop(self) -> str | None:
-        """Stop, and pack the recording. Returns the archive's file name."""
+        """Stop, and pack the recording. Returns the archive's file name.
+
+        Asked again while it's still stopping (packing takes a while), it waits and gives the same answer. That
+        happens whenever a group's session reaches its time limit: every member's part stops itself at the same
+        moment the coordinator asks it to stop, and the coordinator needs the archive's name, not "not logging".
+        """
+        if self._stopping is not None:
+            return await asyncio.shield(self._stopping)
         if not self.active:
             return None
+        self._stopping = asyncio.get_running_loop().create_future()
+        archive = None
+        try:
+            archive = await self._stop()
+            return archive
+        finally:
+            stopping, self._stopping = self._stopping, None
+            stopping.set_result(archive)
+
+    async def _stop(self) -> str:
         if self._task is not None:
             self._task.cancel()
             try:
@@ -239,6 +267,25 @@ class Session:
         log.info("Recording saved as %s", archive.name)
         return archive.name
 
+    def _stop_itself(self) -> None:
+        """Stop from inside the session's own task, which is about to end: in a task of its own (see virgil.tasks)."""
+        from virgil.tasks import spawn
+
+        async def stop() -> None:
+            if self.on_auto_stop is not None:
+                result = await self.on_auto_stop()
+                archive = result.get("archive") if isinstance(result, dict) else None
+            else:
+                archive = await self.stop()
+            self.auto_stopped = archive
+
+        spawn(stop(), "Stopping the logging session")
+
+    def take_auto_stopped(self) -> str | None:
+        """The archive of a session that stopped itself, once: for a coordinator that comes to collect it later."""
+        archive, self.auto_stopped = self.auto_stopped, None
+        return archive if archive and (self.root / archive).is_file() else None
+
     def note(self, text: str) -> str:
         if not self.active:
             raise RuntimeError("not recording")
@@ -266,15 +313,15 @@ class Session:
                     self._append("diagnostics.jsonl", {"t": now, "diagnostics": _strip_histories(self._diagnostics())})
             except OSError as error:
                 log.warning("Recording stopped: %s", error)
-                asyncio.ensure_future(self.stop())
+                self._stop_itself()
                 return
             if now - self.since >= MAX_SECONDS:
                 log.info("Recording stopped after %d hours", MAX_SECONDS // 3600)
-                asyncio.ensure_future(self.stop())
+                self._stop_itself()
                 return
             if shutil.disk_usage(self.root).free < MIN_FREE_BYTES:
                 log.warning("Recording stopped: the disk is nearly full")
-                asyncio.ensure_future(self.stop())
+                self._stop_itself()
                 return
             tick += 1
             await asyncio.sleep(STATUS_EVERY)

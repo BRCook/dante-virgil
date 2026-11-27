@@ -113,10 +113,17 @@ class TimingManager:
             if target is None:
                 new = None
             else:
+                # Building the request doesn't check it; reading it back, exactly as virgil-root will, does. That
+                # check used to sit outside this try, so a setting out of range (a trim beyond ±1000 ppm, typed
+                # into the config) raised here, ended this task, and took virgild down with it, over and over.
+                # Now it's logged, and the timing services carry on as they are until the setting is put right
+                # (which pokes this again).
                 try:
                     new = self._build(target)
+                    if new is not None:
+                        new = from_json(to_json(new))
                 except RequestError as error:
-                    log.error("Can't set up %s: %s", _describe(target), error)
+                    log.error("Can't set up %s: %s. Leaving the timing services as they are", _describe(target), error)
                     return
                 if new is None:
                     # Not possible yet, such as when the leader's address isn't known. Try again soon.
@@ -124,7 +131,6 @@ class TimingManager:
                     if self.desired == target:
                         self._wake.set()
                     return
-                new = from_json(to_json(new))
 
             if new != self.request or target != self.applied:
                 if new != self.request:

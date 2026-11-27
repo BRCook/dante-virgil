@@ -410,29 +410,37 @@ def test_netaudio_follows_the_ptp_interface_and_falls_back_to_management(tmp_pat
     _fake_interfaces(monkeypatch, addresses)
     monkeypatch.setattr(daemon_module, "NETAUDIO_ENV", tmp_path / "netaudio.env")
 
+    import threading
+
     class Systemd:
         calls = []
+        threads = set()
 
         def restart(self, unit, block=True):
+            self.threads.add(threading.current_thread())
             self.calls.append(("restart", (tmp_path / "netaudio.env").read_text().strip()))
 
         def stop(self, unit):
+            self.threads.add(threading.current_thread())
             self.calls.append(("stop", None))
 
     systemd = Systemd()
     b.systemd = systemd
-    b.check_ptp_interface()
+    asyncio.run(b.check_ptp_interface())
+    # systemctl can wait a long time for a stuck service: never on the event loop's own thread, where it would
+    # hold up heartbeats and PTPv1 for as long.
+    assert threading.main_thread() not in systemd.threads
     assert systemd.calls == [("stop", None)]  # no addresses anywhere yet
     addresses["enp5s0"] = ["192.168.30.15/24"]
-    b.check_ptp_interface()
+    asyncio.run(b.check_ptp_interface())
     assert systemd.calls[-1] == ("restart", "NETAUDIO_INTERFACE=enp5s0")  # its UI still works
     assert b.netaudio_interface == "enp5s0"
     addresses["enp1s0"] = ["169.254.40.2/16"]  # a link-local Dante network counts at once
-    b.check_ptp_interface()
-    b.check_ptp_interface()
+    asyncio.run(b.check_ptp_interface())
+    asyncio.run(b.check_ptp_interface())
     assert systemd.calls[-1] == ("restart", "NETAUDIO_INTERFACE=enp1s0") and len(systemd.calls) == 3
     addresses["enp1s0"] = []
-    b.check_ptp_interface()
+    asyncio.run(b.check_ptp_interface())
     assert systemd.calls[-1] == ("restart", "NETAUDIO_INTERFACE=enp5s0")
 
 
@@ -1588,3 +1596,302 @@ def test_each_graph_series_thins_as_combine_for_says(tmp_path):
     assert {k.split("/")[0] for k in b.graphs.series} >= {"latency", "average", "limit", "late", "console", "rtt", "jitter", "loss"}
     for key, series in b.graphs.series.items():
         assert series.combine == combine_for(key), key
+
+
+def _follower_of_b(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.ptp_interface = "enp1s0"
+    config_file.save(config, paths["A"])
+    return Daemon(paths["A"], identities["A"]), configs["B"]
+
+
+def test_a_follower_only_gives_chrony_an_address_its_leader_has_proven(tmp_path):
+    """Anyone on the management network can send an mDNS advert with the leader's Virgil ID. NTP isn't
+    authenticated, so an advert alone must never decide where a follower's time comes from."""
+    a, b = _follower_of_b(tmp_path)
+    forged = discovery.Advert(b.id, "Virgil B", "1.1.0", a.config.group.id, 8740, 8741, ("10.10.100.66",))
+    a.on_advert(forged)
+    assert a.build_request(Target(Role.FOLLOWER, b.id)) is None  # not yet heard from over the group's TLS
+    a.learned[b.id] = "10.10.100.20"  # where B's heartbeats come from
+    assert a.build_request(Target(Role.FOLLOWER, b.id)).leader == "10.10.100.20"
+    a.on_advert(forged)  # and a later advert doesn't change that
+    assert a.build_request(Target(Role.FOLLOWER, b.id)).leader == "10.10.100.20"
+
+
+def test_a_members_proven_address_comes_before_any_advertised(tmp_path):
+    a, b = _follower_of_b(tmp_path)
+    a.on_advert(discovery.Advert(b.id, "Virgil B", "1.1.0", a.config.group.id, 8740, 8741,
+                                 ("10.10.100.66", "10.10.100.20")))
+    assert a.addresses_for(b.id) == ["10.10.100.66", "10.10.100.20"]  # only adverts so far: somewhere to look
+    a.learned[b.id] = "10.10.100.20"
+    assert a.addresses_for(b.id) == ["10.10.100.20", "10.10.100.66"]
+
+
+def test_a_heartbeat_teaches_the_senders_address_even_with_an_advert(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        b = Daemon(paths["B"], identities["B"])
+        runners = await start(a) + await start(b)
+        introduce(a, b)
+        introduce(b, a)
+        a.adverts[configs["B"].id] = discovery.Advert(  # a forged advert for B, pointing somewhere else
+            configs["B"].id, "Virgil B", "1.1.0", a.config.group.id, b.public_port, b.group_port, ("127.0.0.66",))
+        try:
+            await b._member_call(configs["A"].id, "POST", HEARTBEAT_PATH, b.heartbeat().encode())
+            return a.verified_address(configs["B"].id), a.addresses_for(configs["B"].id)
+        finally:
+            for runner in runners:
+                await runner.cleanup()
+
+    verified, addresses = asyncio.run(scenario())
+    assert verified == "127.0.0.1" and addresses == ["127.0.0.1", "127.0.0.66"]
+
+
+@pytest.mark.parametrize("name", ["../../A/virgil.toml", "/etc/passwd", "log.tar.gz\n", "..", 7])
+def test_a_members_log_with_a_name_that_isnt_an_archives_is_ignored(tmp_path, name):
+    """A member names the log it sends back, and that name becomes a file on the coordinator: it mustn't be
+    able to name anything but an archive in the recordings folder."""
+    paths, identities, configs = make_pair(tmp_path)
+    before = paths["A"].read_bytes()
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        a.recordings_root = tmp_path / "rec-a"
+        a.public_app()
+        a.recording.units = None  # no journal in tests
+        calls = []
+
+        async def call(virgil_id, method, path, body=None, timeout=10.0, as_bytes=False):
+            calls.append((method, path))
+            return b"overwritten" if as_bytes else {"archive": name}
+
+        a._member_call = call
+        await a.start_recording(group=False)
+        a.recording_members = [configs["B"].id]
+        return await a.stop_recording(), calls
+
+    stopped, calls = asyncio.run(scenario())
+    assert stopped["archive"].endswith(".tar.gz")  # A's own log, alone
+    assert [method for method, _ in calls] == ["POST"]  # asked to stop; its log never fetched, nothing deleted
+    assert paths["A"].read_bytes() == before
+    assert sorted(p.name for p in (tmp_path / "rec-a").iterdir()) == sorted(
+        [stopped["archive"], stopped["archive"] + ".summary.json"])
+
+
+def _touch_later(path):
+    """Make sure a file's modification time differs from before, whatever the filesystem's resolution."""
+    import os
+
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+
+def test_saving_keeps_what_virgilctl_changed_in_the_meantime(tmp_path):
+    """virgild writes the whole config from memory, and only looks for virgilctl's edits every couple of seconds.
+    A save in between (an auto-trim step, say) used to overwrite them."""
+    from virgil import group as groups
+
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    # virgilctl, between two of virgild's checks: a new password, and an invite.
+    edited = config_file.load(paths["A"])
+    edited.web_password, edited.web_password_changed = "scrypt$16384$8$1$c2FsdA==$ZGlnZXN0", 1000.0
+    secret, expires = groups.create_invite(edited.group, time.time())
+    config_file.save(edited, paths["A"])
+    _touch_later(paths["A"])
+    # virgild, before it has noticed: a trim step, and a member's name learned from the group.
+    a.config.trim_ppb = 1234
+    a.config.group.members[configs["B"].id].name = "Renamed B"
+    a.save()
+
+    for config in (a.config, config_file.load(paths["A"])):  # in memory, and in the file
+        assert config.trim_ppb == 1234 and config.group.members[configs["B"].id].name == "Renamed B"
+        assert config.web_password == edited.web_password and config.web_password_changed == 1000.0
+        assert groups.redeem_invite(config.group, secret, time.time())
+    assert a.reload_if_changed() is False  # nothing left to pick up
+
+
+def test_a_save_with_nothing_changed_underneath_is_just_a_save(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    a.config.trim_ppb = 77
+    del a.config.group.members[configs["B"].id]
+    a.save()
+    saved = config_file.load(paths["A"])
+    assert saved.trim_ppb == 77 and configs["B"].id not in saved.group.members
+
+
+def test_a_group_session_that_stops_itself_is_stopped_everywhere_and_bundled(tmp_path, monkeypatch):
+    """After 24 hours, or with the disk nearly full, a session stops itself. On the Virgil coordinating a group's
+    session, that used to save its own log alone and leave the members logging, and Stop then said "not logging"."""
+    import virgil.recording as recording_module
+    from virgil.daemon import Peer
+
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        b = Daemon(paths["B"], identities["B"])
+        a.recordings_root, b.recordings_root = tmp_path / "rec-a", tmp_path / "rec-b"
+        runners = await start(a) + await start(b)
+        a.recording.units = b.recording.units = None  # no journal in tests
+        introduce(a, b)
+        introduce(b, a)
+        a.peers[configs["B"].id] = Peer(b.heartbeat(), time.monotonic())
+        try:
+            await a.start_recording(group=True)
+            assert b.recording.active
+            monkeypatch.setattr(recording_module, "MAX_SECONDS", 0)  # the next reading finds the time is up
+            for _ in range(100):
+                await asyncio.sleep(0.1)
+                if not a.recording.active and not b.recording.active and not a.recording_members:
+                    break
+            return a, b
+        finally:
+            for runner in runners:
+                await runner.cleanup()
+
+    a, b = asyncio.run(scenario())
+    assert not a.recording.active and not b.recording.active and not a.recording_here
+    names = [r["name"] for r in a.recording.recordings()]
+    assert len(names) == 1 and names[0].endswith("-group.tar")  # both logs, in one file, as when Stop is pressed
+    assert b.recording.recordings() == []
+
+
+def test_a_member_whose_part_stopped_itself_still_hands_its_log_over(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        b = Daemon(paths["B"], identities["B"])
+        b.recordings_root = tmp_path / "rec-b"
+        b.public_app()
+        b.recording.units = None
+        await b.recording.start("20260101-120000", group=True)
+        b.recording._stop_itself()  # as its own task does when the disk is nearly full
+        for _ in range(50):
+            await asyncio.sleep(0.1)
+            if not b.recording.active and b.recording.auto_stopped:
+                break
+        return b
+
+    b = asyncio.run(scenario())
+    archive = b.recording.take_auto_stopped()
+    assert archive is not None and archive.endswith("-Virgil-B.tar.gz") and (tmp_path / "rec-b" / archive).is_file()
+    assert b.recording.take_auto_stopped() is None  # handed over once
+
+
+def test_a_background_task_that_fails_says_so(caplog):
+    from virgil.tasks import spawn
+
+    async def fails():
+        raise OSError("the socket went away")
+
+    async def scenario():
+        task = spawn(fails(), "Pinging the other members")
+        await asyncio.sleep(0.05)
+        return task
+
+    task = asyncio.run(scenario())
+    assert task.done() and "Pinging the other members failed: the socket went away" in caplog.text
+    with pytest.raises(RuntimeError):  # and outside an event loop, it refuses cleanly
+        spawn(fails(), "nothing")
+
+
+def test_requests_to_members_share_one_session(tmp_path):
+    """Every request to a member used to make its own TLS setup and connection. Heartbeats, graphs and everything
+    else now share one session, which is only made again when the members' certificates change."""
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        b = Daemon(paths["B"], identities["B"])
+        runners = await start(a) + await start(b)
+        introduce(a, b)
+        introduce(b, a)
+        try:
+            first = await a.group_session()
+            assert await a._member_call(configs["B"].id, "GET", "/group/v1/ping") is not None
+            await a._send(first, configs["B"].id, a.heartbeat().encode())
+            from virgil.daemon import Peer
+
+            a.peers[configs["B"].id] = Peer(b.heartbeat(), time.monotonic())
+            await a._member_series(configs["B"].id, 60.0)
+            connections = sum(len(c) for c in first.connector._conns.values()) + len(first.connector._acquired)
+            same = await a.group_session() is first
+            # A member's certificate changes (here, it's dropped): the session only trusts the members, so it's remade.
+            del a.config.group.members[configs["B"].id]
+            second = await a.group_session()
+            return same, connections, second is not first, first.closed
+        finally:
+            await a.close_group_session()
+            for runner in runners:
+                await runner.cleanup()
+
+    same, connections, remade, old_closed = asyncio.run(scenario())
+    assert same and connections == 1  # three requests, one connection (one TLS handshake)
+    assert remade and old_closed
+
+
+def test_graphs_are_thinned_once_for_pages_asking_together(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    a.graphs.add("offset/A", "offset", "A", "ns", time.time(), 5.0)
+    passes = []
+    real = a.graphs.window
+    a.graphs.window = lambda seconds, now: passes.append(seconds) or real(seconds, now)
+    assert a.own_series(300.0) == a.own_series(300.0) and passes == [300.0]
+    a.own_series(60.0)
+    assert passes == [300.0, 60.0]  # each window has its own
+    a._own_graphs[300.0] = (time.monotonic() - 1.1, a._own_graphs[300.0][1])  # a second on: thinned afresh
+    a.own_series(300.0)
+    assert passes == [300.0, 60.0, 300.0] and len(a._own_graphs) <= 2
+
+
+def test_the_graph_window_is_a_whole_finite_number_of_seconds(tmp_path):
+    from types import SimpleNamespace
+
+    window = lambda value: Daemon._window(SimpleNamespace(query={"window": value}))  # noqa: E731
+    assert window("300") == 300.0 and window("59.6") == 60.0 and window("1") == 10.0 and window("1e9") == 600.0
+    for bad in ("nan", "inf", "-inf", "soon"):
+        with pytest.raises(web.HTTPBadRequest):
+            window(bad)
+
+
+def test_status_doesnt_reread_the_system_for_every_page(tmp_path, monkeypatch):
+    import virgil.daemon as daemon_module
+
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.ptp_interface = "enp1s0"
+    config_file.save(config, paths["A"])
+    a = Daemon(paths["A"], identities["A"])
+    a.timestamping_path = tmp_path / "timestamping.json"
+    a.public_app()
+    lookups = []
+    monkeypatch.setattr(daemon_module, "get_interface", lambda name, **kw: lookups.append(name))
+    a.status_data()
+    after_one = len(lookups)
+    a.status_data()
+    a.heartbeat()
+    assert after_one > 0 and len(lookups) == after_one  # the same second: answered from what was just read
+    a._brief = {key: (when - 1.1, value) for key, (when, value) in a._brief.items()}
+    a.status_data()
+    assert len(lookups) > after_one  # and read again once it's a second old
+
+
+def test_only_so_many_adverts_are_remembered_and_never_at_a_members_expense(tmp_path):
+    """Anyone on the network can advertise under as many IDs as they like; they used to be kept for ever."""
+    import virgil.daemon as daemon_module
+
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    advert = lambda virgil_id: discovery.Advert(virgil_id, "x", "1.1.0", None, 8740, 8741, ("10.0.0.9",))  # noqa: E731
+    a.on_advert(advert(configs["B"].id))  # a member, heard first: the oldest of all
+    for n in range(daemon_module.MAX_ADVERTS * 3):
+        a.on_advert(advert(f"{n:032x}"))
+    assert len(a.adverts) == daemon_module.MAX_ADVERTS
+    assert configs["B"].id in a.adverts  # never dropped to make room
+    assert f"{daemon_module.MAX_ADVERTS * 3 - 1:032x}" in a.adverts and f"{0:032x}" not in a.adverts

@@ -9,7 +9,9 @@ Type=simple
 User=dante-virgil
 Group=dante-virgil
 ExecStart=/opt/dante-virgil/venv/bin/virgild
-Restart=on-failure
+# Always, not only on failure: virgild is never meant to stop by itself, so if it ever exits cleanly (status 0),
+# that's a fault too, and it should come back. "systemctl stop" still stops it.
+Restart=always
 RestartSec=2
 
 # virgild only needs to write its config and its requests to virgil-root.
@@ -27,6 +29,12 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+# More of the same: things virgild never does, so can't be made to do.
+ProtectKernelLogs=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
 
 # Watching PTP on the PTP interface needs a raw socket, and the web UI on

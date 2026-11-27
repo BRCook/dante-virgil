@@ -72,7 +72,7 @@ Virgil's PTP is not immune to the multicast handling issues that regular Dante c
 On each Clock Box, running Debian 13, download the package for its architecture (amd64 or arm64) from the [latest release](https://github.com/BRCook/dante-virgil/releases/latest), then:
 
 ```bash
-sudo apt install ./dante-virgil_1.0.0_amd64.deb   # Install, or update: keeps your settings
+sudo apt install ./dante-virgil_*_amd64.deb       # Install, or update: keeps your settings
 sudo apt remove dante-virgil                       # Uninstall (purge, instead of remove, deletes your settings too)
 ```
 

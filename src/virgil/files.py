@@ -8,18 +8,27 @@ import tempfile
 from pathlib import Path
 
 
-def atomic_write(path: Path, data: bytes, mode: int = 0o644) -> None:
+def atomic_write(path: Path, data: bytes, mode: int | None = None) -> None:
     """Write a file atomically, so a crash never leaves half a file.
 
     The new file keeps the owner of the file it replaces, or takes the owner
     of its directory if it's new. That way, running virgilctl with sudo
     doesn't leave root-owned files that the daemon can't read.
+
+    Without a mode, the new file also keeps the permissions of the file it
+    replaces (0644 if it's new). virgil-root rewrites files it didn't create,
+    such as /etc/network/interfaces, which is often kept at 0600 because it
+    holds a Wi-Fi passphrase: forcing 0644 on it made that readable by everyone.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         owner = os.stat(path)
+        if mode is None:
+            mode = stat.S_IMODE(owner.st_mode)
     except FileNotFoundError:
         owner = os.stat(path.parent)
+        if mode is None:
+            mode = 0o644
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
         with os.fdopen(fd, "wb") as f:

@@ -629,3 +629,42 @@ def test_shared_settings_wait_for_a_settled_clock_in_a_group(config_path, monkey
 def test_check_updates_setting(config_path):
     assert config_file.load(config_path).check_updates is True  # on by default
     assert _set(config_path, "check_updates", "false") == 0 and config_file.load(config_path).check_updates is False
+
+
+@pytest.mark.parametrize("key, value", [
+    ("trim_ppb", "2000000"),     # beyond ±1000 ppm, which virgil-root refuses
+    ("trim_ppb", "-1000001"),
+    ("name", ""),                # members refuse heartbeats from a name outside 1 to 64 characters
+    ("name", "   "),
+    ("name", "x" * 65),
+    ("name", "Box\x1b[2JA"),
+])
+def test_config_set_refuses_what_the_rest_of_virgil_would(config_path, capsys, key, value):
+    before = config_path.read_text()
+    assert cli.main(["--config", str(config_path), "config", "set", key, value]) == 1
+    assert key.split("_")[0] in capsys.readouterr().err and config_path.read_text() == before
+
+
+def test_config_set_accepts_the_limits(config_path):
+    assert cli.main(["--config", str(config_path), "config", "set", "trim_ppb", "-1000000"]) == 0
+    assert cli.main(["--config", str(config_path), "config", "set", "name", "  " + "x" * 64 + " "]) == 0
+    config = config_file.load(config_path)
+    assert config.trim_ppb == -1_000_000 and config.name == "x" * 64
+
+
+def test_names_from_the_network_cant_send_escape_sequences_to_the_terminal(monkeypatch, capsys):
+    """A Dante device, or another Virgil, can be named anything: virgilctl prints names, often as root."""
+    hostile = "Wing\x1b[2J\x1b]0;owned\x07 Rack"
+    status = {"name": "Box A", "state": "leader", "leader": None, "trim_ppb": 0,
+              "dante_devices": [{"name": hostile, "address": "169.254.1.2", "follows_this_virgil": True,
+                                 "clock_offset_ppb": 1200}],
+              "alerts": {"open": [{"label": "LOCK LOST", "device": hostile, "title": "lost its lock", "summary": "",
+                                   "since": ""}]},
+              "events": [{"t": 0, "event": "group", "label": "JOINED", "title": f"{hostile} joined the group"}]}
+    monkeypatch.setattr(cli, "fetch_status", lambda tls_dir: status)
+    for command in (["status"], ["events"], ["trim"]):
+        assert cli.main(command) == 0
+        out = capsys.readouterr().out
+        assert "Wing" in out and "\x1b" not in out and "\x07" not in out
+    assert cli.main(["status", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["dante_devices"][0]["name"] == hostile  # exact, and escaped by JSON

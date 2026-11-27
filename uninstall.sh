@@ -1,8 +1,10 @@
 #!/bin/bash
 # Remove Virgil from this machine, and give timekeeping back to Debian's chrony.
 #
-#   sudo ./uninstall.sh           keeps the config in /etc/dante-virgil
-#   sudo ./uninstall.sh --purge   removes the config and the dante-virgil user too
+#   sudo ./uninstall.sh           keeps the config (/etc/dante-virgil), and the logs and history (/var/lib/dante-virgil)
+#   sudo ./uninstall.sh --purge   removes those too, and the dante-virgil user
+#
+# The same as the package's "apt remove" and "apt purge" (see packaging/debian/postrm).
 #
 # The Debian packages Virgil installed (chrony, linuxptp and so on) are left alone.
 
@@ -36,7 +38,9 @@ if [[ "$(readlink /usr/local/bin/netaudio 2>/dev/null)" == "$PREFIX/venv/bin/net
 fi
 rm -f "$UNIT_DIR"/dante-virgil.service "$UNIT_DIR"/dante-virgil-*.service "$TMPFILES_DIR/dante-virgil.conf" \
     "$POLKIT_DIR/50-dante-virgil.rules" /usr/local/bin/virgilctl
-rm -rf "$PREFIX" /run/dante-virgil /run/dante-virgil-generated /var/lib/dante-virgil
+# Not /var/lib/dante-virgil: that holds the saved logs and the event history, which only --purge removes. (This
+# used to delete it every time, though the note above only ever promised to remove the config when purging.)
+rm -rf "$PREFIX" /run/dante-virgil /run/dante-virgil-generated
 systemctl daemon-reload
 
 if [[ -e /etc/network/interfaces ]] && grep -q '# Set by Virgil' /etc/network/interfaces; then
@@ -62,9 +66,9 @@ systemctl unmask chrony.service >/dev/null 2>&1 || true
 systemctl enable --now chrony.service
 
 if $purge; then
-    echo "Removing the config and the $SERVICE_USER user"
-    rm -rf "$CONFIG_DIR"
+    echo "Removing the config, the logs and history, and the $SERVICE_USER user"
+    rm -rf "$CONFIG_DIR" /var/lib/dante-virgil /var/lib/dante-virgil-root
     userdel "$SERVICE_USER" 2>/dev/null || true
 else
-    echo "The config is still in $CONFIG_DIR."
+    echo "The config is still in $CONFIG_DIR, and the logs and history in /var/lib/dante-virgil."
 fi

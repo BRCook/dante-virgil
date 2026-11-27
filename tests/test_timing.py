@@ -177,3 +177,35 @@ def test_resync_sets_everything_up_from_scratch(tmp_path):
     manager._wake = asyncio.Event()
     manager.resync()
     assert manager.request is None and manager._wake.is_set()
+
+
+def test_a_request_that_fails_its_checks_doesnt_end_the_manager(tmp_path, caplog):
+    """A trim beyond what virgil-root allows (typed into the config, say) used to raise out of the manager, which
+    took virgild down, again and again. It's reported, and the timing services are left as they are."""
+    trim = {"ppb": 99_999_999}
+
+    def build_with_trim(target):
+        return TimingRequest(Role.LEADER, "enp1s0", None, ("10.0.0.0/24",), trim["ppb"])
+
+    apply, acked = Recorder(), []
+    m = TimingManager(build_with_trim, acked.append, systemd=FakeSystemd(), request_path=tmp_path / "request.json",
+                      state_path=tmp_path / "state.json", apply=apply, retry_delay=0.05)
+
+    def put_right():
+        trim["ppb"] = 500
+        m.poke()
+
+    async def scenario():
+        task = asyncio.create_task(m.run())
+        m.want(Target(Role.LEADER))
+        await asyncio.sleep(0.2)
+        refused = (task.done(), list(apply.calls))
+        put_right()
+        await asyncio.sleep(0.2)
+        alive = not task.done()
+        task.cancel()
+        return refused, alive
+
+    (ended, calls_while_wrong), alive = asyncio.run(scenario())
+    assert not ended and calls_while_wrong == [] and "trim_ppb" in caplog.text
+    assert alive and [new.trim_ppb for _, new in apply.calls] == [500]  # and it recovers once the setting is right

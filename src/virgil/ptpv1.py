@@ -34,6 +34,8 @@ PTP_ASSIST, PTP_EXT_SYNC = 0x08, 0x10
 SUBDOMAIN = b"_DFLT"
 LOG_SYNC_INTERVAL = -2
 IDENTIFIER = b"GPS"
+# Past this many addresses that have sent a Delay_Req, the ones gone quiet are forgotten (see _answer_delay_requests).
+MAX_FOLLOWERS = 256
 
 HEADER = struct.Struct("!HH16sBB6sHHBBH4x")
 # Offsets in the message: origin 40, grandmaster UUID 54, stratum 67, identifier 68, preferred 77,
@@ -255,7 +257,13 @@ class Server:
                 self._general.sendto(delay_resp_message(received, self.uuid, requester, port, sequence),
                                      (GROUP, GENERAL))
                 self.stats["Delay_Resps"] += 1
-                self.followers[source] = time.monotonic()
+                now = time.monotonic()
+                self.followers[source] = now
+                if len(self.followers) > MAX_FOLLOWERS:
+                    # Addresses were only ever added (until PTPv1 stopped), and anything on the network can send
+                    # a Delay_Req from any address. Those not heard from lately are forgotten.
+                    for address in [a for a, seen in self.followers.items() if now - seen > 60.0]:
+                        del self.followers[address]
             except OSError:
                 self.stats["send errors"] += 1
 

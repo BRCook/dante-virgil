@@ -169,22 +169,45 @@ def _choose_ptp_interface(name: str, assume_yes: bool) -> tuple[str, str | None]
     return choice.name, choice.nic_profile
 
 
+def _check_name(name: str) -> str:
+    """A Virgil's name, as the group will accept it. Members check every heartbeat's name (1 to 64 characters), so
+    a Virgil named outside that was refused by all of them, without a word here, and dropped out of its group."""
+    from virgil.joining import MAX_NAME
+
+    name = name.strip()
+    if not 1 <= len(name) <= MAX_NAME:
+        raise CliError(f"the name must be 1 to {MAX_NAME} characters")
+    if not name.isprintable():
+        raise CliError("the name can't contain control characters")
+    return name
+
+
 def cmd_config_set(args: argparse.Namespace) -> int:
-    config = config_file.load(args.config)
     key, value = args.key, args.value
+    # Anything that asks a question comes before the config is read. virgild saves its own changes to the same
+    # file (the trim, the member list), and a config read before a question and saved after the answer would
+    # undo whatever virgild changed while the question sat on the screen.
+    chosen = _choose_ptp_interface(value, args.yes) if key == "ptp_interface" else None
+    config = config_file.load(args.config)
     if key == "name":
-        config.name = value
+        config.name = _check_name(value)
     elif key == "ptp_interface":
-        config.ptp_interface, config.nic_profile = _choose_ptp_interface(value, args.yes)
+        config.ptp_interface, config.nic_profile = chosen
     elif key == "mgmt_interface":
         if get_interface(value) is None:
             raise CliError(f"there's no interface called {value}")
         config.mgmt_interface = value
     elif key == "trim_ppb":
+        from virgil.request import MAX_TRIM_PPB
+
         try:
-            config.trim_ppb = int(value)
+            trim = int(value)
         except ValueError as error:
             raise CliError("trim_ppb must be a whole number") from error
+        # The same limit virgil-root holds the timing request to: beyond it, the request is refused.
+        if abs(trim) > MAX_TRIM_PPB:
+            raise CliError(f"trim_ppb must be within ±{MAX_TRIM_PPB} (±1000 ppm)")
+        config.trim_ppb = trim
     elif key == "ptpv1":
         from virgil.config import PTPV1_MODES
 
@@ -288,6 +311,18 @@ async def _control(method: str, path: str, socket_path: Path, body: dict | None 
 
 
 def cmd_role(args: argparse.Namespace) -> int:
+    if args.role == "lead":
+        # Asking virgild to take the lead goes through its control socket, and needs nothing from systemd. It
+        # used to ask systemd what was running first, like the other role commands, so on a machine without
+        # systemctl (the test container, for one) it failed before it had even checked the config.
+        if config_file.load(args.config).observe_only:
+            raise CliError("observe_only is set, so virgild doesn't manage roles. Use 'virgilctl role leader'.")
+        status, body = asyncio.run(_control("POST", LEAD_PATH, args.control))
+        if status >= 300:
+            raise CliError(body.get("error", f"virgild refused ({status})"))
+        print(body.get("message", "Done"))
+        return 0
+
     systemd = Systemd()
     old = current_request(systemd, args.request)
     if args.role == "show":
@@ -302,14 +337,6 @@ def cmd_role(args: argparse.Namespace) -> int:
         return 0
 
     managed = not config_file.load(args.config).observe_only
-    if args.role == "lead":
-        if not managed:
-            raise CliError("observe_only is set, so virgild doesn't manage roles. Use 'virgilctl role leader'.")
-        status, body = asyncio.run(_control("POST", LEAD_PATH, args.control))
-        if status >= 300:
-            raise CliError(body.get("error", f"virgild refused ({status})"))
-        print(body.get("message", "Done"))
-        return 0
     if args.role == "stop":
         if managed:
             # Otherwise virgild would start them again.
@@ -497,7 +524,7 @@ def cmd_group_join(args: argparse.Namespace) -> int:
     asyncio.run(joining.join(token, config, cert))
     config_file.save(config, args.config)
     names = sorted(m.name for virgil_id, m in config.group.members.items() if virgil_id != config.id)
-    print(f"Joined group {config.group.id}, with {', '.join(names)}")
+    print(f"Joined group {config.group.id}, with {_clean(', '.join(names))}")
     return 0
 
 
@@ -510,7 +537,7 @@ def cmd_group_remove(args: argparse.Namespace) -> int:
     status, body = asyncio.run(_control("POST", REMOVE_PATH, args.control, {"member": args.member}))
     if status != 200:
         raise CliError(body.get("error", f"virgild refused ({status})"))
-    print(f"Removed {body['removed']} from the group")
+    print(f"Removed {_clean(body['removed'])} from the group")
     return 0
 
 
@@ -538,7 +565,7 @@ def cmd_group_show(args: argparse.Namespace) -> int:
             code = tls.short_code(tls.fingerprint(member.cert))
         except tls.TlsError:
             code = "bad certificate"
-        print(f"  {member.name}{marker}  {virgil_id}  {code}")
+        print(f"  {_clean(member.name)}{marker}  {virgil_id}  {code}")
     pending = [e for e in config.group.invites.values() if e > time.time()]
     if pending:
         print(f"{len(pending)} unused invite(s) outstanding")
@@ -548,8 +575,29 @@ def cmd_group_show(args: argparse.Namespace) -> int:
 # status
 
 
+def _clean(value):
+    """Text from the network, made safe to print: every control character replaced.
+
+    Names of Dante devices and of other Virgils, alert titles and the like come from whatever is on the network,
+    and virgilctl prints them to a terminal, often as root. A name containing escape sequences could otherwise
+    move the cursor, recolour or rewrite what's on the screen, or worse on some terminals. Works through lists
+    and dicts, so a whole status reply can be cleaned at once.
+    """
+    if isinstance(value, str):
+        return "".join(c if c.isprintable() else "\N{REPLACEMENT CHARACTER}" for c in value)
+    if isinstance(value, list):
+        return [_clean(item) for item in value]
+    if isinstance(value, dict):
+        return {_clean(key): _clean(item) for key, item in value.items()}
+    return value
+
+
 def fetch_status(tls_dir: Path, port: int = groups.PUBLIC_PORT) -> dict:
-    """Ask the local virgild for its status, trusting only this Virgil's own certificate."""
+    """Ask the local virgild for its status, trusting only this Virgil's own certificate.
+
+    The reply is as virgild gave it. Anything printed from it goes through _clean first; only --json prints it
+    untouched (JSON escapes control characters itself, and whatever reads it should get the names exactly).
+    """
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.check_hostname = False
     cert_path = tls.default_identity(tls_dir).cert_path
@@ -682,7 +730,7 @@ def _clock_time(value) -> str:
 
 
 def cmd_events(args: argparse.Namespace) -> int:
-    status = fetch_status(args.tls_dir)
+    status = _clean(fetch_status(args.tls_dir))
     alerts = status.get("alerts")
     events = status.get("events")
     if events is None:  # an older virgild
@@ -724,6 +772,8 @@ def _update_lines(status: dict) -> list[str]:
 
 def cmd_status(args: argparse.Namespace) -> int:
     status = fetch_status(args.tls_dir)
+    if not args.json:
+        status = _clean(status)
     if args.json:
         print(json.dumps(status, indent=2))
         return 0
@@ -853,6 +903,9 @@ def cmd_password(args: argparse.Namespace) -> int:
         raise CliError(f"the password must be at least {MIN_PASSWORD} characters")
     if getpass.getpass("Again: ") != first:
         raise CliError("the passwords didn't match")
+    # Read again, now the typing is done: saving the config read before the prompts would undo anything virgild
+    # saved in the meantime (see cmd_config_set).
+    config = config_file.load(args.config)
     config.web_password = hash_password(first)
     config.web_password_changed = shared.next_stamp(config.web_password_changed, time.time())
     config_file.save(config, args.config)
@@ -890,7 +943,7 @@ def _auto_trim_line(status: dict) -> str | None:
 
 def cmd_trim(args: argparse.Namespace) -> int:
     if args.ppm is None:
-        status = fetch_status(args.tls_dir)
+        status = _clean(fetch_status(args.tls_dir))
         leading = status.get("state") == "leader"
         print(f"{status['name']}: trim {status.get('trim_ppb', 0) / 1000:+.3f} ppm, "
               + ("leading" if leading else "not leading, so not in use"))
@@ -947,8 +1000,9 @@ def _find_device_mac(who: str, args: argparse.Namespace) -> tuple[str, str]:
     for device in devices:
         if who in (device.get("name"), device.get("address")) or (mac and device.get("mac") == mac):
             if not device.get("mac"):
-                raise CliError(f"netaudio doesn't know {device.get('name')}'s MAC address yet")
-            return device["mac"], device.get("name") or device["mac"]
+                raise CliError(f"netaudio doesn't know {_clean(device.get('name'))}'s MAC address yet")
+            # Matched by its real name (above); cleaned for whoever prints it.
+            return device["mac"], _clean(device.get("name") or device["mac"])
     if mac is not None:
         return mac, mac
     names = ", ".join(d.get("name", "?") for d in devices) or "none"

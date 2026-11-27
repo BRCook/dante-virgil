@@ -53,7 +53,7 @@ Virgil is three programs:
 
 `virgild` runs as an unprivileged system user, `dante-virgil`. It needs exactly two capabilities, both granted by its systemd unit: `CAP_NET_RAW`, to watch PTP traffic and to serve PTPv1 \[see [Watching PTP](#watching-ptp) and [Serving PTPv1](#serving-ptpv1)\], and `CAP_NET_BIND_SERVICE`, to listen on ports below 1024 (80 and 443 for the web UI, 319 and 320 for PTP).
 
-Anything that needs root — writing the timing services' configs, setting the hardware clock, editing network configuration — is done by `virgil-root`, run from one-shot systemd units. `virgild` asks for one of these jobs by writing a small request file and starting the matching unit. It's allowed to start those units (and only those units) by a polkit rule that lets the `dante-virgil` user start and stop units whose names begin with `dante-virgil-`. Before acting on a request, `virgil-root` checks it thoroughly: interface names must match a strict pattern, numbers must be in sensible ranges, and every file it reads is opened without following symlinks and with a size limit. A compromised `virgild` therefore can't use `virgil-root` to do anything beyond what Virgil normally does.
+Anything that needs root — writing the timing services' configs, setting the hardware clock, editing network configuration — is done by `virgil-root`, run from one-shot systemd units. `virgild` asks for one of these jobs by writing a small request file and starting the matching unit. It's allowed to start those units (and only those units) by a polkit rule that lets the `dante-virgil` user start and stop units whose names begin with `dante-virgil-`. Before acting on a request, `virgil-root` checks it thoroughly: interface names must match a strict pattern, numbers must be in sensible ranges, and addresses must be plain IPv4, and every file it reads is opened without following symlinks and with a size limit. It also never writes in a directory `virgild` owns: what it generates goes to `/run/dante-virgil-generated/`, and what it has to remember to `/var/lib/dante-virgil-root/`, both writable by root alone (root writing in someone else's directory can be steered elsewhere with a symlink). A compromised `virgild` therefore can't use `virgil-root` to do anything beyond what Virgil normally does.
 
 The actual timekeeping is done by three standard programs: **chrony** (NTP), **ptp4l** (PTP) and **phc2sys** (which copies the system clock onto the NIC's hardware clock). `virgild` configures them, starts and stops them, and watches them — but it isn't in the timing path itself. If `virgild` stops or crashes, the timing services carry on normally. As Virgil was designed for use in live productions, this "fail-safe" behaviour is essential to prevent possibly catastrophic failure of the Dante system in the event of a Virgil crash. The one exception is PTPv1, which `virgild` serves itself — but only when nothing else on its side of the link can do it instead \[see [Serving PTPv1](#serving-ptpv1)\].
 
@@ -79,7 +79,8 @@ The actual timekeeping is done by three standard programs: **chrony** (NTP), **p
 | `/etc/dante-virgil/tls/` | This Virgil's identity certificate and key \[see [TLS](#tls)\], plus `web/` for an imported web certificate. |
 | `/run/dante-virgil/` | Requests for `virgil-root`, the timing services' current state, and the control socket `virgilctl` uses to reach `virgild`. |
 | `/run/dante-virgil-generated/` | The configs `virgil-root prepare` generates. |
-| `/var/lib/dante-virgil/` | `events.jsonl` (the history of alerts and the group's events, which survives reboots), `recordings/` (logging sessions), `timestamping-probe.json` (each NIC's probe results) and `timestamping.json` (NICs caught losing transmit timestamps); see [Transmit Timestamp Slots](#transmit-timestamp-slots). |
+| `/var/lib/dante-virgil/` | `events.jsonl` (the history of alerts and the group's events, which survives reboots), `recordings/` (logging sessions) and `timestamping.json` (NICs caught losing transmit timestamps); see [Transmit Timestamp Slots](#transmit-timestamp-slots). |
+| `/var/lib/dante-virgil-root/` | `timestamping-probe.json` (each NIC's probe results), written by `virgil-root`. Only root can write here. |
 | `/opt/dante-virgil/venv` | The Python environment Virgil runs from. |
 
 ### Ports
@@ -226,6 +227,8 @@ Virgils aren't configured with each other's addresses, as DHCP would wreak havoc
 
 A Virgil only pays attention to other Virgils that advertise the same group ID. That way, several separate groups can share one network and politely ignore each other. A Virgil that isn't in a group yet shows *every* Virgil it can see, and necessarily so — it could not accept a group invitation otherwise.
 
+Anyone on the management network can send an mDNS advertisement, so Virgil does not trust these. Whatever answers there must still present the member's certificate \[see [TLS](#tls)\]. Once a member's heartbeat has arrived, the address it came from — over a connection only that member could have made — is the one Virgil uses first for that member. It's also the only address a follower will give chrony as its leader: NTP isn't authenticated, so a forged advertisement mustn't be able to choose where a follower's time comes from.
+
 ### Joining
 
 Joining a group uses a one-time invite token:
@@ -286,7 +289,7 @@ A certificate from your own CA (or a public one) can be imported for use in the 
 
 ### Heartbeats
 
-Every Virgil sends a heartbeat to the group once a second, through the group API. A heartbeat carries:
+Every Virgil sends a heartbeat to the group once a second, through the group API. Heartbeats, and everything else a Virgil asks of its members, share one connection to each member, which the heartbeats keep open: a TLS handshake only happens when that connection is first made, not for every request. A heartbeat carries:
 
 - `id`: the Virgil's ID.
 - `name`: its display name.
@@ -411,7 +414,7 @@ A timestamp that doesn't reach the probe isn't necessarily one the NIC dropped: 
 
 The test frames are plain Ethernet frames with the EtherType reserved for local experiments (`0x88B5`), sent to an unused, locally administered address. They aren't IP or PTP, so Dante devices ignore them, and switches discard them. In the worst case, the probe takes about ten seconds.
 
-The result is saved in `/var/lib/dante-virgil/timestamping-probe.json`. Once saved, a NIC is only probed again after a driver or kernel update. The probe can be turned off with the `probe_timestamps` setting (or "Probe timestamp slots at boot" in the web UI); a NIC that has never been probed stays unmeasured, and is treated as having one slot. If the probe can't run for any reason, the NIC stays unmeasured until the next setup from scratch. The probe never stops the timing services from starting.
+The result is saved in `/var/lib/dante-virgil-root/timestamping-probe.json`, a directory only root can write. (Up to Virgil 1.1.0 it was kept in `/var/lib/dante-virgil/`; `virgild` still reads a result from there until the NIC is next probed.) Once saved, a NIC is only probed again after a driver or kernel update. The probe can be turned off with the `probe_timestamps` setting (or "Probe timestamp slots at boot" in the web UI); a NIC that has never been probed stays unmeasured, and is treated as having one slot. If the probe can't run for any reason, the NIC stays unmeasured until the next setup from scratch. The probe never stops the timing services from starting.
 
 Once a NIC is known to have more than one slot, ptp4l and the PTPv1 grandmaster both use its transmit timestamps. Every 30 seconds, Virgil checks the driver's statistics (`ethtool -S`) for a rising count of skipped or timed-out transmit timestamps, and ptp4l's log for "timed out while polling for tx timestamp". Either one means the NIC couldn't keep up with both PTPv2 and PTPv1, so the PTPv1 grandmaster moves to software timestamps, and Virgil records the NIC in `/var/lib/dante-virgil/timestamping.json` as having one slot.
 
@@ -512,7 +515,7 @@ Logging in gives a session cookie that lasts 12 hours. The cookie is marked `Sec
 
 The page is plain HTML, CSS and JavaScript. A strict content security policy only lets it load its own files. It builds every part of the page with `textContent` rather than HTML strings for added security.
 
-Plain `http://` on port 80 redirects to HTTPS on port 443. netaudio's own web UI is passed through on port 8742, behind Virgil's login. 
+Plain `http://` on port 80 redirects to HTTPS on port 443. netaudio's own web UI is passed through on port 8742, behind Virgil's login. Since the login cookie alone lets a request through there, requests made by any other origin's page are refused, going by what the browser says of where each came from (`Sec-Fetch-Site`, and `Origin`); another page can only open netaudio's, as the link on Virgil's page does. 
 
 ### Web Certificate
 
@@ -562,7 +565,7 @@ The page draws the charts itself, on canvases, with windows from 30 seconds to 1
 - its timing services' logs;
 - any notes added from the web UI.
 
-"Stop logging and download" stops logging on every Virgil it started, fetches their logs through the group API, bundles them all into one `.tar` file, and downloads it through the browser. Logging stops by itself after 24 hours, or when the disk has 500 MB left. Internally (and in the API), a logging session is called a "recording".
+"Stop logging and download" stops logging on every Virgil it started, fetches their logs through the group API, bundles them all into one `.tar` file, and downloads it through the browser. Logging stops by itself after 24 hours, or when the disk has 500 MB left; a group's session that stops this way is stopped on every Virgil and bundled, just as if someone had pressed the button. Internally (and in the API), a logging session is called a "recording".
 
 Additionally, Virgil will compile the results into a summary. For every measurement type (latency, jitter, trim, etc.), the summary gives the count, minimum, maximum, mean, median, standard deviation, and the 1st, 5th, 95th and 99th percentiles, plus the total for late packets. It also gives the share of the session each Dante device spent following and synchronised; each alert with how often it opened and for how long; the group's events; and any notes. It goes into the log as `summary.html` (to read) and `summary.json` (for tools). The **Summary** button beside the log entry in the web UI will open the summary. Times in `summary.json` are all in ns. Units can be cycled in the web UI, similar to the graphs, by clicking on the unit for each row.
 
@@ -705,11 +708,13 @@ sudo ./install.sh
 7. links `virgilctl` and `netaudio` into `/usr/local/bin`; and
 8. starts `virgild`.
 
-Running it again from a newer copy of the repository updates Virgil, keeping its configuration, ID and certificate. It only restarts `virgild` itself and not the timing services; updating Virgil therefore doesn't disturb any Dante devices. When the Python environment is rebuilt, it also restarts netaudio; that only pauses monitoring and alerts for a few seconds. `uninstall.sh` reverses the installation, and `--purge` will additionally remove the configuration.
+Running it again from a newer copy of the repository updates Virgil, keeping its configuration, ID and certificate. It only restarts `virgild` itself and not the timing services; updating Virgil therefore doesn't disturb any Dante devices. When the Python environment is rebuilt, it also restarts netaudio; that only pauses monitoring and alerts for a few seconds. `uninstall.sh` reverses the installation, keeping the configuration and the saved logs and history (`/var/lib/dante-virgil`); `--purge` removes those too, as `apt purge` does for the package.
 
 ### Packages
 
 Each release comes as a Debian package for each of amd64 and arm64.
+
+Releases are built by GitHub Actions when a version is tagged, and only if the test suite passes on Debian 13 first. Each release includes a `SHA256SUMS` file listing every file's SHA-256, so a download can be checked with `sha256sum -c SHA256SUMS --ignore-missing`.
 
 The package serves the same function as `install.sh`, with three differences:
 

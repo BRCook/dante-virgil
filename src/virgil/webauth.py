@@ -24,6 +24,11 @@ ATTEMPTS = 5
 ATTEMPT_WINDOW = 60.0
 
 _N, _R, _P, _LENGTH = 2**14, 8, 1, 32
+# How much memory checking a hash may use. Python's default (32 MiB) is just under what the next step up from
+# today's settings needs (N=2**15 with r=8), so without this, a group couldn't move to stronger hashes until every
+# member had been updated at once: a member still on the default couldn't check a password set on a newer one.
+# Hashes are still made with the settings above; this only lets every Virgil from here on check stronger ones.
+_MAX_MEMORY = 256 * 1024 * 1024
 
 
 def _b64(data: bytes) -> str:
@@ -45,7 +50,7 @@ def check_password(password: str, stored: str | None) -> bool:
             return False
         expected = base64.b64decode(digest)
         actual = hashlib.scrypt(password.encode(), salt=base64.b64decode(salt), n=int(n), r=int(r), p=int(p),
-                                dklen=len(expected))
+                                maxmem=_MAX_MEMORY, dklen=len(expected))
     except (ValueError, TypeError):
         return False
     return hmac.compare_digest(actual, expected)

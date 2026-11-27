@@ -114,7 +114,11 @@ class Systemd:
         self._run = run
 
     def _systemctl(self, *args: str) -> None:
-        result = self._run(["systemctl", *args], capture_output=True, text=True)
+        try:
+            result = self._run(["systemctl", *args], capture_output=True, text=True)
+        except FileNotFoundError as error:
+            # Reported like any other failure to control a unit, not as a missing file with no explanation.
+            raise ServiceError("systemctl isn't installed, so Virgil's services can't be controlled here") from error
         if result.returncode != 0:
             detail = (result.stderr or "").strip()
             raise ServiceError(f"systemctl {' '.join(args)} failed" + (f": {detail}" if detail else ""))
@@ -129,7 +133,10 @@ class Systemd:
         self._systemctl("restart", *(() if block else ("--no-block",)), unit)
 
     def is_active(self, unit: str) -> bool:
-        return self._run(["systemctl", "is-active", "--quiet", unit]).returncode == 0
+        try:
+            return self._run(["systemctl", "is-active", "--quiet", unit]).returncode == 0
+        except FileNotFoundError:
+            return False  # without systemd, nothing of Virgil's is running
 
 
 def write_request(request: TimingRequest, path: Path = REQUEST_PATH) -> None:

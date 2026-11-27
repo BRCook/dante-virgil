@@ -5,4 +5,3 @@ dante-virgil: dir-or-file-in-opt [opt/*]
 dante-virgil: maintainer-script-calls-systemctl *
 # virgilctl --help, and netaudio --help, say how to use them.
 dante-virgil: no-manual-page [usr/bin/*]
-dante-virgil: recursive-privilege-change "chown -R" [postinst:*]

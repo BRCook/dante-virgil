@@ -21,15 +21,24 @@ assuming more could knock ptp4l over. The measurements:
 from __future__ import annotations
 
 import json
+import os
 import platform
 import re
+import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from virgil.files import atomic_write
+
 EVIDENCE_PATH = Path("/var/lib/dante-virgil/timestamping.json")
-# Written by virgil-root (as root), so kept apart from the evidence virgild writes.
-PROBE_PATH = Path("/var/lib/dante-virgil/timestamping-probe.json")
+# Written by virgil-root, as root, so it lives in a directory only root can write (see save_probe). It used to sit
+# beside the evidence, in /var/lib/dante-virgil, which belongs to the dante-virgil user: root writing there could
+# be steered, with a symlink, into overwriting any file on the machine.
+PROBE_PATH = Path("/var/lib/dante-virgil-root/timestamping-probe.json")
+# Where the probe results were kept up to Virgil 1.1.0. Only ever read, and only by virgild (see slots_for), so
+# an updated Clock Box still knows its card's slots until the next setup from scratch probes it again.
+LEGACY_PROBE_PATH = Path("/var/lib/dante-virgil/timestamping-probe.json")
 
 # ptp4l's message when its transmit timestamp never arrives.
 PTP4L_TIMEOUT = "timed out while polling for tx timestamp"
@@ -143,14 +152,31 @@ def load_probes(path: Path = PROBE_PATH) -> dict:
     return load_evidence(path)
 
 
+def _only_root_writes(folder: Path) -> None:
+    """Refuse, when running as root, to write in a directory anyone but root could have prepared.
+
+    Root must never create or replace a file in a directory an unprivileged user owns: that user can leave a
+    symlink where root is about to write, and root's write then lands wherever the symlink points. So the
+    directory has to be a real directory (not a symlink to one), owned by root, and writable by nobody else.
+    Run as anyone else (virgild never writes probes; the tests do), there's no privilege to borrow, so no check.
+    """
+    if os.geteuid() != 0:
+        return
+    info = os.lstat(folder)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise PermissionError(f"{folder} isn't a directory that only root can write, so nothing is written there")
+
+
 def save_probe(key: str, result: dict, path: Path = PROBE_PATH) -> None:
+    """Record a card's probe. Run by virgil-root, as root; raises OSError if it can't be written safely."""
+    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    _only_root_writes(path.parent)
     data = load_probes(path)
     data[key] = result
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".new")
-    temporary.write_text(json.dumps(data, indent=2))
-    temporary.chmod(0o644)  # virgild reads it as the dante-virgil user
-    temporary.replace(path)
+    # atomic_write makes its temporary file with mkstemp, which never follows a symlink or reuses a file that's
+    # already there (the old code wrote to a fixed name, "timestamping-probe.new", and followed whatever was
+    # there). 0644: virgild reads it as the dante-virgil user.
+    atomic_write(path, json.dumps(data, indent=2).encode(), mode=0o644)
 
 
 def slots_for(interface: str, driver: str | None, release: str | None = None,
@@ -160,6 +186,10 @@ def slots_for(interface: str, driver: str | None, release: str | None = None,
     if key in load_evidence(path):
         return Slots(1, "evidence")
     probed = load_probes(probe_path).get(key)
+    if probed is None and probe_path == PROBE_PATH:
+        # Probed by Virgil 1.1.0 or earlier, and not again since. virgild can write this old file itself, so it's
+        # only used here, for what virgild believes about its own card; virgil-root never reads it.
+        probed = load_probes(LEGACY_PROBE_PATH).get(key)
     if isinstance(probed, dict):
         if not probed.get("hardware"):
             return Slots(0, "probe", shareable=False)

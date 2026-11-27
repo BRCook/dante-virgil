@@ -16,6 +16,7 @@ import asyncio
 import copy
 import json
 import logging
+import math
 import os
 import socket
 import ssl
@@ -35,7 +36,7 @@ from virgil.events import EventLog
 from virgil.graphs import KEEP_SECONDS, WORST, Recorder, jitter
 from virgil.pinger import Pinger
 from virgil.replay import Replays
-from virgil.recording import RECORDINGS, Session, stamp_now, summary_of, summary_path
+from virgil.recording import ARCHIVE, RECORDINGS, Session, stamp_now, summary_of, summary_path
 from virgil import ptpv1 as ptpv1_module
 from virgil import timestamping
 from virgil.ptpwatch import mac_of_identity
@@ -50,8 +51,10 @@ from virgil.election import Change, Election, State
 from virgil.generate import Tuning, Role
 from virgil.group import GROUP_PORT, HEX_ID, PUBLIC_PORT, GroupError, outstanding_invites
 from virgil.heartbeat import HEARTBEAT_PATH, Heartbeat, HeartbeatError, decode
-from virgil.interfaces import Timestamping, get_interface, ipv4_addresses, ipv4_networks, is_link_local
-from virgil.request import TimingRequest
+from virgil.interfaces import (Timestamping, get_interface, ipv4_addresses, ipv4_networks, is_link_local,
+                               refresh_addresses)
+from virgil.request import MAX_TRIM_PPB, TimingRequest
+from virgil.tasks import spawn
 from virgil.timing import Target, TimingManager
 from virgil.joining import JOIN_PATH, JoinError, handle_join
 from virgil.tls import Identity, fingerprint, fingerprint_of_der
@@ -91,7 +94,7 @@ PTPV1_SETTLE = 15.0
 # How long a self-assigned 169.254.x.x address has to be the only one before
 # it counts, so DHCP has time to finish on networks that have it.
 LINK_LOCAL_GRACE = 30.0
-# Exiting with this has systemd start virgild again (Restart=on-failure).
+# Exiting with this has systemd start virgild again (as any exit does: Restart=always).
 RESTART_EXIT = 75
 # Seconds without any PTP from outside this Virgil before it says so.
 PTP_QUIET_AFTER = 60.0
@@ -101,6 +104,8 @@ MEMBERS_PATH = "/group/v1/members"
 # Dante marks its audio EF (46); pings across the Dante network are marked the same, to share its queues.
 DANTE_AUDIO_DSCP = 46
 MEMBERSHIP_PATH = "/api/v1/membership"
+# How many other Virgils' mDNS adverts are remembered: far more than any network of Clock Boxes has.
+MAX_ADVERTS = 64
 # Fetch a member's list at most this often, when its digest differs from ours.
 MEMBERS_FETCH_EVERY = 5.0
 # With no member heard for this long, ask them (on their public ports) whether this Virgil was removed.
@@ -146,7 +151,9 @@ class Daemon:
     election: Election = field(init=False)
     peers: dict[str, Peer] = field(default_factory=dict, init=False)
     adverts: dict[str, discovery.Advert] = field(default_factory=dict, init=False)
-    # Addresses to try for each member, by Virgil ID, for members without an mDNS advert.
+    # The address each member was last heard from, by Virgil ID: where its latest heartbeat (or its joining) came
+    # from, over a connection only that member could have made. These are the addresses Virgil trusts; mDNS
+    # adverts, which anyone on the network can send, only help to find a member in the first place.
     learned: dict[str, str] = field(default_factory=dict, init=False)
     discovery: discovery.Discovery | None = field(default=None, init=False)
     timing: TimingManager | None = field(default=None, init=False)
@@ -213,8 +220,17 @@ class Daemon:
     slots_lost: str | None = field(default=None, init=False)
     _slots_checked_at: float = field(default_factory=time.time, init=False)
     _graphed: dict = field(default_factory=lambda: {"clock": None, "polls": None}, init=False)
-    # Members' graphs, fetched for the page: member ID to (when, series).
+    # Members' graphs, fetched for the page: (member ID, window) to (when, series). And this Virgil's own, thinned
+    # for a window: window to (when, series). Both are kept for about a second (see _fresh).
     _member_graphs: dict = field(default_factory=dict, init=False)
+    _own_graphs: dict = field(default_factory=dict, init=False)
+    # One HTTPS session for every request to the members, and what it was made for (see group_session).
+    _group_session: aiohttp.ClientSession | None = field(default=None, init=False)
+    _group_session_for: tuple | None = field(default=None, init=False)
+    # phc2sys's reports, followed while this Virgil follows (see clocks.Phc2sysReports).
+    phc2sys_reports: clocks.Phc2sysReports = field(default_factory=clocks.Phc2sysReports, init=False)
+    # Small facts read from the system for status and heartbeats, each kept for a second (see _briefly).
+    _brief: dict = field(default_factory=dict, init=False)
     events_path: Path = field(default=EVENTS_PATH, init=False)
     # The interfaces whose DHCP lease names were last set, so they're only set again on a change.
     dhcp_names_for: tuple | None = field(default=None, init=False)
@@ -231,6 +247,7 @@ class Daemon:
     def __post_init__(self) -> None:
         self.config = config_file.load(self.config_path)
         self.config_mtime = self.config_path.stat().st_mtime
+        self._config_on_disk = config_file.to_dict(self.config)
         self.group_context = tls.group_server_context(self.identity, [])
         self._trust_members()
         self.started = time.monotonic()
@@ -293,10 +310,15 @@ class Daemon:
                                  probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2(),
                                  tuning=Tuning(phc2sys_kp=config.phc2sys_kp, phc2sys_ki=config.phc2sys_ki,
                                              filter=config.chrony_filter))
-        addresses = self.addresses_for(target.leader_id) if target.leader_id else []
-        if not addresses:
+        # chrony follows this address, and NTP isn't authenticated, so it must be one the leader has proven is
+        # its own: where its heartbeats come from (see verified_address). An address from an mDNS advert won't
+        # do: anyone on the management network could advertise the leader's Virgil ID with their own address,
+        # and this Virgil's clock (and its Dante devices') would have followed them. A follower has always
+        # heard its leader's heartbeat, so this is only ever missing for a moment after virgild starts, and
+        # the timing manager tries again every second until it's there.
+        leader = self.verified_address(target.leader_id) if target.leader_id else None
+        if leader is None:
             return None
-        leader = addresses[0]
         return TimingRequest(Role.FOLLOWER, config.ptp_interface, leader, tuple(networks or [leader]),
                              config.trim_ppb, config.nic_profile is not None,
                              ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
@@ -365,13 +387,36 @@ class Daemon:
             except RuntimeError:
                 pass  # no event loop running (reloaded outside virgild's loop, as in some tests)
         self.config_mtime = mtime
+        self._config_on_disk = config_file.to_dict(self.config)
         self._trust_members()
         log.info("Reloaded the config")
         return True
 
     def save(self) -> None:
+        """Save the config, without losing anything virgilctl has changed in the file since virgild last read it.
+
+        virgild holds the config in memory and writes the whole file; virgilctl edits the file, and virgild only
+        looks for that every couple of seconds. Saving in between used to overwrite virgilctl's change (a new
+        password, say, lost to an auto-trim step a second later). So if the file has changed, its changes are
+        taken in first, exactly as a reload would, and only what virgild itself has changed since it last read or
+        wrote the file is laid over them. If both changed the same setting, virgild's change, the later, wins.
+        """
+        try:
+            changed = self.config_path.stat().st_mtime != self.config_mtime
+        except OSError:
+            changed = False  # no file to merge with: just write it
+        if changed:
+            before, ours = self._config_on_disk, config_file.to_dict(self.config)
+            try:
+                self.config = config_file.from_dict(before)  # so the reload sees only what virgilctl changed
+                self.reload_if_changed()
+                self.config = config_file.from_dict(_merge(before, ours, config_file.to_dict(self.config)))
+            except (OSError, config_file.ConfigError) as error:
+                log.warning("Couldn't take in the config file's changes before saving (%s); saving over them", error)
+                self.config = config_file.from_dict(ours)
         config_file.save(self.config, self.config_path)
         self.config_mtime = self.config_path.stat().st_mtime
+        self._config_on_disk = config_file.to_dict(self.config)
 
     # Heartbeats
 
@@ -533,10 +578,12 @@ class Daemon:
             self.graphs.add(f"average/{key}", "latency", f"{label} average", "ns", t, average)
 
     async def watch_graphs(self, pinger: Pinger | None = None, dante_pinger: Pinger | None = None) -> None:
+        # Started with spawn (see virgil.tasks), like every background task here: kept until it finishes, and a
+        # failure logged when it happens. These two run for as long as virgild does.
         if pinger is not None:
-            asyncio.ensure_future(pinger.run())
+            spawn(pinger.run(), "Pinging the other members")
         if dante_pinger is not None:
-            asyncio.ensure_future(dante_pinger.run())
+            spawn(dante_pinger.run(), "Pinging across the Dante network")
         while True:
             await asyncio.sleep(1.0)
             try:
@@ -550,10 +597,39 @@ class Daemon:
 
     @staticmethod
     def _window(request: web.Request) -> float:
+        """The window asked for, in whole seconds from 10 to KEEP_SECONDS. Whole seconds, so that pages asking
+        for the same stretch share what's kept for it (see _fresh); and "nan" is refused, rather than slipping
+        through min() and max() as a window nothing can match."""
         try:
-            return min(max(float(request.query.get("window", 300)), 10), KEEP_SECONDS)
+            window = float(request.query.get("window", 300))
         except ValueError:
-            raise web.HTTPBadRequest(text="window must be a number of seconds") from None
+            window = math.nan
+        if not math.isfinite(window):
+            raise web.HTTPBadRequest(text="window must be a number of seconds")
+        return float(round(min(max(window, 10), KEEP_SECONDS)))
+
+    @staticmethod
+    def _fresh(kept: dict, key, keep: float = 1.0):
+        """What's kept under a key, if it's under `keep` seconds old; and anything that isn't is dropped, so
+        nothing kept here outlives its use (the keys include a window, which anyone can vary)."""
+        now = time.monotonic()
+        for old in [k for k, (when, _) in kept.items() if now - when >= max(keep, 1.5)]:
+            del kept[old]
+        found = kept.get(key)
+        return found[1] if found is not None and now - found[0] < keep else None
+
+    def own_series(self, window: float) -> list:
+        """This Virgil's graphs for a window, thinned for the page, at most a second old.
+
+        Thinning goes through every reading kept (tens of thousands, with the pings), and every open page asks
+        every two seconds, here and, through each member, on every other Virgil. The readings only change once a
+        second or so, so pages asking within the same second share one pass.
+        """
+        series = self._fresh(self._own_graphs, window)
+        if series is None:
+            series = self.graphs.window(window, time.time())
+            self._own_graphs[window] = (time.monotonic(), series)
+        return series
 
     async def time_api(self, request: web.Request) -> web.Response:
         """This Virgil's clock, for the page to compare with the device it's on."""
@@ -562,7 +638,7 @@ class Daemon:
     async def graphs_api(self, request: web.Request) -> web.Response:
         """This Virgil's graphs, and every member's, merged for the page."""
         window = self._window(request)
-        series = self.graphs.window(window, time.time())
+        series = list(self.own_series(window))  # a copy: the members' series are added to it
         results = await asyncio.gather(*(self._member_series(i, window) for i in self.member_ids()))
         for member_series in results:
             series += member_series
@@ -570,24 +646,80 @@ class Daemon:
 
     # Recording a whole group: the Virgil whose page was used coordinates; members follow its lead.
 
-    async def _member_call(self, virgil_id: str, method: str, path: str, body: dict | None = None,
-                           timeout: float = 10.0, as_bytes: bool = False):
-        """A request to a member over the group connection. None if it doesn't answer."""
+    async def group_session(self) -> aiohttp.ClientSession:
+        """The one HTTPS session for everything this Virgil asks of its members.
+
+        Every request to a member used to build its own TLS setup, open its own connection, and go through a
+        whole TLS handshake (certificates both ways, across the radio link) for a single question; with a page
+        open, that was every two seconds, for each member. Heartbeats already kept a session of their own. Now
+        everything shares one, so requests ride on the connection the heartbeats keep open, and a handshake only
+        happens when a connection is first made.
+
+        It's made again when the members' certificates change (it trusts exactly those), and whenever it's asked
+        for from a different event loop than it was made on (which only the tests do).
+        """
+        certs = self.member_certs()
+        made_for = (frozenset(map(fingerprint, certs)), asyncio.get_running_loop())
+        session = self._group_session
+        if session is None or session.closed or self._group_session_for != made_for:
+            if session is not None and not session.closed and self._group_session_for[1] is made_for[1]:
+                await session.close()  # anything still using it fails, as from a member that didn't answer
+            context = tls.group_client_context(self.identity, certs)
+            session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=context))
+            self._group_session, self._group_session_for = session, made_for
+        return session
+
+    async def close_group_session(self) -> None:
+        if self._group_session is not None and not self._group_session.closed:
+            await self._group_session.close()
+        self._group_session = None
+
+    def _member_url(self, virgil_id: str, path: str) -> str | None:
         addresses = self.addresses_for(virgil_id)
         if not addresses:
             return None
         advert = self.adverts.get(virgil_id)
-        port = advert.group_port if advert else self.group_port
-        context = tls.group_client_context(self.identity, self.member_certs())
+        return f"https://{addresses[0]}:{advert.group_port if advert else self.group_port}{path}"
+
+    async def _member_call(self, virgil_id: str, method: str, path: str, body: dict | None = None,
+                           timeout: float = 10.0, as_bytes: bool = False):
+        """A request to a member over the group connection. None if it doesn't answer."""
+        url = self._member_url(virgil_id, path)
+        if url is None:
+            return None
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-                async with session.request(method, f"https://{addresses[0]}:{port}{path}", json=body,
-                                           ssl=context) as reply:
-                    if reply.status != 200:
-                        return None
-                    return await reply.read() if as_bytes else await reply.json()
+            session = await self.group_session()
+            async with session.request(method, url, json=body, timeout=aiohttp.ClientTimeout(total=timeout)) as reply:
+                if reply.status != 200:
+                    return None
+                return await reply.read() if as_bytes else await reply.json()
         except (aiohttp.ClientError, TimeoutError, OSError, ValueError):
             return None
+
+    async def _member_download(self, virgil_id: str, path: str, into: Path, timeout: float) -> bool:
+        """Fetch a file from a member straight onto the disk. False (and nothing left behind) if it doesn't arrive.
+
+        A night's log is tens of megabytes. It used to be read whole into memory and then written in one go, on
+        the event loop; now it's written as it arrives, a piece at a time, under a temporary name until it's all
+        here.
+        """
+        url = self._member_url(virgil_id, path)
+        if url is None:
+            return False
+        partial = into.with_name(into.name + ".part")
+        try:
+            session = await self.group_session()
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as reply:
+                if reply.status != 200:
+                    return False
+                with partial.open("wb") as f:
+                    async for chunk in reply.content.iter_chunked(LOG_CHUNK):
+                        f.write(chunk)
+            partial.replace(into)
+            return True
+        except (aiohttp.ClientError, TimeoutError, OSError, ValueError):
+            partial.unlink(missing_ok=True)
+            return False
 
     def _heard_members(self) -> list[str]:
         now = time.monotonic()
@@ -618,16 +750,20 @@ class Daemon:
         for virgil_id in self.recording_members:
             reply = await self._member_call(virgil_id, "POST", RECORDING_PATH, {"action": "stop"},
                                             timeout=LOG_PACK_TIMEOUT)
-            if not reply or not reply.get("archive"):
+            name = reply.get("archive") if isinstance(reply, dict) else None
+            if not name:
                 continue
-            data = await self._member_call(virgil_id, "GET", f"{RECORDINGS_PATH}/{reply['archive']}",
-                                           timeout=LOG_SEND_TIMEOUT, as_bytes=True)
-            if data is None:
+            # The name comes from the member, and becomes a file here, so it must be a plain archive name: the
+            # same pattern this Virgil's own archives are held to. Unchecked, a name such as
+            # "../../../etc/dante-virgil/virgil.toml" wrote the member's data over this Virgil's own files.
+            if not isinstance(name, str) or not ARCHIVE.fullmatch(name):
+                log.warning("Ignored a log from %s: %r isn't an archive's name", self.name_of(virgil_id), name)
                 continue
-            path = self.recordings_root / reply["archive"]
-            path.write_bytes(data)
+            path = self.recordings_root / name
+            if not await self._member_download(virgil_id, f"{RECORDINGS_PATH}/{name}", path, LOG_SEND_TIMEOUT):
+                continue
             archives.append(path)
-            await self._member_call(virgil_id, "POST", f"{RECORDINGS_PATH}/delete", {"name": reply["archive"]})
+            await self._member_call(virgil_id, "POST", f"{RECORDINGS_PATH}/delete", {"name": name})
         self.recording_members = []
         if len(archives) == 1:
             return {"archive": own}
@@ -978,7 +1114,9 @@ class Daemon:
                 return web.json_response({"error": "already recording"}, status=409)
             return web.json_response({"name": await self.recording.start(body.get("stamp"), group=True)})
         if body.get("action") == "stop":
-            return web.json_response({"archive": await self.recording.stop()})
+            # If this Virgil's part already stopped itself (its disk filled, say), its log is still here to collect.
+            archive = await self.recording.stop() or self.recording.take_auto_stopped()
+            return web.json_response({"archive": archive})
         raise web.HTTPBadRequest()
 
     async def group_recording_file(self, request: web.Request) -> web.StreamResponse:
@@ -1019,13 +1157,15 @@ class Daemon:
         sender = self._member_for_certificate(request)
         if sender is None or sender == self.config.id:
             raise web.HTTPForbidden()
-        return web.json_response({"series": self.graphs.window(self._window(request), time.time())})
+        return web.json_response({"series": self.own_series(self._window(request))})
 
     async def _member_series(self, virgil_id: str, window: float) -> list:
         """A member's own graphs, at most a second or so old. Members that don't answer are left out."""
-        cached = self._member_graphs.get(virgil_id)
-        if cached and time.monotonic() - cached[0] < 1.5 and cached[1] == window:
-            return cached[2]
+        # Kept per window, not one window per member: two pages showing different stretches used to throw each
+        # other's away, so every request from either fetched the member's graphs again.
+        cached = self._fresh(self._member_graphs, (virgil_id, window), keep=1.5)
+        if cached is not None:
+            return cached
         addresses = self.addresses_for(virgil_id)
         peer = self.peers.get(virgil_id)
         if not addresses or peer is None or time.monotonic() - peer.heard_at > self.election.timing.visible:
@@ -1033,16 +1173,15 @@ class Daemon:
         advert = self.adverts.get(virgil_id)
         port = advert.group_port if advert else self.group_port
         url = f"https://{addresses[0]}:{port}{GRAPHS_PATH}?window={window}"
-        context = tls.group_client_context(self.identity, self.member_certs())
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=1.5)) as session:
-                async with session.get(url, ssl=context) as reply:
-                    if reply.status != 200:
-                        return []
-                    series = (await reply.json()).get("series") or []
+            session = await self.group_session()
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=1.5)) as reply:
+                if reply.status != 200:
+                    return []
+                series = (await reply.json()).get("series") or []
         except (aiohttp.ClientError, TimeoutError, OSError, ValueError):
             return []
-        self._member_graphs[virgil_id] = (time.monotonic(), window, series)
+        self._member_graphs[(virgil_id, window)] = (time.monotonic(), series)
         return series
 
     # PTPv1
@@ -1118,11 +1257,28 @@ class Daemon:
             return False, "no PTPv1 devices here"
         return True, "no device here bridges this Virgil's PTPv2 into PTPv1"
 
+    def _briefly(self, key, read, keep: float = 1.0):
+        """A small fact read from the system (sysfs, a file), kept for a second.
+
+        Status is built for every open page every two seconds, for each reading while logging, and for virgilctl;
+        heartbeats ask some of the same things every second. Each used to go back to the system for every answer.
+        """
+        now = time.monotonic()
+        kept = self._brief.get(key)
+        if kept is None or now - kept[0] >= keep:
+            kept = self._brief[key] = (now, read())
+        return kept[1]
+
     def ptp_slots(self) -> timestamping.Slots:
         """What Virgil believes about the PTP interface's transmit timestamp slots."""
         interface = self.config.ptp_interface
-        found = get_interface(interface, timestamping=lambda name: None) if interface else None
-        return timestamping.slots_for(interface or "", found.driver if found else None, path=self.timestamping_path)
+
+        def read() -> timestamping.Slots:
+            found = get_interface(interface, timestamping=lambda name: None) if interface else None
+            return timestamping.slots_for(interface or "", found.driver if found else None,
+                                          path=self.timestamping_path)
+
+        return self._briefly(("slots", interface, self.timestamping_path), read)
 
     async def _command(self, *args: str) -> str:
         try:
@@ -1155,6 +1311,7 @@ class Daemon:
         found = get_interface(interface, timestamping=lambda name: None)
         timestamping.save_evidence(timestamping.card_key(interface, found.driver if found else None), reason,
                                    self.timestamping_path)
+        self._brief.clear()  # what's believed about the slots has just changed
         server.set_hardware_tx(False)
         self.slots_lost = (f"{interface} lost a transmit timestamp while ptp4l and PTPv1 shared it ({reason}), "
                            "so PTPv1 now takes its transmit timestamps from the kernel")
@@ -1199,11 +1356,11 @@ class Daemon:
         """React to a new ptpv1 setting. Into or out of "only", PTPv1 and ptp4l swap over in the background."""
         self.ptpv1_pending = None
         if (old == "only") == (new == "only"):
-            asyncio.ensure_future(self.check_ptpv1(settle=0))
+            spawn(self.check_ptpv1(settle=0), "Checking PTPv1 after its setting changed")
             return
         if self.ptpv1_switching is not None and not self.ptpv1_switching.done():
             self.ptpv1_switching.cancel()
-        self.ptpv1_switching = asyncio.ensure_future(self.switch_ptpv1_mode(new == "only"))
+        self.ptpv1_switching = spawn(self.switch_ptpv1_mode(new == "only"), "Switching between PTPv2 and PTPv1")
 
     async def _wait_for(self, done, timeout: float, step: float = 0.5) -> bool:
         deadline = time.monotonic() + timeout
@@ -1264,7 +1421,8 @@ class Daemon:
         while True:
             try:
                 follower = self.election.state in (State.FOLLOWER, State.SYNC)
-                self.clock = await clocks.read_clock(follower, None if follower else self.config.trim_ppb) or None
+                self.clock = await clocks.read_clock(follower, None if follower else self.config.trim_ppb,
+                                                     self.phc2sys_reports) or None
             except Exception:
                 log.exception("Couldn't read the clocks")
             await asyncio.sleep(2.0)
@@ -1316,7 +1474,7 @@ class Daemon:
                                  clock_identity=clock_identity, own_identity=lambda: self.ptp.own_identity,
                                  member_identities=member_identities)
 
-    def check_ptp_interface(self) -> None:
+    async def check_ptp_interface(self) -> None:
         """Follow the PTP interface's addresses, and keep netaudio's daemon on the right interface.
 
         netaudio needs an address. It runs on the PTP interface, where the
@@ -1340,14 +1498,18 @@ class Daemon:
                 wanted = (mgmt, mgmt_addresses)
         if wanted == self.netaudio_for:
             return
+        # systemctl waits for the unit to stop, which can take as long as systemd allows a stuck service (90
+        # seconds). Run here, on the event loop, that held up everything virgild does: no heartbeats went out
+        # (members count a leader as lost after 30 seconds without them), and PTPv1's Syncs stopped. So it runs
+        # in a thread, as the timing manager's own systemctl calls do, and only this check waits for it.
         try:
             if wanted is None:
                 log.info("Neither %s nor the management interface has an IPv4 address, so netaudio's daemon is "
                          "stopped until one does", interface)
-                self.systemd.stop(NETAUDIO_UNIT)
+                await asyncio.to_thread(self.systemd.stop, NETAUDIO_UNIT)
             else:
                 NETAUDIO_ENV.write_text(f"NETAUDIO_INTERFACE={wanted[0]}\n")
-                self.systemd.restart(NETAUDIO_UNIT)
+                await asyncio.to_thread(self.systemd.restart, NETAUDIO_UNIT)
                 if wanted[0] == interface:
                     log.info("Started netaudio's daemon on %s", interface)
                 else:
@@ -1436,10 +1598,15 @@ class Daemon:
         return [w[:200] for w in warnings]
 
     def _ptp_link_up(self) -> bool | None:
-        if self.config.ptp_interface is None:
+        name = self.config.ptp_interface
+        if name is None:
             return None
-        interface = get_interface(self.config.ptp_interface, timestamping=lambda name: None)
-        return None if interface is None else interface.link_up
+
+        def read() -> bool | None:
+            interface = get_interface(name, timestamping=lambda name: None)
+            return None if interface is None else interface.link_up
+
+        return self._briefly(("link", name), read)
 
     def own_addresses(self) -> set[str]:
         return set(self.addresses) | set(self.ptp_addresses)
@@ -1489,53 +1656,59 @@ class Daemon:
             log.warning("%s sent a heartbeat claiming to be %s", self.name_of(sender), beat.id)
             return web.json_response({"error": "that isn't your Virgil ID"}, status=403)
         self.peers[sender] = Peer(beat, time.monotonic(), request.remote)
-        if sender not in self.adverts and request.remote:
+        # Always, not only for members without an advert: this address is proven, and an advert's isn't.
+        if request.remote and self.learned.get(sender) != request.remote:
             self.learned[sender] = request.remote
+            if self.timing is not None and sender == self.election.leader:
+                self.timing.poke()  # the leader has moved: point chrony at its new address
         if beat.shared_settings:
             self.adopt_shared_settings(shared.parse(beat.shared_settings), sender)
         if beat.members_digest and self.config.group and beat.members_digest != membership.digest(self.config.group):
             last = self._members_fetched.get(sender, 0.0)
             if time.monotonic() - last >= MEMBERS_FETCH_EVERY:
                 self._members_fetched[sender] = time.monotonic()
-                asyncio.ensure_future(self.sync_members_from(sender))
+                spawn(self.sync_members_from(sender), f"Fetching the member list from {self.name_of(sender)}")
         return web.Response(status=204)
 
+    def verified_address(self, virgil_id: str) -> str | None:
+        """The address a member was last heard from over the group's TLS, where only it holds the key."""
+        return self.learned.get(virgil_id)
+
     def addresses_for(self, virgil_id: str) -> list[str]:
-        advert = self.adverts.get(virgil_id)
-        if advert is not None:
-            return list(advert.addresses)
+        """Addresses to try for a member: the proven one first (see verified_address), then any advertised.
+
+        Advertised addresses are still worth trying, since that's how members find each other to begin with,
+        and whatever answers there still has to present the member's certificate. But they never come before
+        an address the member has proven, so a forged advert can't draw this Virgil's requests away from it.
+        """
+        addresses = []
         learned = self.learned.get(virgil_id)
-        return [learned] if learned else []
+        if learned:
+            addresses.append(learned)
+        advert = self.adverts.get(virgil_id)
+        for address in advert.addresses if advert is not None else ():
+            if address not in addresses:
+                addresses.append(address)
+        return addresses
 
     async def send_heartbeats(self) -> None:
-        session: aiohttp.ClientSession | None = None
-        trusted_for_session: frozenset[str] = frozenset()
         try:
             while True:
-                certs = self.member_certs()
-                if certs and frozenset(map(fingerprint, certs)) != trusted_for_session:
-                    if session is not None:
-                        await session.close()
-                    context = tls.group_client_context(self.identity, certs)
-                    session = aiohttp.ClientSession(
-                        connector=aiohttp.TCPConnector(ssl=context),
-                        timeout=aiohttp.ClientTimeout(total=HEARTBEAT_TIMEOUT),
-                    )
-                    trusted_for_session = frozenset(map(fingerprint, certs))
-                if session is not None:
+                if self.member_ids():
+                    session = await self.group_session()  # shared with every other request to the members
                     body = self.heartbeat().encode()
                     await asyncio.gather(*(self._send(session, v, body) for v in self.member_ids()))
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
         finally:
-            if session is not None:
-                await session.close()
+            await self.close_group_session()
 
     async def _send(self, session: aiohttp.ClientSession, virgil_id: str, body: dict) -> None:
         advert = self.adverts.get(virgil_id)
         port = advert.group_port if advert else self.group_port
         for address in self.addresses_for(virgil_id):
             try:
-                async with session.post(f"https://{address}:{port}{HEARTBEAT_PATH}", json=body) as reply:
+                async with session.post(f"https://{address}:{port}{HEARTBEAT_PATH}", json=body,
+                                        timeout=aiohttp.ClientTimeout(total=HEARTBEAT_TIMEOUT)) as reply:
                     if reply.status == 204:
                         return
             except (aiohttp.ClientError, TimeoutError, ssl.SSLError, OSError):
@@ -1671,7 +1844,7 @@ class Daemon:
         adjustment = (self.clock or {}).get("phc_adjustment_ppm")
         if not isinstance(adjustment, (int, float)) or isinstance(adjustment, bool):
             return
-        trim = round(adjustment * 1000)
+        trim = max(-MAX_TRIM_PPB, min(MAX_TRIM_PPB, round(adjustment * 1000)))  # never more than a request allows
         if trim == self.config.trim_ppb:
             return
         log.info("Taking over the PHC's current rate as this Virgil's trim: %+.3f ppm", trim / 1000)
@@ -1740,6 +1913,17 @@ class Daemon:
         if advert.id == self.config.id:
             return
         is_new = advert.id not in self.adverts
+        if is_new and len(self.adverts) >= MAX_ADVERTS:
+            # Anyone on the network can advertise, under as many IDs as they like, and adverts were kept for
+            # ever (and listed in every status reply). Past the limit, the longest-unheard one that isn't a
+            # member's makes way; with none to drop, the newcomer isn't kept, unless it's a member's.
+            members = set(self.member_ids())
+            oldest = next((i for i in self.adverts if i not in members), None)
+            if oldest is not None:
+                del self.adverts[oldest]
+            elif advert.id not in members:
+                return
+        self.adverts.pop(advert.id, None)  # so that the latest heard is always last
         self.adverts[advert.id] = advert
         if is_new:
             member = advert.id in self.member_ids()
@@ -1802,8 +1986,11 @@ class Daemon:
     async def watch_network(self) -> None:
         while True:
             try:
+                # One `ip` call, in a thread, answers every question the two checks below ask about addresses
+                # (see interfaces.refresh_addresses): they used to run four or five, each holding up the event loop.
+                await asyncio.to_thread(refresh_addresses)
                 await self.check_network()
-                self.check_ptp_interface()
+                await self.check_ptp_interface()
             except Exception:
                 log.exception("Couldn't check the network interfaces")
             await asyncio.sleep(NETWORK_CHECK_INTERVAL)
@@ -1953,7 +2140,8 @@ class Daemon:
         self.events.group("joined", f"{body.get('name')} joined the group, through this Virgil")
         await self._update_advert()
         # Everyone else learns of the newcomer now (and from heartbeats, if they miss this).
-        asyncio.ensure_future(self.push_members([i for i in self.member_ids() if i != body.get("id")]))
+        spawn(self.push_members([i for i in self.member_ids() if i != body.get("id")]),
+              "Telling the members about a newcomer")
         return web.json_response(reply)
 
     def public_app(self) -> web.Application:
@@ -1971,6 +2159,7 @@ class Daemon:
             self.config.name, self.status_data, lambda window: self.graphs.window(window, time.time()),
             lambda: dict(self.consoles.diagnostics) if self.consoles else {}, root=self.recordings_root,
             events=lambda since: self.events.since(since))
+        self.recording.on_auto_stop = self.stop_recording  # a session that stops itself stops as a whole
         return app
 
     # For the web UI
@@ -1991,7 +2180,7 @@ class Daemon:
         """After creating or joining a group: trust the new members, and advertise the group."""
         self._trust_members()
         if self.discovery is not None:
-            asyncio.ensure_future(self._update_advert())
+            spawn(self._update_advert(), "Updating the mDNS advert")
 
     def update_dhcp_names(self, systemd: roles.Systemd | None = None, path: Path = DHCP_NAMES_REQUEST,
                           add: list[str] | None = None, force: bool = False) -> None:
@@ -2039,7 +2228,7 @@ class Daemon:
         """Restart virgild shortly, once the current reply has gone out.
 
         virgild can't restart its own unit through polkit, on purpose, so it
-        exits instead, and systemd's Restart=on-failure starts it again.
+        exits instead, and systemd's Restart=always starts it again.
         Restarting never disturbs the timing services.
         """
         asyncio.get_running_loop().call_later(delay, self.restart.set)
@@ -2110,23 +2299,23 @@ class Daemon:
             return 200, {"message": f"{self.config.name} is already leading"}
         if state is not State.FOLLOWER or leader is None:
             return 409, {"error": f"{self.config.name} is {state.value}; it can only take the lead as a follower"}
-        context = tls.group_client_context(self.identity, self.member_certs())
         advert = self.adverts.get(leader)
         port = advert.group_port if advert else self.group_port
         errors = []
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-            for address in self.addresses_for(leader):
-                try:
-                    url = f"https://{address}:{port}{HANDOVER_PATH}"
-                    async with session.post(url, json={"to": self.config.id}, ssl=context) as reply:
-                        data = await reply.json(content_type=None)
-                        if reply.status == 202:
-                            log.info("%s agreed to hand leadership over", self.name_of(leader))
-                            return 202, {"message": f"{self.name_of(leader)} is handing leadership over to "
-                                                    f"{self.config.name}"}
-                        return reply.status, {"error": (data or {}).get("error", f"refused ({reply.status})")}
-                except (aiohttp.ClientError, TimeoutError, ssl.SSLError, OSError) as error:
-                    errors.append(f"{address}: {error or type(error).__name__}")
+        session = await self.group_session()
+        for address in self.addresses_for(leader):
+            try:
+                url = f"https://{address}:{port}{HANDOVER_PATH}"
+                async with session.post(url, json={"to": self.config.id},
+                                        timeout=aiohttp.ClientTimeout(total=5)) as reply:
+                    data = await reply.json(content_type=None)
+                    if reply.status == 202:
+                        log.info("%s agreed to hand leadership over", self.name_of(leader))
+                        return 202, {"message": f"{self.name_of(leader)} is handing leadership over to "
+                                                f"{self.config.name}"}
+                    return reply.status, {"error": (data or {}).get("error", f"refused ({reply.status})")}
+            except (aiohttp.ClientError, TimeoutError, ssl.SSLError, OSError) as error:
+                errors.append(f"{address}: {error or type(error).__name__}")
         return 503, {"error": f"couldn't reach {self.name_of(leader)} (" + "; ".join(errors or ["no address"]) + ")"}
 
     async def control_lead(self, request: web.Request) -> web.Response:
@@ -2155,6 +2344,27 @@ class Daemon:
                         self.timing.poke()
             except Exception:
                 log.exception("Couldn't reload the config")
+
+
+_GONE = object()
+
+
+def _merge(before: dict, ours: dict, theirs: dict) -> dict:
+    """A three-way merge of config (as config.to_dict gives it): `theirs`, with everything `ours` changed since
+    `before` laid over it. Tables are merged setting by setting, so two changes to different members of the
+    group, or an invite made by virgilctl and a member added by virgild, both survive."""
+    merged = dict(theirs)
+    for key in before.keys() | ours.keys():
+        was, now = before.get(key, _GONE), ours.get(key, _GONE)
+        if was == now:
+            continue  # we didn't change it: theirs stands
+        if now is _GONE:
+            merged.pop(key, None)  # we removed it
+        elif isinstance(was, dict) and isinstance(now, dict) and isinstance(theirs.get(key), dict):
+            merged[key] = _merge(was, now, theirs[key])
+        else:
+            merged[key] = now
+    return merged
 
 
 def dhcp_lease_names() -> dict[str, str]:
@@ -2250,6 +2460,8 @@ async def serve(daemon: Daemon, host: str) -> None:
             await daemon.discovery.stop()
         if daemon.ptpv1_server is not None:
             await daemon.ptpv1_server.stop()
+        daemon.phc2sys_reports.stop()
+        await daemon.close_group_session()
         for runner in extras:
             await runner.cleanup()
         await public.cleanup()

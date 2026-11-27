@@ -1,0 +1,37 @@
+# Run the test suite on Debian 13, as the Clock Boxes run it: on every push and pull request, and before every
+# release (the Release workflow calls this one, and builds nothing unless it passes).
+name: Tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+
+# Nothing here needs to change the repository.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    steps:
+      - name: Install Python, and what the tests run
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git openssl python3 python3-venv
+      # Pinned to a commit, not a tag: a tag can be moved to different code, a commit can't. (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install Virgil's dependencies, each checked against requirements.txt's hashes
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install --quiet --no-deps --require-hashes -r requirements.txt
+          /tmp/venv/bin/pip install --quiet "pytest>=8"
+      - name: Run the tests
+        # From the checkout, without installing Virgil itself: virgil/__init__.py reads the version from
+        # pyproject.toml when run this way.
+        env:
+          PYTHONPATH: src
+        run: /tmp/venv/bin/python -m pytest -q
