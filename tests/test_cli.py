@@ -629,3 +629,24 @@ def test_shared_settings_wait_for_a_settled_clock_in_a_group(config_path, monkey
 def test_check_updates_setting(config_path):
     assert config_file.load(config_path).check_updates is True  # on by default
     assert _set(config_path, "check_updates", "false") == 0 and config_file.load(config_path).check_updates is False
+
+
+@pytest.mark.parametrize("key, value", [
+    ("trim_ppb", "2000000"),     # beyond ±1000 ppm, which virgil-root refuses
+    ("trim_ppb", "-1000001"),
+    ("name", ""),                # members refuse heartbeats from a name outside 1 to 64 characters
+    ("name", "   "),
+    ("name", "x" * 65),
+    ("name", "Box\x1b[2JA"),
+])
+def test_config_set_refuses_what_the_rest_of_virgil_would(config_path, capsys, key, value):
+    before = config_path.read_text()
+    assert cli.main(["--config", str(config_path), "config", "set", key, value]) == 1
+    assert key.split("_")[0] in capsys.readouterr().err and config_path.read_text() == before
+
+
+def test_config_set_accepts_the_limits(config_path):
+    assert cli.main(["--config", str(config_path), "config", "set", "trim_ppb", "-1000000"]) == 0
+    assert cli.main(["--config", str(config_path), "config", "set", "name", "  " + "x" * 64 + " "]) == 0
+    config = config_file.load(config_path)
+    assert config.trim_ppb == -1_000_000 and config.name == "x" * 64

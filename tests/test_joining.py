@@ -253,3 +253,31 @@ def test_an_unsettled_virgil_takes_no_one_in(virgils):
             await stop()
 
     assert asyncio.run(scenario()).group is None
+
+
+def test_rejoining_beats_a_removal_stamped_while_the_clock_was_ahead(tmp_path):
+    """A Virgil removed while the group's clock was ahead, then invited again once the time was put right: the
+    removal is later than "now", and the other members still hold it. The joining has to be stamped later still,
+    or their lists remove the newcomer again as soon as they're merged."""
+    from virgil import membership
+    from virgil.group import Group, Member, Removed, create_invite
+
+    newcomer_id, other_id = "d" * 32, "e" * 32
+    now = 1_000_000.0
+    removal = Removed(now + 5000, None, None)  # stamped by a clock that was 5000 s ahead
+    path, identity = make_virgil(tmp_path, "inviter")
+    create_group(path, identity)
+    inviter = config_file.load(path)
+    cert = identity.cert_pem
+    inviter.group.members[other_id] = Member("Other", cert, 1.0)
+    inviter.group.removed[newcomer_id] = removal
+    # What the other member holds: the same list, removal included.
+    other = Group(inviter.group.id, dict(inviter.group.members), removed={newcomer_id: removal})
+    secret, _ = create_invite(inviter.group, now)
+
+    handle_join(inviter, {"secret": secret, "id": newcomer_id, "name": "Newcomer", "cert": cert}, now)
+    assert inviter.group.members[newcomer_id].changed > removal.changed
+    membership.merge(other, inviter.group.members, inviter.group.removed)
+    assert newcomer_id in other.members and newcomer_id not in other.removed
+    membership.merge(inviter.group, other.members, other.removed)
+    assert newcomer_id in inviter.group.members

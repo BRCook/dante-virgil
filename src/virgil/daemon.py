@@ -51,7 +51,8 @@ from virgil.generate import Tuning, Role
 from virgil.group import GROUP_PORT, HEX_ID, PUBLIC_PORT, GroupError, outstanding_invites
 from virgil.heartbeat import HEARTBEAT_PATH, Heartbeat, HeartbeatError, decode
 from virgil.interfaces import Timestamping, get_interface, ipv4_addresses, ipv4_networks, is_link_local
-from virgil.request import TimingRequest
+from virgil.request import MAX_TRIM_PPB, TimingRequest
+from virgil.tasks import spawn
 from virgil.timing import Target, TimingManager
 from virgil.joining import JOIN_PATH, JoinError, handle_join
 from virgil.tls import Identity, fingerprint, fingerprint_of_der
@@ -233,6 +234,7 @@ class Daemon:
     def __post_init__(self) -> None:
         self.config = config_file.load(self.config_path)
         self.config_mtime = self.config_path.stat().st_mtime
+        self._config_on_disk = config_file.to_dict(self.config)
         self.group_context = tls.group_server_context(self.identity, [])
         self._trust_members()
         self.started = time.monotonic()
@@ -372,13 +374,36 @@ class Daemon:
             except RuntimeError:
                 pass  # no event loop running (reloaded outside virgild's loop, as in some tests)
         self.config_mtime = mtime
+        self._config_on_disk = config_file.to_dict(self.config)
         self._trust_members()
         log.info("Reloaded the config")
         return True
 
     def save(self) -> None:
+        """Save the config, without losing anything virgilctl has changed in the file since virgild last read it.
+
+        virgild holds the config in memory and writes the whole file; virgilctl edits the file, and virgild only
+        looks for that every couple of seconds. Saving in between used to overwrite virgilctl's change (a new
+        password, say, lost to an auto-trim step a second later). So if the file has changed, its changes are
+        taken in first, exactly as a reload would, and only what virgild itself has changed since it last read or
+        wrote the file is laid over them. If both changed the same setting, virgild's change, the later, wins.
+        """
+        try:
+            changed = self.config_path.stat().st_mtime != self.config_mtime
+        except OSError:
+            changed = False  # no file to merge with: just write it
+        if changed:
+            before, ours = self._config_on_disk, config_file.to_dict(self.config)
+            try:
+                self.config = config_file.from_dict(before)  # so the reload sees only what virgilctl changed
+                self.reload_if_changed()
+                self.config = config_file.from_dict(_merge(before, ours, config_file.to_dict(self.config)))
+            except (OSError, config_file.ConfigError) as error:
+                log.warning("Couldn't take in the config file's changes before saving (%s); saving over them", error)
+                self.config = config_file.from_dict(ours)
         config_file.save(self.config, self.config_path)
         self.config_mtime = self.config_path.stat().st_mtime
+        self._config_on_disk = config_file.to_dict(self.config)
 
     # Heartbeats
 
@@ -540,10 +565,12 @@ class Daemon:
             self.graphs.add(f"average/{key}", "latency", f"{label} average", "ns", t, average)
 
     async def watch_graphs(self, pinger: Pinger | None = None, dante_pinger: Pinger | None = None) -> None:
+        # Started with spawn (see virgil.tasks), like every background task here: kept until it finishes, and a
+        # failure logged when it happens. These two run for as long as virgild does.
         if pinger is not None:
-            asyncio.ensure_future(pinger.run())
+            spawn(pinger.run(), "Pinging the other members")
         if dante_pinger is not None:
-            asyncio.ensure_future(dante_pinger.run())
+            spawn(dante_pinger.run(), "Pinging across the Dante network")
         while True:
             await asyncio.sleep(1.0)
             try:
@@ -992,7 +1019,9 @@ class Daemon:
                 return web.json_response({"error": "already recording"}, status=409)
             return web.json_response({"name": await self.recording.start(body.get("stamp"), group=True)})
         if body.get("action") == "stop":
-            return web.json_response({"archive": await self.recording.stop()})
+            # If this Virgil's part already stopped itself (its disk filled, say), its log is still here to collect.
+            archive = await self.recording.stop() or self.recording.take_auto_stopped()
+            return web.json_response({"archive": archive})
         raise web.HTTPBadRequest()
 
     async def group_recording_file(self, request: web.Request) -> web.StreamResponse:
@@ -1213,11 +1242,11 @@ class Daemon:
         """React to a new ptpv1 setting. Into or out of "only", PTPv1 and ptp4l swap over in the background."""
         self.ptpv1_pending = None
         if (old == "only") == (new == "only"):
-            asyncio.ensure_future(self.check_ptpv1(settle=0))
+            spawn(self.check_ptpv1(settle=0), "Checking PTPv1 after its setting changed")
             return
         if self.ptpv1_switching is not None and not self.ptpv1_switching.done():
             self.ptpv1_switching.cancel()
-        self.ptpv1_switching = asyncio.ensure_future(self.switch_ptpv1_mode(new == "only"))
+        self.ptpv1_switching = spawn(self.switch_ptpv1_mode(new == "only"), "Switching between PTPv2 and PTPv1")
 
     async def _wait_for(self, done, timeout: float, step: float = 0.5) -> bool:
         deadline = time.monotonic() + timeout
@@ -1330,7 +1359,7 @@ class Daemon:
                                  clock_identity=clock_identity, own_identity=lambda: self.ptp.own_identity,
                                  member_identities=member_identities)
 
-    def check_ptp_interface(self) -> None:
+    async def check_ptp_interface(self) -> None:
         """Follow the PTP interface's addresses, and keep netaudio's daemon on the right interface.
 
         netaudio needs an address. It runs on the PTP interface, where the
@@ -1354,14 +1383,18 @@ class Daemon:
                 wanted = (mgmt, mgmt_addresses)
         if wanted == self.netaudio_for:
             return
+        # systemctl waits for the unit to stop, which can take as long as systemd allows a stuck service (90
+        # seconds). Run here, on the event loop, that held up everything virgild does: no heartbeats went out
+        # (members count a leader as lost after 30 seconds without them), and PTPv1's Syncs stopped. So it runs
+        # in a thread, as the timing manager's own systemctl calls do, and only this check waits for it.
         try:
             if wanted is None:
                 log.info("Neither %s nor the management interface has an IPv4 address, so netaudio's daemon is "
                          "stopped until one does", interface)
-                self.systemd.stop(NETAUDIO_UNIT)
+                await asyncio.to_thread(self.systemd.stop, NETAUDIO_UNIT)
             else:
                 NETAUDIO_ENV.write_text(f"NETAUDIO_INTERFACE={wanted[0]}\n")
-                self.systemd.restart(NETAUDIO_UNIT)
+                await asyncio.to_thread(self.systemd.restart, NETAUDIO_UNIT)
                 if wanted[0] == interface:
                     log.info("Started netaudio's daemon on %s", interface)
                 else:
@@ -1514,7 +1547,7 @@ class Daemon:
             last = self._members_fetched.get(sender, 0.0)
             if time.monotonic() - last >= MEMBERS_FETCH_EVERY:
                 self._members_fetched[sender] = time.monotonic()
-                asyncio.ensure_future(self.sync_members_from(sender))
+                spawn(self.sync_members_from(sender), f"Fetching the member list from {self.name_of(sender)}")
         return web.Response(status=204)
 
     def verified_address(self, virgil_id: str) -> str | None:
@@ -1702,7 +1735,7 @@ class Daemon:
         adjustment = (self.clock or {}).get("phc_adjustment_ppm")
         if not isinstance(adjustment, (int, float)) or isinstance(adjustment, bool):
             return
-        trim = round(adjustment * 1000)
+        trim = max(-MAX_TRIM_PPB, min(MAX_TRIM_PPB, round(adjustment * 1000)))  # never more than a request allows
         if trim == self.config.trim_ppb:
             return
         log.info("Taking over the PHC's current rate as this Virgil's trim: %+.3f ppm", trim / 1000)
@@ -1834,7 +1867,7 @@ class Daemon:
         while True:
             try:
                 await self.check_network()
-                self.check_ptp_interface()
+                await self.check_ptp_interface()
             except Exception:
                 log.exception("Couldn't check the network interfaces")
             await asyncio.sleep(NETWORK_CHECK_INTERVAL)
@@ -1984,7 +2017,8 @@ class Daemon:
         self.events.group("joined", f"{body.get('name')} joined the group, through this Virgil")
         await self._update_advert()
         # Everyone else learns of the newcomer now (and from heartbeats, if they miss this).
-        asyncio.ensure_future(self.push_members([i for i in self.member_ids() if i != body.get("id")]))
+        spawn(self.push_members([i for i in self.member_ids() if i != body.get("id")]),
+              "Telling the members about a newcomer")
         return web.json_response(reply)
 
     def public_app(self) -> web.Application:
@@ -2002,6 +2036,7 @@ class Daemon:
             self.config.name, self.status_data, lambda window: self.graphs.window(window, time.time()),
             lambda: dict(self.consoles.diagnostics) if self.consoles else {}, root=self.recordings_root,
             events=lambda since: self.events.since(since))
+        self.recording.on_auto_stop = self.stop_recording  # a session that stops itself stops as a whole
         return app
 
     # For the web UI
@@ -2022,7 +2057,7 @@ class Daemon:
         """After creating or joining a group: trust the new members, and advertise the group."""
         self._trust_members()
         if self.discovery is not None:
-            asyncio.ensure_future(self._update_advert())
+            spawn(self._update_advert(), "Updating the mDNS advert")
 
     def update_dhcp_names(self, systemd: roles.Systemd | None = None, path: Path = DHCP_NAMES_REQUEST,
                           add: list[str] | None = None, force: bool = False) -> None:
@@ -2186,6 +2221,27 @@ class Daemon:
                         self.timing.poke()
             except Exception:
                 log.exception("Couldn't reload the config")
+
+
+_GONE = object()
+
+
+def _merge(before: dict, ours: dict, theirs: dict) -> dict:
+    """A three-way merge of config (as config.to_dict gives it): `theirs`, with everything `ours` changed since
+    `before` laid over it. Tables are merged setting by setting, so two changes to different members of the
+    group, or an invite made by virgilctl and a member added by virgild, both survive."""
+    merged = dict(theirs)
+    for key in before.keys() | ours.keys():
+        was, now = before.get(key, _GONE), ours.get(key, _GONE)
+        if was == now:
+            continue  # we didn't change it: theirs stands
+        if now is _GONE:
+            merged.pop(key, None)  # we removed it
+        elif isinstance(was, dict) and isinstance(now, dict) and isinstance(theirs.get(key), dict):
+            merged[key] = _merge(was, now, theirs[key])
+        else:
+            merged[key] = now
+    return merged
 
 
 def dhcp_lease_names() -> dict[str, str]:

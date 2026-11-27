@@ -708,7 +708,7 @@ sudo ./install.sh
 7. links `virgilctl` and `netaudio` into `/usr/local/bin`; and
 8. starts `virgild`.
 
-Running it again from a newer copy of the repository updates Virgil, keeping its configuration, ID and certificate. It only restarts `virgild` itself and not the timing services; updating Virgil therefore doesn't disturb any Dante devices. When the Python environment is rebuilt, it also restarts netaudio; that only pauses monitoring and alerts for a few seconds. `uninstall.sh` reverses the installation, and `--purge` will additionally remove the configuration.
+Running it again from a newer copy of the repository updates Virgil, keeping its configuration, ID and certificate. It only restarts `virgild` itself and not the timing services; updating Virgil therefore doesn't disturb any Dante devices. When the Python environment is rebuilt, it also restarts netaudio; that only pauses monitoring and alerts for a few seconds. `uninstall.sh` reverses the installation, keeping the configuration and the saved logs and history (`/var/lib/dante-virgil`); `--purge` removes those too, as `apt purge` does for the package.
 
 ### Packages
 

@@ -410,29 +410,37 @@ def test_netaudio_follows_the_ptp_interface_and_falls_back_to_management(tmp_pat
     _fake_interfaces(monkeypatch, addresses)
     monkeypatch.setattr(daemon_module, "NETAUDIO_ENV", tmp_path / "netaudio.env")
 
+    import threading
+
     class Systemd:
         calls = []
+        threads = set()
 
         def restart(self, unit, block=True):
+            self.threads.add(threading.current_thread())
             self.calls.append(("restart", (tmp_path / "netaudio.env").read_text().strip()))
 
         def stop(self, unit):
+            self.threads.add(threading.current_thread())
             self.calls.append(("stop", None))
 
     systemd = Systemd()
     b.systemd = systemd
-    b.check_ptp_interface()
+    asyncio.run(b.check_ptp_interface())
+    # systemctl can wait a long time for a stuck service: never on the event loop's own thread, where it would
+    # hold up heartbeats and PTPv1 for as long.
+    assert threading.main_thread() not in systemd.threads
     assert systemd.calls == [("stop", None)]  # no addresses anywhere yet
     addresses["enp5s0"] = ["192.168.30.15/24"]
-    b.check_ptp_interface()
+    asyncio.run(b.check_ptp_interface())
     assert systemd.calls[-1] == ("restart", "NETAUDIO_INTERFACE=enp5s0")  # its UI still works
     assert b.netaudio_interface == "enp5s0"
     addresses["enp1s0"] = ["169.254.40.2/16"]  # a link-local Dante network counts at once
-    b.check_ptp_interface()
-    b.check_ptp_interface()
+    asyncio.run(b.check_ptp_interface())
+    asyncio.run(b.check_ptp_interface())
     assert systemd.calls[-1] == ("restart", "NETAUDIO_INTERFACE=enp1s0") and len(systemd.calls) == 3
     addresses["enp1s0"] = []
-    b.check_ptp_interface()
+    asyncio.run(b.check_ptp_interface())
     assert systemd.calls[-1] == ("restart", "NETAUDIO_INTERFACE=enp5s0")
 
 
@@ -1671,3 +1679,122 @@ def test_a_members_log_with_a_name_that_isnt_an_archives_is_ignored(tmp_path, na
     assert paths["A"].read_bytes() == before
     assert sorted(p.name for p in (tmp_path / "rec-a").iterdir()) == sorted(
         [stopped["archive"], stopped["archive"] + ".summary.json"])
+
+
+def _touch_later(path):
+    """Make sure a file's modification time differs from before, whatever the filesystem's resolution."""
+    import os
+
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+
+def test_saving_keeps_what_virgilctl_changed_in_the_meantime(tmp_path):
+    """virgild writes the whole config from memory, and only looks for virgilctl's edits every couple of seconds.
+    A save in between (an auto-trim step, say) used to overwrite them."""
+    from virgil import group as groups
+
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    # virgilctl, between two of virgild's checks: a new password, and an invite.
+    edited = config_file.load(paths["A"])
+    edited.web_password, edited.web_password_changed = "scrypt$16384$8$1$c2FsdA==$ZGlnZXN0", 1000.0
+    secret, expires = groups.create_invite(edited.group, time.time())
+    config_file.save(edited, paths["A"])
+    _touch_later(paths["A"])
+    # virgild, before it has noticed: a trim step, and a member's name learned from the group.
+    a.config.trim_ppb = 1234
+    a.config.group.members[configs["B"].id].name = "Renamed B"
+    a.save()
+
+    for config in (a.config, config_file.load(paths["A"])):  # in memory, and in the file
+        assert config.trim_ppb == 1234 and config.group.members[configs["B"].id].name == "Renamed B"
+        assert config.web_password == edited.web_password and config.web_password_changed == 1000.0
+        assert groups.redeem_invite(config.group, secret, time.time())
+    assert a.reload_if_changed() is False  # nothing left to pick up
+
+
+def test_a_save_with_nothing_changed_underneath_is_just_a_save(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    a.config.trim_ppb = 77
+    del a.config.group.members[configs["B"].id]
+    a.save()
+    saved = config_file.load(paths["A"])
+    assert saved.trim_ppb == 77 and configs["B"].id not in saved.group.members
+
+
+def test_a_group_session_that_stops_itself_is_stopped_everywhere_and_bundled(tmp_path, monkeypatch):
+    """After 24 hours, or with the disk nearly full, a session stops itself. On the Virgil coordinating a group's
+    session, that used to save its own log alone and leave the members logging, and Stop then said "not logging"."""
+    import virgil.recording as recording_module
+    from virgil.daemon import Peer
+
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        b = Daemon(paths["B"], identities["B"])
+        a.recordings_root, b.recordings_root = tmp_path / "rec-a", tmp_path / "rec-b"
+        runners = await start(a) + await start(b)
+        a.recording.units = b.recording.units = None  # no journal in tests
+        introduce(a, b)
+        introduce(b, a)
+        a.peers[configs["B"].id] = Peer(b.heartbeat(), time.monotonic())
+        try:
+            await a.start_recording(group=True)
+            assert b.recording.active
+            monkeypatch.setattr(recording_module, "MAX_SECONDS", 0)  # the next reading finds the time is up
+            for _ in range(100):
+                await asyncio.sleep(0.1)
+                if not a.recording.active and not b.recording.active and not a.recording_members:
+                    break
+            return a, b
+        finally:
+            for runner in runners:
+                await runner.cleanup()
+
+    a, b = asyncio.run(scenario())
+    assert not a.recording.active and not b.recording.active and not a.recording_here
+    names = [r["name"] for r in a.recording.recordings()]
+    assert len(names) == 1 and names[0].endswith("-group.tar")  # both logs, in one file, as when Stop is pressed
+    assert b.recording.recordings() == []
+
+
+def test_a_member_whose_part_stopped_itself_still_hands_its_log_over(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        b = Daemon(paths["B"], identities["B"])
+        b.recordings_root = tmp_path / "rec-b"
+        b.public_app()
+        b.recording.units = None
+        await b.recording.start("20260101-120000", group=True)
+        b.recording._stop_itself()  # as its own task does when the disk is nearly full
+        for _ in range(50):
+            await asyncio.sleep(0.1)
+            if not b.recording.active and b.recording.auto_stopped:
+                break
+        return b
+
+    b = asyncio.run(scenario())
+    archive = b.recording.take_auto_stopped()
+    assert archive is not None and archive.endswith("-Virgil-B.tar.gz") and (tmp_path / "rec-b" / archive).is_file()
+    assert b.recording.take_auto_stopped() is None  # handed over once
+
+
+def test_a_background_task_that_fails_says_so(caplog):
+    from virgil.tasks import spawn
+
+    async def fails():
+        raise OSError("the socket went away")
+
+    async def scenario():
+        task = spawn(fails(), "Pinging the other members")
+        await asyncio.sleep(0.05)
+        return task
+
+    task = asyncio.run(scenario())
+    assert task.done() and "Pinging the other members failed: the socket went away" in caplog.text
+    with pytest.raises(RuntimeError):  # and outside an event loop, it refuses cleanly
+        spawn(fails(), "nothing")

@@ -60,8 +60,13 @@ def handle_join(config: Config, body: Any, now: float) -> dict[str, Any]:
     existing = config.group.members.get(virgil_id)
     if existing is not None and fingerprint(existing.cert) != fingerprint(cert):
         raise JoinError(409, "a different Virgil with the same Virgil ID is already a member")
-    # Joining now beats any earlier removal of the same Virgil (see virgil.membership).
-    config.group.members[virgil_id] = Member(name, cert, now)
+    # Joining now beats any earlier removal of the same Virgil (see virgil.membership). "Now" alone isn't enough
+    # for that: a removal stamped while the group's clock was ahead (before its time was corrected) is later
+    # than now, and every other member still holds it, so their lists would have removed the newcomer again
+    # the moment they were merged. So, as with every other change the group shares, this one is stamped later
+    # than whatever it replaces (see shared.next_stamp).
+    earlier = [entry.changed for entry in (existing, config.group.removed.get(virgil_id)) if entry is not None]
+    config.group.members[virgil_id] = Member(name, cert, shared.next_stamp(max(earlier, default=0.0), now))
     config.group.removed.pop(virgil_id, None)
     # The group's shared settings, and the time here, which the newcomer takes on (see virgil.shared).
     return {**snapshot(config.group), "shared_settings": shared.snapshot(config), "now": now}

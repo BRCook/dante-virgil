@@ -169,22 +169,45 @@ def _choose_ptp_interface(name: str, assume_yes: bool) -> tuple[str, str | None]
     return choice.name, choice.nic_profile
 
 
+def _check_name(name: str) -> str:
+    """A Virgil's name, as the group will accept it. Members check every heartbeat's name (1 to 64 characters), so
+    a Virgil named outside that was refused by all of them, without a word here, and dropped out of its group."""
+    from virgil.joining import MAX_NAME
+
+    name = name.strip()
+    if not 1 <= len(name) <= MAX_NAME:
+        raise CliError(f"the name must be 1 to {MAX_NAME} characters")
+    if not name.isprintable():
+        raise CliError("the name can't contain control characters")
+    return name
+
+
 def cmd_config_set(args: argparse.Namespace) -> int:
-    config = config_file.load(args.config)
     key, value = args.key, args.value
+    # Anything that asks a question comes before the config is read. virgild saves its own changes to the same
+    # file (the trim, the member list), and a config read before a question and saved after the answer would
+    # undo whatever virgild changed while the question sat on the screen.
+    chosen = _choose_ptp_interface(value, args.yes) if key == "ptp_interface" else None
+    config = config_file.load(args.config)
     if key == "name":
-        config.name = value
+        config.name = _check_name(value)
     elif key == "ptp_interface":
-        config.ptp_interface, config.nic_profile = _choose_ptp_interface(value, args.yes)
+        config.ptp_interface, config.nic_profile = chosen
     elif key == "mgmt_interface":
         if get_interface(value) is None:
             raise CliError(f"there's no interface called {value}")
         config.mgmt_interface = value
     elif key == "trim_ppb":
+        from virgil.request import MAX_TRIM_PPB
+
         try:
-            config.trim_ppb = int(value)
+            trim = int(value)
         except ValueError as error:
             raise CliError("trim_ppb must be a whole number") from error
+        # The same limit virgil-root holds the timing request to: beyond it, the request is refused.
+        if abs(trim) > MAX_TRIM_PPB:
+            raise CliError(f"trim_ppb must be within ±{MAX_TRIM_PPB} (±1000 ppm)")
+        config.trim_ppb = trim
     elif key == "ptpv1":
         from virgil.config import PTPV1_MODES
 
@@ -853,6 +876,9 @@ def cmd_password(args: argparse.Namespace) -> int:
         raise CliError(f"the password must be at least {MIN_PASSWORD} characters")
     if getpass.getpass("Again: ") != first:
         raise CliError("the passwords didn't match")
+    # Read again, now the typing is done: saving the config read before the prompts would undo anything virgild
+    # saved in the meantime (see cmd_config_set).
+    config = config_file.load(args.config)
     config.web_password = hash_password(first)
     config.web_password_changed = shared.next_stamp(config.web_password_changed, time.time())
     config_file.save(config, args.config)

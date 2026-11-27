@@ -318,7 +318,9 @@ class Replays:
         self._process = await asyncio.create_subprocess_exec(
             *PREPARE, str(archive), str(self._folder(name)), stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE, env=env)
-        asyncio.ensure_future(self._finish(name, self._process))
+        from virgil.tasks import spawn
+
+        spawn(self._finish(name, self._process), f"Preparing {name} for replay")
         return self.state(name)
 
     async def _finish(self, name: str, process: asyncio.subprocess.Process) -> None:
