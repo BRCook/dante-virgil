@@ -305,7 +305,7 @@ Clock Boxes are updated one at a time, and for a while, a group can hold members
 
 1. Each feature names the version that introduced it.
 2. A member supports a feature if its heartbeats report that version or later. A member that hasn't been heard from in the last minute supports nothing, and no features will be enabled for the group until that device returns and advertises its capabilities.
-3. Once every member supports a feature, the first member whose clock has settled switches it on, without anyone needing to do anything. It's recorded in the event history and the shared settings, and stays on.
+3. Once every member supports a feature, the leader enables it. It's recorded in the event history and the shared settings.
 
 Until then, `virgilctl status` and the web UI's **This Virgil** section say what each feature is waiting for, for example "Authenticated NTP: waiting for Box B to be updated (it runs 1.1.0)". An older member ignores shared settings it doesn't know; a mixed group therefore keeps working as before in the meantime.
 
@@ -541,7 +541,7 @@ Everything goes into `/var/lib/dante-virgil/events.jsonl` with one event per lin
 
 Anyone who can reach a Virgil can read its web UI. Changing anything requires the password, which is set with `sudo virgilctl password` \[on any member: it's shared by the whole group; see [Shared Settings](#shared-settings)\] and stored as a scrypt hash. Until a password is set, the web UI is read-only. New passwords need at least 12 characters.
 
-Once every member supports it \[see [What the Group Supports](#what-the-group-supports)\], passwords are hashed with stronger settings: scrypt with N=2^15, r=8 and p=3. A password hashed with Virgil 1.x's weaker settings is re-hashed with the stronger ones the next time someone logs in with it; that spreads like a change of password.
+Once every member supports it \[see [What the Group Supports](#what-the-group-supports)\], passwords are hashed with stronger settings: scrypt with N=2^15, r=8 and p=3. A password hashed with Virgil 1.x's weaker settings is re-hashed with the stronger ones the next time someone logs in to the leader with it; that spreads like a change of password.
 
 Logging in gives a session cookie that lasts 12 hours. The cookie is marked `Secure`, `HttpOnly` and `SameSite=Strict`. After five wrong passwords in a minute from one address, further attempts from that address are refused (even with the right password) until the minute is up. Every change also needs an `X-Virgil-Request` header, so no other page can make changes on a logged-in user's behalf. Changing the password logs everyone out.
 

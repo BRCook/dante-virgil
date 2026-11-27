@@ -527,10 +527,14 @@ class Daemon:
                                            for m in waiting]})
         return states
 
+    def acts_for_group(self) -> bool:
+        """Whether this Virgil makes the group's automatic changes (switching features on, re-hashing an old
+        password): the leader does, and a Virgil that isn't in a group acts for itself."""
+        return self.config.group is None or self.election.state is State.LEADER
+
     def switch_on_features(self) -> list[str]:
-        """Switch on whatever the whole group now supports. Only once this Virgil's clock has settled, as with any
-        change the group shares; any member may be the one that does it, since features merge as a union."""
-        if not self.clock_settled():
+        """Switch on whatever the whole group now supports. Only the leader does this (see acts_for_group)."""
+        if not self.acts_for_group():
             return []
         ready = [f for f in features.FEATURES if f not in self.config.features and self.group_supports(f)]
         if not ready:

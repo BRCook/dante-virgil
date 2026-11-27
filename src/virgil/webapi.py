@@ -115,10 +115,10 @@ class WebApi:
 
     async def _strengthen(self, password: str, stored: str) -> None:
         """With the password in hand, upgrade a hash made with 1.x's settings, once the whole group can check strong
-        ones (see virgil.features) and this Virgil's clock has settled, as for any change the group shares. It
-        spreads like a new password, so the other members end their sessions once."""
+        ones (see virgil.features). Only the leader does this (see Daemon.acts_for_group). It spreads like a new
+        password."""
         if ("strong_hashes" not in self.daemon.config.features or not weaker_than_strong(stored)
-                or not self.daemon.clock_settled() or self.daemon.config.web_password != stored):
+                or not self.daemon.acts_for_group() or self.daemon.config.web_password != stored):
             return
         self.daemon.config.web_password = await asyncio.to_thread(hash_password, password, True)
         self.daemon.shared_setting_changed_here("web_password", self.daemon.config.web_password,

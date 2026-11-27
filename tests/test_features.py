@@ -121,12 +121,17 @@ def test_a_member_not_heard_from_lately_holds_features_back(tmp_path, monkeypatc
     assert a.switch_on_features() == []
 
 
-def test_an_unsettled_virgil_switches_nothing_on(tmp_path, monkeypatch):
+def test_only_the_leader_switches_features_on(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon_module, "__version__", "2.0.0")
     paths, identities, configs = make_pair(tmp_path)
     a, b = Daemon(paths["A"], identities["A"]), Daemon(paths["B"], identities["B"])
-    _heard(a, b, "2.0.0")  # A is still listening for a leader
-    assert a.switch_on_features() == []
+    _heard(a, b, "2.0.0")
+    assert a.switch_on_features() == []  # still listening for a leader
+    a.election.resume(State.FOLLOWER, b.config.id, 0.0)
+    a.clock = {"synchronised": True}
+    assert a.clock_settled() and a.switch_on_features() == []  # settled, but following
+    a.election.resume(State.LEADER, None, 0.0)
+    assert a.switch_on_features() != []
 
 
 def test_a_joiner_too_old_for_the_groups_features_is_refused_and_the_invite_kept():

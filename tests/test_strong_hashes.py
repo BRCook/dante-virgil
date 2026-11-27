@@ -65,3 +65,18 @@ def test_the_wrong_password_table_forgets_quiet_addresses():
 
 def test_new_passwords_are_longer():
     assert webauth.MIN_PASSWORD == 12
+
+
+def test_a_synchronised_follower_leaves_re_hashing_to_the_leader(virgil):
+    from virgil import group as groups
+
+    async def scenario(daemon, session, base):
+        daemon.config.group = groups.create(daemon.config.id, daemon.config.name, daemon.identity.cert_pem, 1.0)
+        daemon.config.features = ["strong_hashes"]
+        daemon.election.resume(State.FOLLOWER, "b" * 32, 0.0)
+        daemon.clock = {"synchronised": True}
+        before = daemon.config.web_password
+        return await _login(session, base), before, daemon.config.web_password
+
+    status, before, after = run(virgil, scenario)
+    assert status == 200 and after == before

@@ -30,7 +30,8 @@ say, whose every change would otherwise look the newest):
 
 - A Virgil joining a group takes on the group's settings outright (take_on_joining).
 - Only a Virgil whose clock has settled with its group can change them
-  (clock_settled).
+  (clock_settled). That's for changes people make, from any member; changes the
+  group makes by itself are the leader's (see virgil.daemon's acts_for_group).
 - A change is always stamped later than the one it replaces (next_stamp), so a
   group whose time was once ahead, and then corrected, can still be changed.
 """

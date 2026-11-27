@@ -10,9 +10,9 @@ switched on for the group only once every member supports it:
 - A member supports it when it reports that version or later in its heartbeats. A
   member not heard from lately supports nothing: a feature is never switched on
   because someone is merely offline.
-- Once every member supports it, the first member whose clock has settled switches
-  it on, with nobody needing to do anything. It's recorded in the shared settings
-  (see virgil.shared), so it stays on: shared features are only ever added to.
+- Once every member supports it, the leader switches it on. It's recorded in the
+  shared settings (see virgil.shared), and stays on: shared features are only ever
+  added to.
 - A Virgil asking to join is refused if it's too old for a feature the group uses,
   with a message saying to update it first.
 """
