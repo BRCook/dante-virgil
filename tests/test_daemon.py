@@ -1798,3 +1798,85 @@ def test_a_background_task_that_fails_says_so(caplog):
     assert task.done() and "Pinging the other members failed: the socket went away" in caplog.text
     with pytest.raises(RuntimeError):  # and outside an event loop, it refuses cleanly
         spawn(fails(), "nothing")
+
+
+def test_requests_to_members_share_one_session(tmp_path):
+    """Every request to a member used to make its own TLS setup and connection. Heartbeats, graphs and everything
+    else now share one session, which is only made again when the members' certificates change."""
+    paths, identities, configs = make_pair(tmp_path)
+
+    async def scenario():
+        a = Daemon(paths["A"], identities["A"])
+        b = Daemon(paths["B"], identities["B"])
+        runners = await start(a) + await start(b)
+        introduce(a, b)
+        introduce(b, a)
+        try:
+            first = await a.group_session()
+            assert await a._member_call(configs["B"].id, "GET", "/group/v1/ping") is not None
+            await a._send(first, configs["B"].id, a.heartbeat().encode())
+            from virgil.daemon import Peer
+
+            a.peers[configs["B"].id] = Peer(b.heartbeat(), time.monotonic())
+            await a._member_series(configs["B"].id, 60.0)
+            connections = sum(len(c) for c in first.connector._conns.values()) + len(first.connector._acquired)
+            same = await a.group_session() is first
+            # A member's certificate changes (here, it's dropped): the session only trusts the members, so it's remade.
+            del a.config.group.members[configs["B"].id]
+            second = await a.group_session()
+            return same, connections, second is not first, first.closed
+        finally:
+            await a.close_group_session()
+            for runner in runners:
+                await runner.cleanup()
+
+    same, connections, remade, old_closed = asyncio.run(scenario())
+    assert same and connections == 1  # three requests, one connection (one TLS handshake)
+    assert remade and old_closed
+
+
+def test_graphs_are_thinned_once_for_pages_asking_together(tmp_path):
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    a.graphs.add("offset/A", "offset", "A", "ns", time.time(), 5.0)
+    passes = []
+    real = a.graphs.window
+    a.graphs.window = lambda seconds, now: passes.append(seconds) or real(seconds, now)
+    assert a.own_series(300.0) == a.own_series(300.0) and passes == [300.0]
+    a.own_series(60.0)
+    assert passes == [300.0, 60.0]  # each window has its own
+    a._own_graphs[300.0] = (time.monotonic() - 1.1, a._own_graphs[300.0][1])  # a second on: thinned afresh
+    a.own_series(300.0)
+    assert passes == [300.0, 60.0, 300.0] and len(a._own_graphs) <= 2
+
+
+def test_the_graph_window_is_a_whole_finite_number_of_seconds(tmp_path):
+    from types import SimpleNamespace
+
+    window = lambda value: Daemon._window(SimpleNamespace(query={"window": value}))  # noqa: E731
+    assert window("300") == 300.0 and window("59.6") == 60.0 and window("1") == 10.0 and window("1e9") == 600.0
+    for bad in ("nan", "inf", "-inf", "soon"):
+        with pytest.raises(web.HTTPBadRequest):
+            window(bad)
+
+
+def test_status_doesnt_reread_the_system_for_every_page(tmp_path, monkeypatch):
+    import virgil.daemon as daemon_module
+
+    paths, identities, configs = make_pair(tmp_path)
+    config = config_file.load(paths["A"])
+    config.ptp_interface = "enp1s0"
+    config_file.save(config, paths["A"])
+    a = Daemon(paths["A"], identities["A"])
+    a.timestamping_path = tmp_path / "timestamping.json"
+    a.public_app()
+    lookups = []
+    monkeypatch.setattr(daemon_module, "get_interface", lambda name, **kw: lookups.append(name))
+    a.status_data()
+    after_one = len(lookups)
+    a.status_data()
+    a.heartbeat()
+    assert after_one > 0 and len(lookups) == after_one  # the same second: answered from what was just read
+    a._brief = {key: (when - 1.1, value) for key, (when, value) in a._brief.items()}
+    a.status_data()
+    assert len(lookups) > after_one  # and read again once it's a second old

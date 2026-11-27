@@ -168,6 +168,8 @@ class Session:
         self.on_auto_stop: Callable[[], Any] | None = None
         # The archive from a session that stopped itself, until someone collects it (see take_auto_stopped).
         self.auto_stopped: str | None = None
+        # Set while the session is being stopped and packed, so a second stop() waits for the first (see stop).
+        self._stopping: asyncio.Future | None = None
 
     # State
 
@@ -215,9 +217,26 @@ class Session:
         return folder.name
 
     async def stop(self) -> str | None:
-        """Stop, and pack the recording. Returns the archive's file name."""
+        """Stop, and pack the recording. Returns the archive's file name.
+
+        Asked again while it's still stopping (packing takes a while), it waits and gives the same answer. That
+        happens whenever a group's session reaches its time limit: every member's part stops itself at the same
+        moment the coordinator asks it to stop, and the coordinator needs the archive's name, not "not logging".
+        """
+        if self._stopping is not None:
+            return await asyncio.shield(self._stopping)
         if not self.active:
             return None
+        self._stopping = asyncio.get_running_loop().create_future()
+        archive = None
+        try:
+            archive = await self._stop()
+            return archive
+        finally:
+            stopping, self._stopping = self._stopping, None
+            stopping.set_result(archive)
+
+    async def _stop(self) -> str:
         if self._task is not None:
             self._task.cancel()
             try:

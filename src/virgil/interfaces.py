@@ -14,6 +14,7 @@ import json
 import os
 import socket
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -192,11 +193,20 @@ def get_interface(
     return _interface(entry, timestamping)
 
 
-def ipv4_addresses(name: str, run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
-                   link_local: bool = False) -> list[str]:
-    """The IPv4 addresses on an interface, leaving out self-assigned 169.254.x.x ones unless asked."""
+# Every interface's IPv4 addresses, from one run of `ip`, and when it was read.
+#
+# virgild asks for the management and PTP interfaces' addresses and networks every two seconds, and each question
+# used to be its own `ip` process: four or five of them, each run on virgild's event loop, which stood still while
+# it waited. Now one `ip` call answers them all (it lists every interface), and its answer is kept for a moment, so
+# the questions that follow in the same check are answered from memory. virgild refreshes it in a thread just
+# before each check (see refresh_addresses), so its event loop doesn't wait for `ip` at all.
+ADDRESSES_KEPT_FOR = 1.0  # seconds: less than the two between virgild's checks, so each check reads afresh
+_addresses: tuple[float, dict[str, list[dict]]] | None = None
+
+
+def _ip_json(run: Callable[..., subprocess.CompletedProcess], *where: str) -> list:
     try:
-        result = run(["ip", "-j", "-4", "addr", "show", "dev", name], capture_output=True, text=True)
+        result = run(["ip", "-j", "-4", "addr", "show", *where], capture_output=True, text=True)
     except FileNotFoundError:
         return []
     if result.returncode != 0:
@@ -205,10 +215,36 @@ def ipv4_addresses(name: str, run: Callable[..., subprocess.CompletedProcess] = 
         entries = json.loads(result.stdout or "[]")
     except json.JSONDecodeError:
         return []
+    return entries if isinstance(entries, list) else []
+
+
+def refresh_addresses() -> dict[str, list[dict]]:
+    """Read every interface's IPv4 addresses now, with one `ip` call, and keep them for the questions that follow."""
+    global _addresses
+    found: dict[str, list[dict]] = {}
+    for entry in _ip_json(subprocess.run):
+        if isinstance(entry, dict) and isinstance(entry.get("ifname"), str):
+            found.setdefault(entry["ifname"], []).extend(entry.get("addr_info") or [])
+    _addresses = (time.monotonic(), found)
+    return found
+
+
+def _addr_info(name: str, run: Callable[..., subprocess.CompletedProcess]) -> list[dict]:
+    """An interface's addresses, as `ip -j` describes them."""
+    if run is not subprocess.run:
+        # Given a runner of its own (as the tests do): ask it about this interface alone, and keep nothing.
+        return [info for entry in _ip_json(run, "dev", name) for info in entry.get("addr_info", [])]
+    kept = _addresses
+    found = kept[1] if kept is not None and time.monotonic() - kept[0] <= ADDRESSES_KEPT_FOR else refresh_addresses()
+    return found.get(name, [])
+
+
+def ipv4_addresses(name: str, run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+                   link_local: bool = False) -> list[str]:
+    """The IPv4 addresses on an interface, leaving out self-assigned 169.254.x.x ones unless asked."""
     return [
         info["local"]
-        for entry in entries
-        for info in entry.get("addr_info", [])
+        for info in _addr_info(name, run)
         if info.get("family") == "inet" and "local" in info and (link_local or not is_link_local(info["local"]))
     ]
 
@@ -224,22 +260,11 @@ def is_link_local(address: str) -> bool:
 def ipv4_networks(name: str, run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
                   link_local: bool = False) -> list[str]:
     """The IPv4 networks an interface is on, such as '10.10.100.0/24'."""
-    try:
-        result = run(["ip", "-j", "-4", "addr", "show", "dev", name], capture_output=True, text=True)
-    except FileNotFoundError:
-        return []
-    if result.returncode != 0:
-        return []
-    try:
-        entries = json.loads(result.stdout or "[]")
-    except json.JSONDecodeError:
-        return []
     networks = []
-    for entry in entries:
-        for info in entry.get("addr_info", []):
-            if info.get("family") == "inet" and "local" in info and "prefixlen" in info \
-                    and (link_local or not is_link_local(info["local"])):
-                network = str(ipaddress.ip_network(f"{info['local']}/{info['prefixlen']}", strict=False))
-                if network not in networks:
-                    networks.append(network)
+    for info in _addr_info(name, run):
+        if info.get("family") == "inet" and "local" in info and "prefixlen" in info \
+                and (link_local or not is_link_local(info["local"])):
+            network = str(ipaddress.ip_network(f"{info['local']}/{info['prefixlen']}", strict=False))
+            if network not in networks:
+                networks.append(network)
     return networks

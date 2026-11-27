@@ -28,3 +28,27 @@ def private_recordings(tmp_path, monkeypatch):
         self.recordings_root = tmp_path / f"recordings-{id(self)}"
 
     monkeypatch.setattr(module.Daemon, "__init__", init)
+
+
+@pytest.fixture(autouse=True)
+def group_sessions_put_away(monkeypatch):
+    """virgild keeps one HTTPS session for its members for as long as it runs, and closes it when it stops. The
+    tests start daemons without ever stopping them, each inside its own short-lived event loop, so their sessions
+    are left open when that loop has gone; aiohttp would complain about every one at the end of the run. They
+    can't be closed properly by then (that needs the loop), so they're marked as closed here instead."""
+    from virgil import daemon as module
+
+    made = []
+    real = module.Daemon.group_session
+
+    async def group_session(self):
+        session = await real(self)
+        if not any(session is known for known in made):
+            made.append(session)
+        return session
+
+    monkeypatch.setattr(module.Daemon, "group_session", group_session)
+    yield
+    for session in made:
+        if not session.closed:
+            session.connector._closed = True

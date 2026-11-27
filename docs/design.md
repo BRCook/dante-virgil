@@ -289,7 +289,7 @@ A certificate from your own CA (or a public one) can be imported for use in the 
 
 ### Heartbeats
 
-Every Virgil sends a heartbeat to the group once a second, through the group API. A heartbeat carries:
+Every Virgil sends a heartbeat to the group once a second, through the group API. Heartbeats, and everything else a Virgil asks of its members, share one connection to each member, which the heartbeats keep open: a TLS handshake only happens when that connection is first made, not for every request. A heartbeat carries:
 
 - `id`: the Virgil's ID.
 - `name`: its display name.
@@ -565,7 +565,7 @@ The page draws the charts itself, on canvases, with windows from 30 seconds to 1
 - its timing services' logs;
 - any notes added from the web UI.
 
-"Stop logging and download" stops logging on every Virgil it started, fetches their logs through the group API, bundles them all into one `.tar` file, and downloads it through the browser. Logging stops by itself after 24 hours, or when the disk has 500 MB left. Internally (and in the API), a logging session is called a "recording".
+"Stop logging and download" stops logging on every Virgil it started, fetches their logs through the group API, bundles them all into one `.tar` file, and downloads it through the browser. Logging stops by itself after 24 hours, or when the disk has 500 MB left; a group's session that stops this way is stopped on every Virgil and bundled, just as if someone had pressed the button. Internally (and in the API), a logging session is called a "recording".
 
 Additionally, Virgil will compile the results into a summary. For every measurement type (latency, jitter, trim, etc.), the summary gives the count, minimum, maximum, mean, median, standard deviation, and the 1st, 5th, 95th and 99th percentiles, plus the total for late packets. It also gives the share of the session each Dante device spent following and synchronised; each alert with how often it opened and for how long; the group's events; and any notes. It goes into the log as `summary.html` (to read) and `summary.json` (for tools). The **Summary** button beside the log entry in the web UI will open the summary. Times in `summary.json` are all in ns. Units can be cycled in the web UI, similar to the graphs, by clicking on the unit for each row.
 

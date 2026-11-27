@@ -90,13 +90,74 @@ async def _output(*args: str, timeout: float = 3.0) -> str | None:
     return stdout.decode(errors="replace") if process.returncode == 0 else None
 
 
-async def read_clock(follower: bool, trim_ppb: int | None) -> dict[str, Any]:
-    """Everything worth knowing about this Virgil's clocks right now."""
+class Phc2sysReports:
+    """phc2sys's latest report, from one `journalctl -f` that stays running while this Virgil follows.
+
+    The journal is the only place phc2sys's reports can be read. virgild used to start a new journalctl every two
+    seconds to fetch the last few lines, and each one opens and searches the journal's files from scratch: a
+    steady trickle of work on a machine whose job is to keep time steadily. Following the journal with one process
+    costs nothing while phc2sys says nothing, and hands over each report as it's written.
+    """
+
+    def __init__(self, unit: str = PHC2SYS_UNIT, command: tuple[str, ...] | None = None):
+        # The last five lines first, as before, so there's a report to show straight away; then whatever follows.
+        self._command = command or ("journalctl", "-f", "-u", unit, "-n", "5", "-o", "cat", "--no-pager")
+        self._process: asyncio.subprocess.Process | None = None
+        self.latest: dict[str, Any] | None = None
+
+    @property
+    def running(self) -> bool:
+        return self._process is not None and self._process.returncode is None
+
+    async def start(self) -> bool:
+        """Start following, unless already. False if journalctl can't be run (the old way is used instead)."""
+        if self.running:
+            return True
+        from virgil.tasks import spawn
+
+        self.latest = None
+        try:
+            self._process = await asyncio.create_subprocess_exec(
+                *self._command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        except (FileNotFoundError, PermissionError):
+            self._process = None
+            return False
+        spawn(self._read(self._process), "Following phc2sys's reports")
+        for _ in range(10):  # a moment for the first report, so the first reading isn't without one
+            if self.latest is not None or not self.running:
+                break
+            await asyncio.sleep(0.05)
+        return True
+
+    async def _read(self, process: asyncio.subprocess.Process) -> None:
+        async for line in process.stdout:
+            report = parse_phc2sys(line.decode(errors="replace"))
+            if report is not None and process is self._process:
+                self.latest = report
+        await process.wait()  # journalctl has gone (it's restarted by the next start)
+
+    def stop(self) -> None:
+        """Stop following, and forget the last report: it's only meaningful while this Virgil follows."""
+        if self.running:
+            self._process.kill()
+        self._process, self.latest = None, None
+
+
+async def read_clock(follower: bool, trim_ppb: int | None, phc2sys: Phc2sysReports | None = None) -> dict[str, Any]:
+    """Everything worth knowing about this Virgil's clocks right now.
+
+    Given a Phc2sysReports (as virgild gives it), a follower's phc2sys figures come from that, and it's stopped
+    when this Virgil isn't following. Without one, the journal is asked once, here.
+    """
     clock: dict[str, Any] = {}
     tracking = await _output("chronyc", "-n", "tracking")
     if tracking:
         clock.update(parse_tracking(tracking) or {})
-    if follower:
+    if phc2sys is not None and not follower:
+        phc2sys.stop()
+    if follower and phc2sys is not None and await phc2sys.start():
+        clock.update(phc2sys.latest or {})
+    elif follower:
         journal = await _output("journalctl", "-u", PHC2SYS_UNIT, "-n", "5", "-o", "cat", "--no-pager")
         if journal:
             clock.update(parse_phc2sys(journal) or {})

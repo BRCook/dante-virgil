@@ -93,3 +93,43 @@ def test_missing_commands_give_nothing():
         return await clocks._output("no-such-command-anywhere")
 
     assert asyncio.run(scenario()) is None
+
+
+def test_phc2sys_reports_are_followed_by_one_process():
+    """One journalctl that stays running, rather than a new one every two seconds."""
+    import asyncio
+    import sys
+
+    from virgil.clocks import Phc2sysReports, read_clock
+
+    script = ("import sys, time\n"
+              "print('phc2sys[1.0]: CLOCK_REALTIME sys offset 12 s2 freq +100 delay 900', flush=True)\n"
+              "time.sleep(0.3)\n"
+              "print('phc2sys[2.0]: CLOCK_REALTIME sys offset -7 s2 freq +250 delay 880', flush=True)\n"
+              "time.sleep(30)\n")
+
+    async def scenario():
+        reports = Phc2sysReports(command=(sys.executable, "-c", script))
+        first = await read_clock(True, None, reports)
+        process = reports._process
+        await asyncio.sleep(0.6)
+        second = await read_clock(True, None, reports)
+        same_process = reports._process is process and reports.running
+        leading = await read_clock(False, 500, reports)  # no longer following: stopped, and forgotten
+        await process.wait()
+        return first, second, same_process, leading, reports
+
+    first, second, same_process, leading, reports = asyncio.run(scenario())
+    assert first["phc_offset_ns"] == 12 and second["phc_offset_ns"] == -7 and second["phc_adjustment_ppm"] == 0.25
+    assert same_process
+    assert "phc_offset_ns" not in leading and leading["phc_trim_ppm"] == 0.5
+    assert not reports.running and reports.latest is None
+
+
+def test_without_journalctl_the_reports_fall_back_to_asking_once():
+    import asyncio
+
+    from virgil.clocks import Phc2sysReports
+
+    reports = Phc2sysReports(command=("/nonexistent/journalctl",))
+    assert asyncio.run(reports.start()) is False and reports.latest is None

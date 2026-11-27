@@ -106,3 +106,31 @@ def test_ipv4_networks_and_addresses():
 
     assert ipv4_addresses("enp1s0", run) == ["10.10.100.253", "10.10.100.254"]
     assert ipv4_networks("enp1s0", run) == ["10.10.100.0/24"]
+
+
+def test_one_ip_call_answers_every_question_for_a_moment(monkeypatch):
+    """virgild asks for two interfaces' addresses and networks every two seconds: one `ip` call, not one each."""
+    from virgil import interfaces
+
+    calls = []
+    clock = {"now": 1000.0}
+
+    def ip_json(run, *where):
+        calls.append(where)
+        return [
+            {"ifname": "enp1s0", "addr_info": [{"family": "inet", "local": "169.254.40.2", "prefixlen": 16}]},
+            {"ifname": "enp5s0", "addr_info": [{"family": "inet", "local": "10.10.100.253", "prefixlen": 24}]},
+        ]
+
+    monkeypatch.setattr(interfaces, "_ip_json", ip_json)
+    monkeypatch.setattr(interfaces.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(interfaces, "_addresses", None)
+    assert interfaces.ipv4_addresses("enp5s0") == ["10.10.100.253"]
+    assert interfaces.ipv4_networks("enp5s0") == ["10.10.100.0/24"]
+    assert interfaces.ipv4_addresses("enp1s0") == [] and interfaces.ipv4_addresses("enp1s0", link_local=True) == [
+        "169.254.40.2"]
+    assert interfaces.ipv4_addresses("gone") == []
+    assert calls == [()]  # one call, for every interface at once
+    clock["now"] += interfaces.ADDRESSES_KEPT_FOR + 0.1
+    interfaces.ipv4_addresses("enp5s0")
+    assert len(calls) == 2  # and read afresh once that's out of date
