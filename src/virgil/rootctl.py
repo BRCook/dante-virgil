@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 import subprocess
 import sys
@@ -30,6 +31,7 @@ from virgil.generate import (
     Role,
     TimingSetup,
     chrony_conf,
+    chrony_keys,
     hwstamp_ctl_args,
     phc2sys_args,
     ptp4l_conf,
@@ -84,12 +86,18 @@ def prepare(
         interface = lookup(request.ntp_hwtimestamp)
         if interface is not None and interface.physical and interface.mode is Timestamping.HARDWARE:
             hwtimestamp = interface.name
-    chrony = chrony_conf(request.role, setup, list(request.allow), request.leader, request.tuning, hwtimestamp)
+    keys = [(k, v) for k, v in ((request.ntp_key_id, request.ntp_key),
+                                (request.ntp_previous_key_id, request.ntp_previous_key)) if k is not None]
+    keyfile = str(generated / "chrony.keys") if keys else None
+    key_id = request.ntp_key_id if keys else None
+    chrony = chrony_conf(request.role, setup, list(request.allow), request.leader, request.tuning, hwtimestamp,
+                         keyfile, key_id)
     phc2sys = phc2sys_args(setup, request.tuning) if request.role is Role.FOLLOWER else None
     hwstamp = hwstamp_ctl_args(setup)
     plan = {
         "role": request.role.value,
-        "sync": [{"args": list(c.args), "may_fail": c.may_fail} for c in sync_commands(setup, request.leader)],
+        "sync": [{"args": list(c.args), "may_fail": c.may_fail}
+                 for c in sync_commands(setup, request.leader, keyfile, key_id)],
         # Without ptp4l (the "only" PTPv1 mode), something else has to turn hardware timestamping on.
         "hwstamp": ["/usr/sbin/hwstamp_ctl", *hwstamp] if hwstamp
         else ["/usr/sbin/hwstamp_ctl", "-i", request.ptp_interface, "-t", "1", "-r", "1"]
@@ -104,6 +112,7 @@ def prepare(
     }
 
     atomic_write(generated / "ptp4l.conf", ptp4l_conf(setup, request.tuning).encode())
+    _write_keys(generated / "chrony.keys", keys)
     atomic_write(generated / "chrony.conf", chrony.encode())
     env = generated / "phc2sys.env"
     if phc2sys is None:
@@ -113,6 +122,21 @@ def prepare(
         atomic_write(env, f'PHC2SYS_ARGS="{" ".join(phc2sys)}"\n'.encode())
     # Written last: sync and hwstamp read only this.
     atomic_write(generated / "plan.json", (json.dumps(plan, indent=2) + "\n").encode())
+
+
+def _write_keys(path: Path, keys: list[tuple[int, str]]) -> None:
+    """chrony's key file: root's, readable by chrony's own user (_chrony), which chronyd drops to after starting,
+    and rereads it as for chronyc rekey. Nobody else can read it, virgild and netaudio included."""
+    if not keys:
+        path.unlink(missing_ok=True)
+        return
+    import grp
+
+    atomic_write(path, chrony_keys(keys).encode(), mode=0o640)
+    try:
+        os.chown(path, 0, grp.getgrnam("_chrony").gr_gid)
+    except (KeyError, PermissionError):
+        os.chmod(path, 0o600)  # no chrony user here (or not root, as in tests): root only, then
 
 
 def _plan(generated: Path) -> dict:
@@ -205,6 +229,12 @@ def hwstamp(generated: Path = GENERATED_DIR, run: Runner = _run) -> int:
     if command is None:
         return 0
     return run(command)
+
+
+def rekey(run: Runner = _run) -> int:
+    """Have chronyd reread the key file prepare just wrote, with nothing restarted: a leader's new key, so it
+    accepts followers using either the new key or the one it replaced."""
+    return run(["/usr/bin/chronyc", "rekey"])
 
 
 def trim(generated: Path = GENERATED_DIR, run: Runner = _run) -> int:
@@ -371,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="virgil-root", description="Virgil's root helper. Run by systemd.")
     parser.add_argument("--request", type=Path, default=REQUEST_PATH, help=argparse.SUPPRESS)
     parser.add_argument("--generated", type=Path, default=GENERATED_DIR, help=argparse.SUPPRESS)
-    parser.add_argument("command", choices=["prepare", "sync", "hwstamp", "trim", "dhcpnames", "settime"])
+    parser.add_argument("command", choices=["prepare", "sync", "hwstamp", "trim", "rekey", "dhcpnames", "settime"])
     args = parser.parse_args(argv)
 
     try:
@@ -382,6 +412,8 @@ def main(argv: list[str] | None = None) -> int:
             return sync(args.generated)
         if args.command == "trim":
             return trim(args.generated)
+        if args.command == "rekey":
+            return rekey()
         if args.command == "dhcpnames":
             return dhcpnames()
         if args.command == "settime":

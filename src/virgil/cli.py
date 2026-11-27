@@ -14,7 +14,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from virgil import __version__, shared
+from virgil import __version__, features, shared
 from virgil import config as config_file
 from virgil.config import ConfigError
 from virgil.files import UnsafeFileError
@@ -767,6 +767,11 @@ def _update_lines(status: dict) -> list[str]:
     for member in (status.get("group") or {}).get("members", []):
         if member.get("version") and status.get("version") and member["version"] != status["version"]:
             lines.append(f"{member['name']} runs Virgil {member['version']}, and this Virgil {status['version']}")
+    # The group's features, only when one is waiting or has a problem: "on" is the usual case, and needn't be said.
+    for state in status.get("features") or []:
+        text = features.describe(state)
+        if not text.endswith(": on"):
+            lines.append(text)
     return lines
 
 
@@ -906,7 +911,8 @@ def cmd_password(args: argparse.Namespace) -> int:
     # Read again, now the typing is done: saving the config read before the prompts would undo anything virgild
     # saved in the meantime (see cmd_config_set).
     config = config_file.load(args.config)
-    config.web_password = hash_password(first)
+    # Strong once every member can check strong hashes (see virgil.features and virgil.webauth).
+    config.web_password = hash_password(first, strong="strong_hashes" in config.features)
     config.web_password_changed = shared.next_stamp(config.web_password_changed, time.time())
     config_file.save(config, args.config)
     print("Set the web password. Anyone already logged in to the web UI will need to log in again.")

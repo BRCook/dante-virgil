@@ -208,8 +208,11 @@ class Session:
                 args = ["journalctl", "-f", "-n", "0", "-o", "short-iso-precise"]
                 for unit in self.units:
                     args += ["-u", unit]
-                self._journal = await asyncio.create_subprocess_exec(
-                    *args, stdout=(folder / "journal.log").open("w"), stderr=asyncio.subprocess.DEVNULL)
+                # journalctl gets its own copy of the file; this one is closed once it has, rather than left open
+                # for every session's lifetime.
+                with (folder / "journal.log").open("w") as journal:
+                    self._journal = await asyncio.create_subprocess_exec(
+                        *args, stdout=journal, stderr=asyncio.subprocess.DEVNULL)
             except OSError as error:
                 log.warning("Recording without the journal: %s", error)
         self._task = asyncio.create_task(self._run())

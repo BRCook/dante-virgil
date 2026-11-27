@@ -30,7 +30,7 @@ from aiohttp import web
 
 from virgil import __version__
 from virgil import config as config_file
-from virgil import autotrim, clocks, discovery, ptpwatch, roles, tls, updates
+from virgil import autotrim, clocks, discovery, features, ntpauth, ptpwatch, roles, tls, updates
 from virgil.alerts import EVENTS_PATH, Alerts
 from virgil.events import EventLog
 from virgil.graphs import KEEP_SECONDS, WORST, Recorder, jitter
@@ -46,7 +46,7 @@ from virgil import membership
 from virgil import shared
 from virgil.config import Config, DeviceSettings
 from virgil.consoles import normalise_mac
-from virgil.files import atomic_write
+from virgil.files import UnsafeFileError, atomic_write, read_small_file
 from virgil.election import Change, Election, State
 from virgil.generate import Tuning, Role
 from virgil.group import GROUP_PORT, HEX_ID, PUBLIC_PORT, GroupError, outstanding_invites
@@ -72,13 +72,26 @@ CONTENT_SECURITY_POLICY = (
 )
 
 
+def _secure(headers) -> None:
+    headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+    headers["X-Content-Type-Options"] = "nosniff"
+    headers["Referrer-Policy"] = "no-referrer"
+    headers["Cache-Control"] = "no-store"
+
+
 @web.middleware
 async def security_headers(request: web.Request, handler):
-    response = await handler(request)
-    response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["Cache-Control"] = "no-store"
+    """Every reply gets the same headers, error replies included: an aiohttp error (a 404, say) is raised rather
+    than returned, and an unexpected failure would otherwise be answered by aiohttp itself, without them."""
+    try:
+        response = await handler(request)
+    except web.HTTPException as error:
+        _secure(error.headers)
+        raise
+    except Exception:
+        log.exception("Error answering %s %s", request.method, request.path)
+        response = web.json_response({"error": "internal error"}, status=500)
+    _secure(response.headers)
     return response
 
 CONFIG_CHECK_INTERVAL = 2.0
@@ -104,6 +117,10 @@ MEMBERS_PATH = "/group/v1/members"
 # Dante marks its audio EF (46); pings across the Dante network are marked the same, to share its queues.
 DANTE_AUDIO_DSCP = 46
 MEMBERSHIP_PATH = "/api/v1/membership"
+# Where virgild keeps each member's last proven address and port (see Daemon.group_targets).
+CONTACTS_PATH = Path("/var/lib/dante-virgil/contacts.json")
+# How many distinct adverts are kept for each Virgil ID, so a forged one can't push the genuine one out.
+ADVERTS_PER_ID = 3
 # How many other Virgils' mDNS adverts are remembered: far more than any network of Clock Boxes has.
 MAX_ADVERTS = 64
 # Fetch a member's list at most this often, when its digest differs from ours.
@@ -232,6 +249,11 @@ class Daemon:
     # Small facts read from the system for status and heartbeats, each kept for a second (see _briefly).
     _brief: dict = field(default_factory=dict, init=False)
     events_path: Path = field(default=EVENTS_PATH, init=False)
+    # Where each member last answered over mutual TLS (address and group port), kept across restarts (see
+    # group_targets), and the last few distinct adverts for each Virgil ID.
+    contacts_path: Path = field(default=CONTACTS_PATH, init=False)
+    contacts: dict[str, tuple[str, int]] = field(default_factory=dict, init=False)
+    advert_history: dict[str, list] = field(default_factory=dict, init=False)
     # The interfaces whose DHCP lease names were last set, so they're only set again on a change.
     dhcp_names_for: tuple | None = field(default=None, init=False)
     # What auto-trim last did, for status.
@@ -247,6 +269,7 @@ class Daemon:
     def __post_init__(self) -> None:
         self.config = config_file.load(self.config_path)
         self.config_mtime = self.config_path.stat().st_mtime
+        self.contacts = self.load_contacts()
         self._config_on_disk = config_file.to_dict(self.config)
         self.group_context = tls.group_server_context(self.identity, [])
         self._trust_members()
@@ -309,7 +332,7 @@ class Daemon:
                                  ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
                                  probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2(),
                                  tuning=Tuning(phc2sys_kp=config.phc2sys_kp, phc2sys_ki=config.phc2sys_ki,
-                                             filter=config.chrony_filter))
+                                             filter=config.chrony_filter), **self.ntp_keys())
         # chrony follows this address, and NTP isn't authenticated, so it must be one the leader has proven is
         # its own: where its heartbeats come from (see verified_address). An address from an mDNS advert won't
         # do: anyone on the management network could advertise the leader's Virgil ID with their own address,
@@ -324,7 +347,16 @@ class Daemon:
                              ntp_hwtimestamp=self.ntp_hwtimestamp_interface(),
                              probe_timestamps=config.probe_timestamps, serve_ptpv2=self.wants_ptpv2(),
                              tuning=Tuning(phc2sys_kp=config.phc2sys_kp, phc2sys_ki=config.phc2sys_ki,
-                                             filter=config.chrony_filter))
+                                             filter=config.chrony_filter), **self.ntp_keys())
+
+    def ntp_keys(self) -> dict:
+        """The group's NTP keys for the timing request, once the group authenticates NTP (see virgil.ntpauth)."""
+        key = self.config.ntp_key
+        if key is None or "ntp_auth" not in self.config.features or self.config.group is None:
+            return {}
+        return {"ntp_key_id": key.id, "ntp_key": key.key,
+                **({"ntp_previous_key_id": key.previous_id, "ntp_previous_key": key.previous_key}
+                   if key.previous_key else {})}
 
     def on_applied(self, target: Target | None) -> None:
         """The timing services now match the election's decision."""
@@ -464,6 +496,82 @@ class Daemon:
         if self._replays is None or self._replays.root != self.recordings_root:
             self._replays = Replays(self.recordings_root, self.recordings_root.parent / "replay")
         return self._replays
+
+    # What the group supports (see virgil.features).
+
+    def member_versions(self) -> dict[str, str | None]:
+        """The version each member reports, for those heard from lately, this Virgil included."""
+        now = time.monotonic()
+        versions: dict[str, str | None] = {self.config.id: __version__}
+        for virgil_id, peer in self.peers.items():
+            if now - peer.heard_at <= features.HEARD_WITHIN:
+                versions[virgil_id] = peer.heartbeat.version
+        return versions
+
+    def group_member_ids(self) -> list[str]:
+        return list(self.config.group.members) if self.config.group is not None else [self.config.id]
+
+    def group_supports(self, feature: str) -> bool:
+        """Whether every member has been heard from lately, and runs a version with this feature."""
+        return not features.waiting_for(feature, self.group_member_ids(), self.member_versions())
+
+    def feature_states(self) -> list[dict]:
+        """Each feature: whether it's on, and who it's waiting for (or, once on, who's too old for it)."""
+        versions = self.member_versions()
+        states = []
+        for feature in features.FEATURES:
+            waiting = features.waiting_for(feature, self.group_member_ids(), versions)
+            states.append({"feature": feature, "label": features.LABELS[feature],
+                           "on": feature in self.config.features,
+                           "waiting_for": [{"id": m, "name": self.name_of(m), "version": versions.get(m)}
+                                           for m in waiting]})
+        return states
+
+    def switch_on_features(self) -> list[str]:
+        """Switch on whatever the whole group now supports. Only once this Virgil's clock has settled, as with any
+        change the group shares; any member may be the one that does it, since features merge as a union."""
+        if not self.clock_settled():
+            return []
+        ready = [f for f in features.FEATURES if f not in self.config.features and self.group_supports(f)]
+        if not ready:
+            return []
+        if "ntp_auth" in ready and self.config.ntp_key is None:
+            self.config.ntp_key = ntpauth.new_key()
+            self.config.ntp_key_changed = shared.next_stamp(self.config.ntp_key_changed, time.time())
+        self.config.features = sorted(set(self.config.features) | set(ready))
+        self.config.features_changed = shared.next_stamp(self.config.features_changed, time.time())
+        self.save()
+        self.events.group("settings", f"This Virgil {shared.describe('features', ready)}, since every member "
+                                      "now supports it")
+        self.features_changed(ready)
+        return ready
+
+    def features_changed(self, added: list[str]) -> None:
+        """Features were switched on, here or by another member: put them to use."""
+        if "ntp_auth" in added:
+            self.ntp_key_changed()
+
+    def rotate_ntp_key(self, why: str) -> None:
+        """A new NTP key for the group, keeping the old one as its previous, so the leader accepts both while
+        followers move over. It spreads like any shared setting (see virgil.shared)."""
+        if "ntp_auth" not in self.config.features or self.config.ntp_key is None:
+            return
+        self.config.ntp_key = ntpauth.new_key(self.config.ntp_key)
+        self.config.ntp_key_changed = shared.next_stamp(self.config.ntp_key_changed, time.time())
+        self.save()
+        self.events.group("settings", f"This Virgil changed the group's NTP key, {why}")
+        self.ntp_key_changed()
+
+    def ntp_key_changed(self) -> None:
+        """The group's NTP key, or whether NTP is authenticated, changed: chrony needs to know."""
+        if self.timing is not None:
+            self.timing.poke()
+
+    async def watch_features(self, every: float = 10.0) -> None:
+        """Every few seconds: has the last member that was holding a feature back been updated?"""
+        while True:
+            await asyncio.sleep(every)
+            self.switch_on_features()
 
     async def check_for_updates(self) -> None:
         """Ask GitHub for the latest release, once (see virgil.updates)."""
@@ -675,11 +783,11 @@ class Daemon:
         self._group_session = None
 
     def _member_url(self, virgil_id: str, path: str) -> str | None:
-        addresses = self.addresses_for(virgil_id)
-        if not addresses:
+        targets = self.group_targets(virgil_id)
+        if not targets:
             return None
-        advert = self.adverts.get(virgil_id)
-        return f"https://{addresses[0]}:{advert.group_port if advert else self.group_port}{path}"
+        address, port = targets[0]
+        return f"https://{f'[{address}]' if ':' in address else address}:{port}{path}"
 
     async def _member_call(self, virgil_id: str, method: str, path: str, body: dict | None = None,
                            timeout: float = 10.0, as_bytes: bool = False):
@@ -901,6 +1009,10 @@ class Daemon:
         self.save()
         for name, value in adopted:
             self.events.group("settings", f"{self.name_of(sender)} {shared.describe(name, value)}")
+            if name == "features":
+                self.features_changed(value)
+            elif name == "ntp_key":
+                self.ntp_key_changed()
         if self.web is not None and self.config.web_password != old_password:
             self.web.sessions.end_all()
 
@@ -909,12 +1021,12 @@ class Daemon:
         return shared.clock_settled(self.config.group is not None, self.election.state.value,
                                     bool((self.clock or {}).get("synchronised")))
 
-    def shared_setting_changed_here(self, name: str, value, how: str) -> None:
+    def shared_setting_changed_here(self, name: str, value, how: str, describe_as: str | None = None) -> None:
         """A shared setting changed on this Virgil: stamp it, so it spreads, and record it. Only once its clock has
         settled (see clock_settled): callers check first."""
         stamp = f"{name}_changed"
         setattr(self.config, stamp, shared.next_stamp(getattr(self.config, stamp), time.time()))
-        self.events.group("settings", f"This Virgil {shared.describe(name, value)} ({how})")
+        self.events.group("settings", f"This Virgil {describe_as or shared.describe(name, value)} ({how})")
 
     def apply_member_list(self, data, source: str) -> list[tuple[str, str]]:
         """Merge another member's list into ours. Returns what changed."""
@@ -949,6 +1061,10 @@ class Daemon:
 
     def _leave_locally(self) -> None:
         self.config.group = None
+        # The group's, not this Virgil's: features are switched on afresh in whatever group it joins next, and the
+        # NTP key is the group's secret.
+        self.config.features, self.config.features_changed = [], 0.0
+        self.config.ntp_key, self.config.ntp_key_changed = None, 0.0
         self.save()
         self.peers.clear()
         self.removed_notice = None
@@ -986,6 +1102,7 @@ class Daemon:
         membership.remove(updated, virgil_id, stamp, by=self.config.id)
         told = await self.push_members([virgil_id], updated)  # so it leaves, if it can be reached
         self._member_list_changed(membership.merge(group, updated.members, updated.removed), "this Virgil")
+        self.rotate_ntp_key(f"since {name}, which knows the old one, was removed")
         others = await self.push_members()
         log.info("Removed %s from the group (%s told it; %s told)", name, "it was" if told else "nobody",
                  ", ".join(others) or "no other member")
@@ -1170,9 +1287,8 @@ class Daemon:
         peer = self.peers.get(virgil_id)
         if not addresses or peer is None or time.monotonic() - peer.heard_at > self.election.timing.visible:
             return []
-        advert = self.adverts.get(virgil_id)
-        port = advert.group_port if advert else self.group_port
-        url = f"https://{addresses[0]}:{port}{GRAPHS_PATH}?window={window}"
+        address, port = self.group_targets(virgil_id)[0]
+        url = f"https://{f'[{address}]' if ':' in address else address}:{port}{GRAPHS_PATH}?window={window}"
         try:
             session = await self.group_session()
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=1.5)) as reply:
@@ -1691,6 +1807,58 @@ class Daemon:
                 addresses.append(address)
         return addresses
 
+    def group_targets(self, virgil_id: str) -> list[tuple[str, int]]:
+        """Where to reach a member's group port, in order: where it last answered over mutual TLS (kept across
+        restarts, so finding each other after a power cut doesn't rest on adverts alone); then the address it's
+        proven (where its heartbeats come from), with each port it might use; then each of the last few distinct
+        adverts. Whatever answers still has to present the member's certificate, so a forged advert can only
+        delay, never impersonate, and can't push a genuine advert out either."""
+        targets: list[tuple[str, int]] = []
+
+        def add(address: str, port: int) -> None:
+            if (address, port) not in targets:
+                targets.append((address, port))
+
+        contact = self.contacts.get(virgil_id)
+        history = self.advert_history.get(virgil_id) or ([self.adverts[virgil_id]] if virgil_id in self.adverts else [])
+        ports = ([contact[1]] if contact else []) + [a.group_port for a in history] + [self.group_port]
+        if contact:
+            add(*contact)
+        learned = self.learned.get(virgil_id)
+        if learned:
+            for port in ports:
+                add(learned, port)
+        for advert in history:
+            for address in advert.addresses:
+                add(address, advert.group_port)
+        return targets
+
+    def load_contacts(self) -> dict[str, tuple[str, int]]:
+        try:
+            data = json.loads(read_small_file(self.contacts_path, 64 * 1024))
+        except (OSError, UnsafeFileError, ValueError):
+            return {}
+        contacts = {}
+        for virgil_id, entry in (data.items() if isinstance(data, dict) else ()):
+            if isinstance(entry, list) and len(entry) == 2 and isinstance(entry[0], str) and len(entry[0]) <= 64 \
+                    and isinstance(entry[1], int) and not isinstance(entry[1], bool) and 0 < entry[1] < 65536:
+                contacts[virgil_id] = (entry[0], entry[1])
+        return contacts
+
+    def remember_contact(self, virgil_id: str, address: str, port: int) -> None:
+        """A member answered here over mutual TLS: try it first next time, even after a restart."""
+        if self.contacts.get(virgil_id) == (address, port):
+            return
+        self.contacts[virgil_id] = (address, port)
+        members = set(self.config.group.members) if self.config.group is not None else set()
+        self.contacts = {k: v for k, v in self.contacts.items() if k in members}
+        if not self.contacts_path.parent.is_dir():
+            return  # not on a Clock Box (in tests, say): remembered for now, and never creating the folder
+        try:
+            atomic_write(self.contacts_path, (json.dumps({k: list(v) for k, v in self.contacts.items()}) + "\n").encode())
+        except OSError as error:
+            log.warning("Couldn't save where members were last reached: %s", error)
+
     async def send_heartbeats(self) -> None:
         try:
             while True:
@@ -1703,13 +1871,13 @@ class Daemon:
             await self.close_group_session()
 
     async def _send(self, session: aiohttp.ClientSession, virgil_id: str, body: dict) -> None:
-        advert = self.adverts.get(virgil_id)
-        port = advert.group_port if advert else self.group_port
-        for address in self.addresses_for(virgil_id):
+        for address, port in self.group_targets(virgil_id):
+            host = f"[{address}]" if ":" in address else address
             try:
-                async with session.post(f"https://{address}:{port}{HEARTBEAT_PATH}", json=body,
+                async with session.post(f"https://{host}:{port}{HEARTBEAT_PATH}", json=body,
                                         timeout=aiohttp.ClientTimeout(total=HEARTBEAT_TIMEOUT)) as reply:
                     if reply.status == 204:
+                        self.remember_contact(virgil_id, address, port)
                         return
             except (aiohttp.ClientError, TimeoutError, ssl.SSLError, OSError):
                 continue
@@ -1925,6 +2093,11 @@ class Daemon:
                 return
         self.adverts.pop(advert.id, None)  # so that the latest heard is always last
         self.adverts[advert.id] = advert
+        # And the last few distinct ones, newest first: the latest alone could be a forgery that replaced a genuine
+        # advert, and anyone can keep advertising a member's ID (see group_targets).
+        history = [a for a in self.advert_history.get(advert.id, [])
+                   if (a.addresses, a.group_port) != (advert.addresses, advert.group_port)]
+        self.advert_history[advert.id] = [advert, *history][:ADVERTS_PER_ID]
         if is_new:
             member = advert.id in self.member_ids()
             log.info("Found %s at %s%s", advert.name, ", ".join(advert.addresses), " (member)" if member else "")
@@ -2072,6 +2245,8 @@ class Daemon:
                 },
                 # A newer release, if GitHub has told us of one (see virgil.updates).
                 "updates": {"enabled": self.config.check_updates, "running": __version__, **self.update_check},
+                # What the group has switched on, and who each feature is waiting for (see virgil.features).
+                "features": self.feature_states(),
                 "ptp": {
                     "interface": self.config.ptp_interface,
                     "tx_slots": self.ptp_slots().as_dict() if self.config.ptp_interface else None,
@@ -2299,13 +2474,11 @@ class Daemon:
             return 200, {"message": f"{self.config.name} is already leading"}
         if state is not State.FOLLOWER or leader is None:
             return 409, {"error": f"{self.config.name} is {state.value}; it can only take the lead as a follower"}
-        advert = self.adverts.get(leader)
-        port = advert.group_port if advert else self.group_port
         errors = []
         session = await self.group_session()
-        for address in self.addresses_for(leader):
+        for address, port in self.group_targets(leader):
             try:
-                url = f"https://{address}:{port}{HANDOVER_PATH}"
+                url = f"https://{f'[{address}]' if ':' in address else address}:{port}{HANDOVER_PATH}"
                 async with session.post(url, json={"to": self.config.id},
                                         timeout=aiohttp.ClientTimeout(total=5)) as reply:
                     data = await reply.json(content_type=None)
@@ -2437,7 +2610,7 @@ async def serve(daemon: Daemon, host: str) -> None:
     jobs = [daemon.watch_config(), daemon.watch_network(), daemon.send_heartbeats(), daemon.run_election(),
             daemon.tidy_ptp(), daemon.watch_consoles(), daemon.watch_clock(), daemon.watch_trim(),
             daemon.watch_alerts(), daemon.watch_graphs(Pinger(daemon.on_ping), daemon.dante_pinger()), daemon.watch_ptpv1(),
-            daemon.watch_membership(), daemon.watch_updates()]
+            daemon.watch_membership(), daemon.watch_updates(), daemon.watch_features()]
     if daemon.timing is not None:
         jobs.append(daemon.timing.run())
     tasks = [asyncio.create_task(job) for job in jobs]

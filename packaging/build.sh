@@ -52,12 +52,12 @@ mkdir -p "$OUT" "$WHEELS"
 
 echo "==> Downloading Virgil's dependencies, checking each against requirements.txt's hashes"
 "$PYTHON" -m venv "$WORK/venv"
-"$WORK/venv/bin/pip" install --quiet --upgrade pip
 "$WORK/venv/bin/pip" download --quiet --only-binary=:all: --no-deps --require-hashes \
     -r "$REPO/requirements.txt" -d "$WHEELS"
 
-echo "==> Building Virgil's own wheel"
-"$WORK/venv/bin/pip" wheel --quiet --no-deps -w "$WHEELS" "$REPO"
+echo "==> Building Virgil's own wheel, with the pinned build tools"
+"$WORK/venv/bin/pip" install --quiet --no-deps --require-hashes -r "$REPO/build-requirements.txt"
+"$WORK/venv/bin/pip" wheel --quiet --no-deps --no-build-isolation -w "$WHEELS" "$REPO"
 ls "$WHEELS"/dante_virgil-"$VERSION"-*.whl >/dev/null 2>&1 || die "Virgil's wheel wasn't built as version $VERSION"
 
 echo "==> Pinning them for installing offline"

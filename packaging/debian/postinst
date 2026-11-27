@@ -7,10 +7,15 @@ PREFIX=/opt/dante-virgil
 VENV=$PREFIX/venv
 WHEELS=$PREFIX/wheels
 SERVICE_USER=dante-virgil
+# netaudio runs as a user of its own, which can't read Virgil's config or keys (see dante-virgil-netaudio.service).
+NETAUDIO_USER=dante-virgil-netaudio
+NETAUDIO_STATE=/var/lib/dante-virgil-netaudio
 CONFIG_DIR=/etc/dante-virgil
 APPARMOR_PROFILE=/etc/apparmor.d/usr.sbin.chronyd
 APPARMOR_LOCAL=/etc/apparmor.d/local/usr.sbin.chronyd
 APPARMOR_RULE='/run/dante-virgil-generated/chrony.conf r,'
+# The group's NTP keys (see virgil.ntpauth): chronyd reads them too, for authenticated NTP.
+APPARMOR_KEYS_RULE='/run/dante-virgil-generated/chrony.keys r,'
 
 [ "$1" = configure ] || exit 0
 systemd_running() { [ -d /run/systemd/system ]; }
@@ -20,6 +25,9 @@ if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 # phc2sys has no query interface; virgild reads its reports from the journal.
 usermod -a -G systemd-journal "$SERVICE_USER"
+if ! id -u "$NETAUDIO_USER" >/dev/null 2>&1; then
+    useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$NETAUDIO_USER"
+fi
 
 # The Python environment, from the wheels in the package: no network, and every file checked against its hash.
 # It's only rebuilt when the dependencies (or Python) change; otherwise only Virgil itself is reinstalled.
@@ -51,10 +59,12 @@ systemd-tmpfiles --create /usr/lib/tmpfiles.d/dante-virgil.conf || true
 
 if [ -e "$APPARMOR_PROFILE" ]; then
     # Debian's profile includes this local file, which is meant for additions like this one.
-    if ! grep -qxF "$APPARMOR_RULE" "$APPARMOR_LOCAL" 2>/dev/null; then
-        mkdir -p "$(dirname "$APPARMOR_LOCAL")"
-        printf '# Added by Virgil\n%s\n' "$APPARMOR_RULE" >> "$APPARMOR_LOCAL"
-    fi
+    for rule in "$APPARMOR_RULE" "$APPARMOR_KEYS_RULE"; do
+        if ! grep -qxF "$rule" "$APPARMOR_LOCAL" 2>/dev/null; then
+            mkdir -p "$(dirname "$APPARMOR_LOCAL")"
+            printf '# Added by Virgil\n%s\n' "$rule" >> "$APPARMOR_LOCAL"
+        fi
+    done
     if [ -d /sys/kernel/security/apparmor ] && command -v apparmor_parser >/dev/null; then
         apparmor_parser -r "$APPARMOR_PROFILE" || true
     fi
@@ -74,6 +84,24 @@ fi
 # (see virgil.tls.generate), so there's nothing left for root to adjust.
 runuser -u "$SERVICE_USER" -- "$VENV/bin/virgilctl" tls init
 
+# Before Virgil 2.0, netaudio ran as $SERVICE_USER, keeping its history and caches in that user's folder. Move
+# them to its own, with it stopped, since its history is in SQLite databases it may be writing.
+old_home=/var/lib/dante-virgil
+if [ ! -e "$NETAUDIO_STATE/.local/share/netaudio" ] && { [ -e "$old_home/.local/share/netaudio" ] || \
+        [ -e "$old_home/.cache/netaudio" ] || [ -e "$old_home/.config/netaudio" ]; }; then
+    echo "Moving netaudio's history to its own folder, $NETAUDIO_STATE"
+    systemctl stop dante-virgil-netaudio.service 2>/dev/null || true
+    install -d -m 700 -o "$NETAUDIO_USER" -g "$NETAUDIO_USER" "$NETAUDIO_STATE"
+    for part in .local/share/netaudio .cache/netaudio .config/netaudio; do
+        if [ -e "$old_home/$part" ]; then
+            mkdir -p "$NETAUDIO_STATE/$(dirname "$part")"
+            mv "$old_home/$part" "$NETAUDIO_STATE/$part"
+        fi
+    done
+    chown -R "$NETAUDIO_USER:$NETAUDIO_USER" "$NETAUDIO_STATE"
+    rmdir "$old_home/.local/share" "$old_home/.local" "$old_home/.cache" "$old_home/.config" 2>/dev/null || true
+fi
+
 if systemd_running; then
     systemctl daemon-reload
     # Timekeeping passes from Debian's chrony to Virgil's.
@@ -81,9 +109,16 @@ if systemd_running; then
     systemctl mask chrony.service >/dev/null 2>&1 || true
     systemctl enable dante-virgil.service >/dev/null 2>&1
     systemctl restart dante-virgil.service
-    # A rebuilt environment may hold a new netaudio, but its service runs on its own, so restart it to use it.
-    # That only pauses monitoring and alerts for a few seconds: netaudio isn't in the timing path.
-    if [ -n "$rebuilt" ] && systemctl is-active --quiet dante-virgil-netaudio.service; then
+    # A rebuilt environment may hold a new netaudio, and one still running as $SERVICE_USER is running as the old
+    # user: either way, restart it. That only pauses monitoring and alerts for a few seconds: netaudio isn't in the
+    # timing path.
+    netaudio_pid=$(systemctl show -p MainPID --value dante-virgil-netaudio.service 2>/dev/null || echo 0)
+    netaudio_runs_as=""
+    if [ "$netaudio_pid" != 0 ]; then
+        netaudio_runs_as=$(ps -o user= -p "$netaudio_pid" 2>/dev/null | tr -d ' ')
+    fi
+    if systemctl is-active --quiet dante-virgil-netaudio.service && \
+            { [ -n "$rebuilt" ] || [ "$netaudio_runs_as" != "$NETAUDIO_USER" ]; }; then
         systemctl restart dante-virgil-netaudio.service
     fi
 fi

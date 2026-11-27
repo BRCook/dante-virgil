@@ -1,0 +1,7 @@
+[Unit]
+Description=Virgil: have chronyd reread the group's NTP keys
+Documentation=https://github.com/BRCook/dante-virgil
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dante-virgil/venv/bin/virgil-root rekey

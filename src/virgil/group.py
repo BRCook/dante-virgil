@@ -91,15 +91,26 @@ def create_invite(group: Group, now: float, lifetime: int = INVITE_LIFETIME) -> 
     return secret, expires
 
 
-def redeem_invite(group: Group, secret: str, now: float) -> bool:
-    """Use up an invite. True if the secret was valid, unused and unexpired."""
+def valid_invite(group: Group, secret: str, now: float) -> str | None:
+    """Whether a secret matches a valid, unused and unexpired invite, without using it up: the invite's key, or
+    None. Joining checks this first, then everything else, and only then uses the invite (redeem_invite), so a join
+    refused for another reason leaves the invite for another try."""
     prune_invites(group, now)
     given = _hash(secret)
+    found = None
     for key in group.invites:
         if hmac.compare_digest(key, given):
-            del group.invites[key]
-            return True
-    return False
+            found = key
+    return found
+
+
+def redeem_invite(group: Group, secret: str, now: float) -> bool:
+    """Use up an invite. True if the secret was valid, unused and unexpired."""
+    key = valid_invite(group, secret, now)
+    if key is None:
+        return False
+    del group.invites[key]
+    return True
 
 
 @dataclass(frozen=True)

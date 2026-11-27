@@ -23,7 +23,8 @@ from virgil.config import DeviceSettings
 from virgil.consoles import normalise_mac
 from virgil.group import GroupError, InviteToken
 from virgil.setup import SetupError, check_mgmt_interface, check_ptp_interface, configured, describe_interfaces
-from virgil.webauth import COOKIE, SESSION_LIFETIME, Attempts, Sessions, check_password
+from virgil.webauth import (COOKIE, SESSION_LIFETIME, Attempts, Sessions, check_password, hash_password,
+                            weaker_than_strong)
 
 if TYPE_CHECKING:
     from virgil.daemon import Daemon
@@ -45,6 +46,9 @@ class WebApi:
         self.daemon = daemon
         self.sessions = Sessions()
         self.attempts = Attempts()
+        # Checking a password takes a second or so and 32 MiB with strong hashes: one at a time, so simultaneous
+        # logins can't each take that at once.
+        self._checking = asyncio.Semaphore(1)
 
     # Checks
 
@@ -94,8 +98,11 @@ class WebApi:
         body = await self._body(request)
         password = body.get("password")
         # Checking a password takes a moment; don't hold up everything else.
-        ok = isinstance(password, str) and await asyncio.to_thread(
-            check_password, password, self.daemon.config.web_password)
+        stored = self.daemon.config.web_password
+        async with self._checking:
+            ok = isinstance(password, str) and await asyncio.to_thread(check_password, password, stored)
+            if ok:
+                await self._strengthen(password, stored)
         if not ok:
             self.attempts.failed(address)
             log.warning("Wrong web password from %s", address)
@@ -105,6 +112,19 @@ class WebApi:
         response.set_cookie(COOKIE, self.sessions.create(), max_age=SESSION_LIFETIME, path="/",
                             secure=True, httponly=True, samesite="Strict")
         return response
+
+    async def _strengthen(self, password: str, stored: str) -> None:
+        """With the password in hand, upgrade a hash made with 1.x's settings, once the whole group can check strong
+        ones (see virgil.features) and this Virgil's clock has settled, as for any change the group shares. It
+        spreads like a new password, so the other members end their sessions once."""
+        if ("strong_hashes" not in self.daemon.config.features or not weaker_than_strong(stored)
+                or not self.daemon.clock_settled() or self.daemon.config.web_password != stored):
+            return
+        self.daemon.config.web_password = await asyncio.to_thread(hash_password, password, True)
+        self.daemon.shared_setting_changed_here("web_password", self.daemon.config.web_password,
+                                                "strengthening its hash on a login", describe_as=
+                                                "strengthened the web UI's password hash for the group")
+        self.daemon.save()
 
     async def logout(self, request: web.Request) -> web.Response:
         self.sessions.end(request.cookies.get(COOKIE))

@@ -293,8 +293,8 @@ def _row(label: str, unit: str | None, stats: dict[str, float], extra: str = "",
     divisor, unit_name = _scale(unit, stats["median"])
     if unit == "ns":
         # Times can be shown in any unit: the unit is a button that cycles the row through ns, µs and ms.
-        cells = "".join(f'<td data-ns="{stats[c]!r}">{_number(stats[c], divisor)}</td>' for c in COLUMNS)
-        unit_cell = f'<td class=unit><button type=button title="Change the unit">{unit_name}</button></td>'
+        cells = "".join(f'<td data-ns="{float(stats[c])!r}">{_number(stats[c], divisor)}</td>' for c in COLUMNS)
+        unit_cell = f'<td class=unit><button type=button title="Change the unit">{html.escape(unit_name)}</button></td>'
     else:
         cells = "".join(f"<td>{_number(stats[c], divisor, unit)}</td>" for c in COLUMNS)
         unit_cell = f"<td class=unit>{html.escape(unit_name)}</td>"
@@ -318,19 +318,20 @@ def render(summaries: list[dict[str, Any]]) -> str:
     rows = "".join(rows)
 
     def late(d: dict) -> str:
-        return "—" if d["late_packets"] is None else f"{d['late_packets']:,}"
+        return "—" if d["late_packets"] is None else f"{int(d['late_packets']):,}"
 
     spans = "".join(
         f"<li><b>{html.escape(s['virgil'])}</b> {_when(s['from'])} to {_when(s['to'])} · "
-        + ", ".join(f"{k} {100 * v / max(1, s['status_readings']):.1f}%" for k, v in sorted(s["states"].items()))
+        + ", ".join(f"{html.escape(str(k))} {100 * float(v) / max(1, s['status_readings']):.1f}%"
+                    for k, v in sorted(s["states"].items()))
         + "</li>" for s in summaries)
     devices = "".join(
-        f"<tr><th>{html.escape(d['name'])} ({html.escape(s['virgil'])})</th><td>{d['following_percent']:.1f}%</td>"
-        f"<td>{d['synchronised_percent']:.1f}%</td><td>{late(d)}</td></tr>"
+        f"<tr><th>{html.escape(str(d['name']))} ({html.escape(s['virgil'])})</th>"
+        f"<td>{float(d['following_percent']):.1f}%</td><td>{float(d['synchronised_percent']):.1f}%</td><td>{late(d)}</td></tr>"
         for s in summaries for d in s["devices"]) or "<tr><td colspan=4>None</td></tr>"
     alerts = "".join(
         f"<tr><th>{html.escape(str(a['device']))} ({html.escape(s['virgil'])})</th><td>{html.escape(str(a['label']))}</td>"
-        f"<td>{a['times']}</td><td>{a['seconds']:,.0f} s</td></tr>"
+        f"<td>{int(a['times'])}</td><td>{float(a['seconds']):,.0f} s</td></tr>"
         for s in summaries for a in s["alerts"]) or "<tr><td colspan=4>None</td></tr>"
     events = sorted(((e["t"] or 0, s["virgil"], e) for s in summaries for e in s["events"]), key=lambda x: x[0])
     events_html = "".join(f"<li><span>{_when(e['t'])}</span> {html.escape(virgil)}: <b>{html.escape(str(e['label']))}</b> "

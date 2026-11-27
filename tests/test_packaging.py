@@ -2,6 +2,7 @@
 stale; and the Debian package must match install.sh, and pin what it installs."""
 
 import importlib.util
+import re
 import shutil
 from pathlib import Path
 
@@ -14,7 +15,7 @@ spec.loader.exec_module(check)
 
 
 def copy(tmp_path):
-    for name in ("pyproject.toml", "uv.lock", "requirements.txt"):
+    for name in ("pyproject.toml", "uv.lock", "requirements.txt", "build-requirements.in", "build-requirements.txt"):
         shutil.copy(ROOT / name, tmp_path / name)
     return tmp_path
 
@@ -99,3 +100,39 @@ def test_every_unit_goes_into_the_package():
     units = {p.name for p in (repo / "system" / "systemd").glob("*.service")}
     assert "dante-virgil.service" in units and all(u.startswith("dante-virgil") for u in units)
     assert 'install -m 644 "$REPO"/system/systemd/*.service' in (PACKAGING / "build.sh").read_text()
+
+
+def test_netaudio_runs_as_its_own_user_everywhere():
+    """netaudio parses Dante devices' traffic, so it runs as a user that can't read Virgil's secrets."""
+    repo = PACKAGING.parent
+    unit = (repo / "system" / "systemd" / "dante-virgil-netaudio.service").read_text()
+    assert "User=dante-virgil-netaudio" in unit and "Group=dante-virgil-netaudio" in unit
+    assert "HOME=/var/lib/dante-virgil-netaudio" in unit and "StateDirectory=dante-virgil-netaudio" in unit
+    for installer in (repo / "install.sh", PACKAGING / "debian" / "postinst"):
+        text = installer.read_text()
+        assert "NETAUDIO_USER=dante-virgil-netaudio" in text and 'useradd' in text and ".local/share/netaudio" in text
+    for purge in (repo / "uninstall.sh", PACKAGING / "debian" / "postrm"):
+        text = purge.read_text()
+        assert "userdel dante-virgil-netaudio" in text and "/var/lib/dante-virgil-netaudio" in text
+
+
+def test_the_build_tools_are_pinned_and_checked(tmp_path):
+    """Building Virgil never fetches a build tool unchecked (item 5 of the 2.0 plan)."""
+    copy(tmp_path)
+    assert check.problems(tmp_path) == []
+    project = (tmp_path / "pyproject.toml").read_text()
+    # An unpinned build backend.
+    (tmp_path / "pyproject.toml").write_text(project.replace('requires = ["hatchling==1.33.0"]', 'requires = ["hatchling"]'))
+    assert any("must pin hatchling exactly" in p for p in check.problems(tmp_path))
+    # A newer one in pyproject.toml, without recompiling.
+    (tmp_path / "pyproject.toml").write_text(project.replace("hatchling==1.33.0", "hatchling==1.34.0"))
+    (tmp_path / "build-requirements.in").write_text("hatchling==1.34.0\n")
+    assert any("build-requirements.txt has hatchling 1.33.0" in p for p in check.problems(tmp_path))
+    # A package without its hash.
+    (tmp_path / "pyproject.toml").write_text(project)
+    (tmp_path / "build-requirements.in").write_text("hatchling==1.33.0\n")
+    pinned = (tmp_path / "build-requirements.txt").read_text()
+    stripped = re.sub(r"(pluggy==[^\n]*\\\n)(\s+--hash=sha256:[0-9a-f]+(\s*\\)?\n)+", r"\1", pinned)
+    stripped = stripped.replace("pluggy==1.7.0 ; ", "pluggy==1.7.0 ; ").replace("\\\npathspec", "\npathspec")
+    (tmp_path / "build-requirements.txt").write_text(stripped)
+    assert any("without hashes (pluggy)" in p for p in check.problems(tmp_path))

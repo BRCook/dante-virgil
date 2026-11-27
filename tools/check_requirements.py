@@ -5,6 +5,10 @@ The chain: pyproject.toml lists Virgil's dependencies; `uv lock` resolves them i
 it was made from); `uv export` writes uv.lock's packages into requirements.txt, which is all install.sh reads.
 A missed step anywhere shows up here as a disagreement, with the command that fixes it.
 
+The build tools have a chain of their own: pyproject.toml's [build-system] pins the build backend's version,
+build-requirements.in names the same, and build-requirements.txt pins it and its dependencies with hashes, so
+building Virgil never fetches a build tool unchecked.
+
 Uses only Python's standard library, so install.sh can run it on a Clock Box. The test suite runs it too.
 """
 
@@ -16,6 +20,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LOCK_FIX = "run: uv lock"
 EXPORT_FIX = "run: uv export --format requirements-txt --no-dev --no-emit-project -o requirements.txt"
+BUILD_FIX = ("run: uv pip compile build-requirements.in --generate-hashes --universal --python-version 3.13 "
+             "-o build-requirements.txt")
 
 
 def normalise(name: str) -> str:
@@ -77,6 +83,42 @@ def problems(root: Path = ROOT) -> list[str]:
     missing, extra = sorted(needed - listed), sorted(listed - needed)
     if missing or extra:
         found.append(f"requirements.txt is missing {missing} and has {extra} that uv.lock doesn't: {EXPORT_FIX}")
+    return found + build_problems(root, project)
+
+
+def build_problems(root: Path, project: dict) -> list[str]:
+    """The build tools: pyproject.toml's [build-system] against build-requirements.in and build-requirements.txt."""
+    found = []
+    pins = {}
+    for text in project.get("build-system", {}).get("requires", []):
+        name, specifier = dependency(text)
+        if not specifier.startswith("==") or any(c in specifier[2:] for c in "<>=!~*,"):
+            found.append(f"pyproject.toml's [build-system] must pin {name} exactly (as {name}==version), not {text!r}")
+            continue
+        pins[name] = specifier[2:]
+    named = {}
+    source = root / "build-requirements.in"
+    if source.exists():
+        for line in source.read_text().splitlines():
+            if line.strip() and not line.lstrip().startswith("#"):
+                name, specifier = dependency(line)
+                named[name] = specifier.removeprefix("==")
+    if named != pins:
+        found.append(f"build-requirements.in names {named}, not pyproject.toml's [build-system] {pins}: make them agree, "
+                     f"then {BUILD_FIX}")
+    listed, unhashed = {}, []
+    path = root / "build-requirements.txt"
+    text = path.read_text() if path.exists() else ""
+    for block in re.split(r"\n(?=[A-Za-z0-9])", text):
+        if match := re.match(r"^([A-Za-z0-9_.-]+)==([^\s;]+)", block):
+            listed[normalise(match.group(1))] = match.group(2)
+            if "--hash=sha256:" not in block:
+                unhashed.append(match.group(1))
+    for name, version in sorted(pins.items()):
+        if listed.get(name) != version:
+            found.append(f"build-requirements.txt has {name} {listed.get(name)}, not pyproject.toml's {version}: {BUILD_FIX}")
+    if unhashed:
+        found.append(f"build-requirements.txt has packages without hashes ({', '.join(unhashed)}): {BUILD_FIX}")
     return found
 
 

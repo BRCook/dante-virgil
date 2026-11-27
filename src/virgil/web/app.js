@@ -511,6 +511,19 @@ function spanOfTime(seconds) {
 // Nothing is installed from here: updating a Clock Box is always someone's deliberate choice.
 const RELEASES = "https://github.com/BRCook/dante-virgil/releases/";
 
+// As virgil.features.describe says it.
+function featureText(state) {
+  const waiting = (state.waiting_for || []).map((w) => [w.name || "?", w.version]);
+  if (!state.on) {
+    if (!waiting.length) return `${state.label}: about to switch on`;
+    return `${state.label}: waiting for ` + waiting.map(([name, version]) => version
+      ? `${name} to be updated (it runs ${version})` : `${name} to be heard from`).join(", and ");
+  }
+  const tooOld = waiting.filter(([, version]) => version).map(([name, version]) => `${name} runs ${version}`);
+  return tooOld.length ? `${state.label}: on, but ${tooOld.join(", and ")}, which doesn't support it: update it`
+    : `${state.label}: on`;
+}
+
 function softwareSection(can) {
   const found = status.updates || {};
   const parts = [el("h3", {}, "Software"), el("p", {}, `Virgil ${status.version}`)];
@@ -522,6 +535,11 @@ function softwareSection(can) {
     if (member.version && member.version !== status.version) {
       parts.push(el("p", { class: "hint" }, `${member.name} runs Virgil ${member.version}.`));
     }
+  }
+  // The group's features (see virgil.features): each on, or waiting for a member to be updated or heard from.
+  for (const state of status.features || []) {
+    const text = featureText(state);
+    parts.push(el("p", { class: text.endsWith(": on") ? "hint" : "update" }, text));
   }
   const checking = el("input", { type: "checkbox", checked: found.enabled !== false, disabled: !can,
     onchange: (event) => act("/api/v1/check-updates", { enabled: event.target.checked },

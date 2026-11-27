@@ -78,6 +78,8 @@ sudo apt remove dante-virgil                       # Uninstall (purge, instead o
 
 Without internet access, use the release's `dante-virgil-offline` bundle instead: it also holds every Debian package Virgil needs. Copy it to the Clock Box, unpack it, and run `sudo ./install.sh` inside.
 
+To check that a download is legitimate, run `gh attestation verify <file> --repo BRCook/dante-virgil` with GitHub's `gh` tool.
+
 Or, to install from a copy of the source:
 
 ```bash

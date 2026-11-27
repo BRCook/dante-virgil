@@ -26,6 +26,6 @@ Virgil is built for a production audio network, not the open internet. Some thin
 
 - Anyone who can reach a Virgil can read its status. Changing anything needs the web UI's password.
 - Members of a group trust each other completely: any member can set the group's time, change its shared settings, or remove another member.
-- Dante and PTP have no authentication of their own, and NTP between Clock Boxes isn't authenticated either. Anyone on the Dante network can disturb its clocking, with or without Virgil.
+- Dante and PTP have no authentication of their own. Anyone on the Dante network can disturb its clocking, with or without Virgil. NTP between Clock Boxes is authenticated, once every member of a group runs Virgil 2.0 or later.
 
 The [design document](docs/design.md) describes how Virgil separates privileges and how members authenticate each other.

@@ -103,9 +103,26 @@ def _hwtimestamp(interface: str | None) -> list[str]:
     return ["", "# NTP timestamps from the management interface's hardware", f"hwtimestamp {interface} rxfilter all"]
 
 
-def chrony_leader_conf(setup: TimingSetup, allow: list[str], hwtimestamp: str | None = None) -> str:
-    """chrony on the leader: the system clock follows the PHC, and is served to the group."""
-    lines = _chrony_common() + _hwtimestamp(hwtimestamp)
+# The group's NTP keys, for chrony (see virgil.ntpauth). Written by virgil-root prepare.
+KEYFILE = "/run/dante-virgil-generated/chrony.keys"
+
+
+def chrony_keys(keys: list[tuple[int, str]]) -> str:
+    """chrony's key file: each key as an HMAC-SHA256 key, in hex."""
+    return "".join(f"{key_id} SHA256 HEX:{key}\n" for key_id, key in keys)
+
+
+def _keyfile(keyfile: str | None) -> list[str]:
+    if keyfile is None:
+        return []
+    return ["", "# The group's NTP keys: every NTP packet between members is signed with one", f"keyfile {keyfile}"]
+
+
+def chrony_leader_conf(setup: TimingSetup, allow: list[str], hwtimestamp: str | None = None,
+                       keyfile: str | None = None) -> str:
+    """chrony on the leader: the system clock follows the PHC, and is served to the group. With a key file, it
+    answers a follower's signed request with the same key, so a follower can tell its replies from forged ones."""
+    lines = _chrony_common() + _hwtimestamp(hwtimestamp) + _keyfile(keyfile)
     lines += [
         "",
         "# Serve this Virgil's clock to the group, with no other source",
@@ -119,9 +136,11 @@ def chrony_leader_conf(setup: TimingSetup, allow: list[str], hwtimestamp: str | 
 
 
 def chrony_follower_conf(leader: str, allow: list[str], tuning: Tuning = DEFAULT_TUNING,
-                         hwtimestamp: str | None = None) -> str:
-    """chrony on a follower: follow the leader, keeping only the fastest round trips."""
-    lines = _chrony_common() + _hwtimestamp(hwtimestamp)
+                         hwtimestamp: str | None = None, keyfile: str | None = None,
+                         key_id: int | None = None) -> str:
+    """chrony on a follower: follow the leader, keeping only the fastest round trips. With a key, it signs its
+    requests, and ignores any reply not signed with the same key, so nobody can forge the leader's time."""
+    lines = _chrony_common() + _hwtimestamp(hwtimestamp) + _keyfile(keyfile if key_id is not None else None)
     lines += [
         "",
         "# Follow the leader over the link, keeping only the fastest round trips",
@@ -130,8 +149,9 @@ def chrony_follower_conf(leader: str, allow: list[str], tuning: Tuning = DEFAULT
             f" maxdelayquant {tuning.maxdelayquant}"
             f" minsamples {tuning.minsamples} maxsamples {tuning.maxsamples}"
             + (f" filter {tuning.filter}" if tuning.filter > 1 else "")
+            + (f" key {key_id}" if key_id is not None else "")
         ),
-        "authselectmode ignore",
+        "authselectmode require" if key_id is not None else "authselectmode ignore",
         f"corrtimeratio {tuning.corrtimeratio}",
         f"maxslewrate {tuning.maxslewrate}",
         "makestep 0.001 -1",
@@ -145,12 +165,13 @@ def chrony_follower_conf(leader: str, allow: list[str], tuning: Tuning = DEFAULT
 
 
 def chrony_conf(role: Role, setup: TimingSetup, allow: list[str], leader: str | None = None,
-                tuning: Tuning = DEFAULT_TUNING, hwtimestamp: str | None = None) -> str:
+                tuning: Tuning = DEFAULT_TUNING, hwtimestamp: str | None = None, keyfile: str | None = None,
+                key_id: int | None = None) -> str:
     if role is Role.LEADER:
-        return chrony_leader_conf(setup, allow, hwtimestamp)
+        return chrony_leader_conf(setup, allow, hwtimestamp, keyfile)
     if leader is None:
         raise ValueError("a follower needs a leader")
-    return chrony_follower_conf(leader, allow, tuning, hwtimestamp)
+    return chrony_follower_conf(leader, allow, tuning, hwtimestamp, keyfile, key_id)
 
 
 def phc2sys_args(setup: TimingSetup, tuning: Tuning = DEFAULT_TUNING) -> list[str] | None:
@@ -192,7 +213,8 @@ class Command:
 HWCLOCK = Command(("/usr/sbin/hwclock", "--systohc"), may_fail=True)
 
 
-def sync_commands(setup: TimingSetup, leader: str | None) -> list[Command]:
+def sync_commands(setup: TimingSetup, leader: str | None, keyfile: str | None = None,
+                  key_id: int | None = None) -> list[Command]:
     """The commands that prepare the clocks before the timing services start.
 
     Take the time from the leader if there is one (giving up after 20 s), start
@@ -202,9 +224,11 @@ def sync_commands(setup: TimingSetup, leader: str | None) -> list[Command]:
     """
     commands: list[Command] = []
     if leader is not None:
-        commands.append(
-            Command(("/usr/sbin/chronyd", "-q", "-t", "20", f"server {leader} iburst"), may_fail=True)
-        )
+        # Given directives, chronyd -q reads only those, not chrony.conf: so the key file and key go here too, or
+        # setting the clock would be the one step anyone could forge.
+        directives = (f"keyfile {keyfile}", f"server {leader} iburst key {key_id}") if key_id is not None \
+            else (f"server {leader} iburst",)
+        commands.append(Command(("/usr/sbin/chronyd", "-q", "-t", "20", *directives), may_fail=True))
     if not setup.hardware:
         return commands + ([HWCLOCK] if leader is not None else [])
     hwstamp = hwstamp_ctl_args(setup)

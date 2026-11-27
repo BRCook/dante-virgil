@@ -23,6 +23,7 @@ PTP4L = "dante-virgil-ptp4l.service"
 HWSTAMP = "dante-virgil-hwstamp.service"
 PHC2SYS = "dante-virgil-phc2sys.service"
 TRIM = "dante-virgil-trim.service"
+REKEY = "dante-virgil-rekey.service"
 
 PTP4L_TUNING = ("log_sync_interval", "log_announce_interval", "log_min_delay_req_interval")
 PHC2SYS_TUNING = ("phc2sys_kp", "phc2sys_ki")
@@ -75,6 +76,14 @@ def transition(old: TimingRequest | None, new: TimingRequest | None) -> list[Ste
             steps.append(_start(PHC2SYS, block=False))
         steps.append(_start(PTP4L) if new.serve_ptpv2 else _start(HWSTAMP))
         return steps
+
+    # A leader's new NTP key, with authentication already on: chronyd rereads its key file, still serving, and
+    # accepts both the new key and the one it replaced while followers move over. (A follower restarts chrony
+    # below, since its server line names the key it signs with.)
+    keys = ("ntp_key_id", "ntp_key", "ntp_previous_key_id", "ntp_previous_key")
+    if new.role is Role.LEADER and old.role is Role.LEADER and old.ntp_key is not None and new.ntp_key is not None \
+            and replace(old, **{k: getattr(new, k) for k in keys}) == new and old != new:
+        return steps + [_start(REKEY)]
 
     # The trim changes a leader's PHC rate in place, with nothing restarted.
     # A follower's rate belongs to phc2sys, so its trim only matters at the next sync.

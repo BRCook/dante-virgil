@@ -6,13 +6,18 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=dante-virgil
-Group=dante-virgil
-# Written by virgild: NETAUDIO_INTERFACE, the PTP interface the Dante devices are on.
+# A user of its own, not virgild's: netaudio parses traffic from Dante devices, and brings many dependencies, so a
+# flaw in it mustn't reach Virgil's config, password hash, TLS key or root requests. It can't read any of them.
+User=dante-virgil-netaudio
+Group=dante-virgil-netaudio
+# Written by virgild: NETAUDIO_INTERFACE, the PTP interface the Dante devices are on. systemd reads it, as root,
+# before starting netaudio, so netaudio's user needn't be able to.
 EnvironmentFile=/run/dante-virgil/netaudio.env
-Environment=HOME=/var/lib/dante-virgil
+# netaudio keeps its history and caches under its home (~/.local/share/netaudio, ~/.cache/netaudio).
+Environment=HOME=/var/lib/dante-virgil-netaudio
 Environment=NETAUDIO_NO_SSL=1
-StateDirectory=dante-virgil
+StateDirectory=dante-virgil-netaudio
+StateDirectoryMode=0700
 # Loopback only: nothing on the network can reach netaudio's API.
 ExecStart=/opt/dante-virgil/venv/bin/netaudio daemon run --listen 127.0.0.1 --port 4780
 # virgild starts this once the PTP interface has an address; this is only a backstop.

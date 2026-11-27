@@ -55,6 +55,8 @@ Virgil is three programs:
 
 Anything that needs root — writing the timing services' configs, setting the hardware clock, editing network configuration — is done by `virgil-root`, run from one-shot systemd units. `virgild` asks for one of these jobs by writing a small request file and starting the matching unit. It's allowed to start those units (and only those units) by a polkit rule that lets the `dante-virgil` user start and stop units whose names begin with `dante-virgil-`. Before acting on a request, `virgil-root` checks it thoroughly: interface names must match a strict pattern, numbers must be in sensible ranges, and addresses must be plain IPv4, and every file it reads is opened without following symlinks and with a size limit. It also never writes in a directory `virgild` owns: what it generates goes to `/run/dante-virgil-generated/`, and what it has to remember to `/var/lib/dante-virgil-root/`, both writable by root alone (root writing in someone else's directory can be steered elsewhere with a symlink). A compromised `virgild` therefore can't use `virgil-root` to do anything beyond what Virgil normally does.
 
+netaudio's daemon runs as a user of its own, `dante-virgil-netaudio`, not as `dante-virgil`. `virgild` only talks to it over its API, on loopback.
+
 The actual timekeeping is done by three standard programs: **chrony** (NTP), **ptp4l** (PTP) and **phc2sys** (which copies the system clock onto the NIC's hardware clock). `virgild` configures them, starts and stops them, and watches them — but it isn't in the timing path itself. If `virgild` stops or crashes, the timing services carry on normally. As Virgil was designed for use in live productions, this "fail-safe" behaviour is essential to prevent possibly catastrophic failure of the Dante system in the event of a Virgil crash. The one exception is PTPv1, which `virgild` serves itself — but only when nothing else on its side of the link can do it instead \[see [Serving PTPv1](#serving-ptpv1)\].
 
 ### Systemd Units
@@ -66,10 +68,11 @@ The actual timekeeping is done by three standard programs: **chrony** (NTP), **p
 | `dante-virgil-sync` | `virgil-root sync`, which (on a follower) steps the system clock to the leader's, then sets the PHC from the system clock, sets the PHC's rate to the trim \[see [Automatic Trim](#automatic-trim)\], and saves the time to the hardware clock. |
 | `dante-virgil-chrony`, `dante-virgil-ptp4l`, `dante-virgil-phc2sys` | The timing services, with the generated configs. Debian's own `chrony.service` is masked, since only one chrony can run at a time. |
 | `dante-virgil-trim` | `virgil-root trim`, which changes a leader's PHC rate without restarting anything. |
+| `dante-virgil-rekey` | `virgil-root rekey`, which has a leader's chrony reread the group's NTP keys without restarting \[see [Authenticated NTP](#authenticated-ntp)\]. |
 | `dante-virgil-settime` | `virgil-root settime`, which steps a leader's system clock and PHC together \[see [Setting the Time](#setting-the-time)\]. |
 | `dante-virgil-dhcpnames` | `virgil-root dhcpnames`, which tidies the network configuration \[see [Networking](#networking)\]. |
 | `dante-virgil-hwstamp` | `virgil-root hwstamp`, which turns hardware timestamping on when ptp4l won't be running to do it \[see [Serving PTPv1 Instead of PTPv2](#serving-ptpv1-instead-of-ptpv2)\]. |
-| `dante-virgil-netaudio` | netaudio's daemon, which Virgil uses to talk to the Dante devices \[see [Dante Devices](#dante-devices)\].|
+| `dante-virgil-netaudio` | netaudio's daemon, which Virgil uses to talk to the Dante devices \[see [Dante Devices](#dante-devices)\], as the `dante-virgil-netaudio` user. |
 
 ### Files
 
@@ -78,8 +81,9 @@ The actual timekeeping is done by three standard programs: **chrony** (NTP), **p
 | `/etc/dante-virgil/virgil.toml` | This Virgil's configuration \[see [Configuration](#configuration)\]. |
 | `/etc/dante-virgil/tls/` | This Virgil's identity certificate and key \[see [TLS](#tls)\], plus `web/` for an imported web certificate. |
 | `/run/dante-virgil/` | Requests for `virgil-root`, the timing services' current state, and the control socket `virgilctl` uses to reach `virgild`. |
-| `/run/dante-virgil-generated/` | The configs `virgil-root prepare` generates. |
-| `/var/lib/dante-virgil/` | `events.jsonl` (the history of alerts and the group's events, which survives reboots), `recordings/` (logging sessions) and `timestamping.json` (NICs caught losing transmit timestamps); see [Transmit Timestamp Slots](#transmit-timestamp-slots). |
+| `/run/dante-virgil-generated/` | The configs `virgil-root prepare` generates, and `chrony.keys` \[see [Authenticated NTP](#authenticated-ntp)\]. |
+| `/var/lib/dante-virgil/` | `events.jsonl` (the history of alerts and the group's events, which survives reboots), `recordings/` (logging sessions), `timestamping.json` (NICs caught losing transmit timestamps; see [Transmit Timestamp Slots](#transmit-timestamp-slots)) and `contacts.json` (where each member last answered; see [Finding Each Other](#finding-each-other)). |
+| `/var/lib/dante-virgil-netaudio/` | netaudio's history and caches. |
 | `/var/lib/dante-virgil-root/` | `timestamping-probe.json` (each NIC's probe results), written by `virgil-root`. Only root can write here. |
 | `/opt/dante-virgil/venv` | The Python environment Virgil runs from. |
 
@@ -170,6 +174,14 @@ Sharing is possible in principle: a NIC with enough slots can timestamp for two 
 
 Ultimately, software timestamping for chrony is *good enough*, since the averaging we apply takes care of any jitter from the processor.
 
+### Authenticated NTP
+
+Once every member runs Virgil 2.0 or later \[see [What the Group Supports](#what-the-group-supports)\], NTP between members is authenticated. Followers sign requests and the leader signs responses with the shared authentication key. A follower's chrony ignores any reply that isn't signed. Without this, anyone able to spoof the leader's could move a follower's clock, and its Dante devices' clock with it. The leader's address is already one the leader has proven \[see [Finding Each Other](#finding-each-other)\]; the key makes its *replies* proven too.
+
+The key is written to `/run/dante-virgil-generated/chrony.keys`, owned by root and readable only by chrony's user (which chronyd runs as, after starting). Debian's AppArmor profile for chronyd only lets it read listed files; the installers therefore add this one to the list.
+
+The key changes whenever a member is removed, since a removed member would then have the key for a group it's no longer in. The new key keeps the old one as its *previous* key, and both go into the key file: the leader goes on accepting a follower still using the old one until the follower switches keys. On the leader, the new key file is read with `chronyc rekey`, without restarting chrony; a follower restarts its chrony, since its `server` line names the key it signs with. A Clock Box that leaves a group forgets the key.
+
 ## Leader Election
 
 Exactly one Virgil in the group must be the leader. An election decides which.
@@ -229,6 +241,10 @@ A Virgil only pays attention to other Virgils that advertise the same group ID. 
 
 Anyone on the management network can send an mDNS advertisement, so Virgil does not trust these. Whatever answers there must still present the member's certificate \[see [TLS](#tls)\]. Once a member's heartbeat has arrived, the address it came from — over a connection only that member could have made — is the one Virgil uses first for that member. It's also the only address a follower will give chrony as its leader: NTP isn't authenticated, so a forged advertisement mustn't be able to choose where a follower's time comes from.
 
+A forged advertisement can't impersonate a member, but it could still keep members apart, by replacing the genuine advertisement with an address where nothing answers. To prevent this, Virgil will:
+1. Remember where every member last answered over the group's mutual TLS (its address and group port), in `/var/lib/dante-virgil/contacts.json`; and
+2. Keep the last three distinct advertisements for each Virgil ID, rather than only the latest, and tries each in turn.
+
 ### Joining
 
 Joining a group uses a one-time invite token:
@@ -238,6 +254,8 @@ Joining a group uses a one-time invite token:
 3. The member checks the secret, adds the new Virgil to its member list, and replies with the member list and every member's certificate. It then tells every other member about the newcomer \[see [Syncing Group Members](#syncing-group-members)\].
 
 The web UI shows a new invite's token until the invite is used or expires, then closes it. Status lists the group's outstanding invites, and an invitation drops off that list when it's used. A join is refused if a different Virgil with the same Virgil ID is already a member (as would happen if a Clock Box's disk is cloned to make another). The first Virgil of a group creates it with `virgilctl group create`.
+
+A join is also refused if the new Virgil is too old for a feature the group has switched on \[see [What the Group Supports](#what-the-group-supports)\], with a message saying to update it first. The secret is checked before anything else, but the invite is only used up once every check has passed: a join refused for another reason can try again with the same token.
 
 The choice to use tokens rather than a password was deliberate: Virgil, when deployed, is a *critical piece of production infrastructure*. Under no circumstances should any device, Virgil or otherwise, be able to join a clocking group without an explicit invitation generated through human intervention on one of the existing group members.
 
@@ -266,10 +284,12 @@ A removed member's certificate can't be taken out of the group port's running TL
 
 ### Shared Settings
 
-Most settings describe one Clock Box and do not need to be shared, except for two, which are shared by the group:
+Most settings describe one Clock Box and do not need to be shared, except for these, which are shared by the group:
 
 - **`auto_trim`** only matters on the leader, but leadership moves! If it were on in one Clock Box and off in another, auto-trim would switch on and off whenever the lead changed hands.
 - **The web UI's password:** members already trust each other, so it makes sense to set it once for the whole group. Every Clock Box in a Virgil group will thus share the same web UI password. Note that when a Virgil leaves the group, it will keep the group password until changed by another group (or manually by you).
+- **The features switched on for the group** \[see [What the Group Supports](#what-the-group-supports)\].
+- **The group's NTP key** \[see [Authenticated NTP](#authenticated-ntp)\].
 
 These spread the same way as the member list: each setting records when it was last changed, heartbeats carry the changes, and a member that hears a newer change adopts it. "When" is by the clock of the Clock Box that made the change, which is a problem when a Clock Box first joins a group and hasn't yet aligned its clock. The following two rules prevent such a Clock Box from hijacking the group settings:
 1. A Clock Box joining a group will always adopt the group's settings.
@@ -278,6 +298,16 @@ These spread the same way as the member list: each setting records when it was l
 A change is always stamped later than the one it replaces. This prevents a group from making a change, setting their clocks back six months, and then being unable to overwrite that change (since it's now six months in the future and will always be the "newest" change). 
 
 Every change to the group settings goes into the event history \[see [The Event History](#the-event-history)\].
+
+### What the Group Supports
+
+Clock Boxes are updated one at a time, and for a while, a group can hold members on different versions. Some features would break a group in that state; such a feature is therefore only switched on once every member supports it:
+
+1. Each feature names the version that introduced it.
+2. A member supports a feature if its heartbeats report that version or later. A member that hasn't been heard from in the last minute supports nothing, and no features will be enabled for the group until that device returns and advertises its capabilities.
+3. Once every member supports a feature, the first member whose clock has settled switches it on, without anyone needing to do anything. It's recorded in the event history and the shared settings, and stays on.
+
+Until then, `virgilctl status` and the web UI's **This Virgil** section say what each feature is waiting for, for example "Authenticated NTP: waiting for Box B to be updated (it runs 1.1.0)". An older member ignores shared settings it doesn't know; a mixed group therefore keeps working as before in the meantime.
 
 ### TLS
 
@@ -509,7 +539,9 @@ Everything goes into `/var/lib/dante-virgil/events.jsonl` with one event per lin
 
 ### Reading and Changing
 
-Anyone who can reach a Virgil can read its web UI. Changing anything requires the password, which is set with `sudo virgilctl password` \[on any member: it's shared by the whole group; see [Shared Settings](#shared-settings)\] and stored as a scrypt hash. Until a password is set, the web UI is read-only.
+Anyone who can reach a Virgil can read its web UI. Changing anything requires the password, which is set with `sudo virgilctl password` \[on any member: it's shared by the whole group; see [Shared Settings](#shared-settings)\] and stored as a scrypt hash. Until a password is set, the web UI is read-only. New passwords need at least 12 characters.
+
+Once every member supports it \[see [What the Group Supports](#what-the-group-supports)\], passwords are hashed with stronger settings: scrypt with N=2^15, r=8 and p=3. A password hashed with Virgil 1.x's weaker settings is re-hashed with the stronger ones the next time someone logs in with it; that spreads like a change of password.
 
 Logging in gives a session cookie that lasts 12 hours. The cookie is marked `Secure`, `HttpOnly` and `SameSite=Strict`. After five wrong passwords in a minute from one address, further attempts from that address are refused (even with the right password) until the minute is up. Every change also needs an `X-Virgil-Request` header, so no other page can make changes on a logged-in user's behalf. Changing the password logs everyone out.
 
@@ -700,9 +732,9 @@ sudo ./install.sh
 `install.sh` does the following:
 
 1. installs the Debian packages Virgil needs, skipping `apt` entirely when nothing is missing (and adding `pci.ids` if it can);
-2. creates the `dante-virgil` user, with permission to read the system journal (where phc2sys's reports appear);
-3. checks that `requirements.txt` matches `pyproject.toml` and `uv.lock`, refusing to go on if it doesn't, then builds the Python environment from `requirements.txt`;
-4. installs the systemd units, a tmpfiles entry, the polkit rule, and an AppArmor addition that lets chrony read Virgil's configuration;
+2. creates the `dante-virgil` user, with permission to read the system journal (where phc2sys's reports appear), and the `dante-virgil-netaudio` user for netaudio's daemon;
+3. checks that `requirements.txt` matches `pyproject.toml` and `uv.lock`, refusing to go on if it doesn't, then builds the Python environment from `requirements.txt`, and builds Virgil with the build tools in `build-requirements.txt`;
+4. installs the systemd units, a tmpfiles entry, the polkit rule, and an AppArmor addition that lets chrony read Virgil's configuration and the group's NTP keys;
 5. masks Debian's own `chrony.service`;
 6. generates the Virgil ID and certificate, if they don't exist yet;
 7. links `virgilctl` and `netaudio` into `/usr/local/bin`; and
@@ -714,7 +746,7 @@ Running it again from a newer copy of the repository updates Virgil, keeping its
 
 Each release comes as a Debian package for each of amd64 and arm64.
 
-Releases are built by GitHub Actions when a version is tagged, and only if the test suite passes on Debian 13 first. Each release includes a `SHA256SUMS` file listing every file's SHA-256, so a download can be checked with `sha256sum -c SHA256SUMS --ignore-missing`.
+Releases are built by GitHub Actions when a version is tagged, and only if the test suite passes on Debian 13 first. Each release includes a `SHA256SUMS` file listing every file's SHA-256, so a download can be checked with `sha256sum -c SHA256SUMS --ignore-missing`. GitHub also signs a statement that each file was built by this repository's release workflow, which you can check with `gh attestation verify dante-virgil_<ver>_amd64.deb --repo BRCook/dante-virgil`.
 
 The package serves the same function as `install.sh`, with three differences:
 
@@ -722,7 +754,7 @@ The package serves the same function as `install.sh`, with three differences:
 - Debian's packages come from `apt` (chrony, linuxptp, and so on); and
 - The systemd units, tmpfiles entry and polkit rule go to the correct Debian locations (`/usr/lib` and `/usr/share`, `/usr/bin`).
 
-As with `install.sh`, installing or upgrading the package only restarts `virgild` (and netaudio, when the Python environment is rebuilt). Removing it stops Virgil, keeping the configuration; purging it removes everything, including the `dante-virgil` user.
+As with `install.sh`, installing or upgrading the package only restarts `virgild` (and netaudio, when the Python environment is rebuilt). Removing it stops Virgil, keeping the configuration; purging it removes everything, including the `dante-virgil` and `dante-virgil-netaudio` users.
 
 Installing the package over a git installation removes `install.sh`'s copies in `/usr/local` (which would otherwise take precedence), and keeps the configuration, ID and certificate.
 
@@ -739,4 +771,5 @@ Only consoles have been tested so far. Other Dante devices should be well-behave
 ## Known Limitations
 
 - **Two radio hops** haven't been tested.
+- **Downgrading a member** to a version older than a feature its group has switched on isn't supported: the feature stays on, and the older member can't take part properly. The web UI and `virgilctl status` say which member is too old.
 - **Dante devices other than consoles** haven't been tested yet \[see [Testing](#testing)\].

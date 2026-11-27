@@ -45,6 +45,34 @@ class DeviceSettings:
     aes67: bool = False
 
 
+@dataclass(frozen=True)
+class NtpKey:
+    """The group's key for authenticating NTP between members (see virgil.shared and the design document's
+    "Authenticated NTP"), and the one it replaced, which the leader goes on accepting while followers move over."""
+
+    id: int
+    key: str  # 64 hex digits: 32 random bytes
+    previous_id: int | None = None
+    previous_key: str | None = None
+
+
+# A chrony key ID, and its key: 32 bytes, in hex.
+NTP_KEY_IDS = (1, 65535)
+NTP_KEY_HEX = 64
+
+
+def valid_ntp_key(key: NtpKey) -> bool:
+    def one(key_id: Any, hex_key: Any) -> bool:
+        return (isinstance(key_id, int) and not isinstance(key_id, bool) and NTP_KEY_IDS[0] <= key_id <= NTP_KEY_IDS[1]
+                and isinstance(hex_key, str) and len(hex_key) == NTP_KEY_HEX
+                and all(c in "0123456789abcdef" for c in hex_key))
+    if not one(key.id, key.key):
+        return False
+    if key.previous_id is None and key.previous_key is None:
+        return True
+    return one(key.previous_id, key.previous_key) and key.previous_id != key.id
+
+
 @dataclass
 class Config:
     id: str
@@ -80,6 +108,13 @@ class Config:
     web_password: str | None = None
     # When the password was last changed: shared across the group too.
     web_password_changed: float = 0.0
+    # Features switched on for the whole group, once every member supports them (see virgil.features). Shared
+    # across the group, and only ever added to.
+    features: list[str] = field(default_factory=list)
+    features_changed: float = 0.0
+    # The group's NTP key (see NtpKey), shared across the group, the latest change winning.
+    ntp_key: NtpKey | None = None
+    ntp_key_changed: float = 0.0
     devices: dict[str, DeviceSettings] = field(default_factory=dict)
     group: Group | None = None
 
@@ -156,6 +191,10 @@ def from_dict(data: dict[str, Any]) -> Config:
         phc2sys_ki=_servo(data, "phc2sys_ki", 0.0005),
         chrony_filter=_whole(data, "chrony_filter", 8),
         web_password_changed=_time(data, "web_password_changed"),
+        features=_features(data),
+        features_changed=_time(data, "features_changed"),
+        ntp_key=_ntp_key(data),
+        ntp_key_changed=_time(data, "ntp_key_changed"),
         devices=devices,
         group=group,
     )
@@ -180,6 +219,13 @@ def to_dict(config: Config) -> dict[str, Any]:
     data["phc2sys_kp"] = config.phc2sys_kp
     data["phc2sys_ki"] = config.phc2sys_ki
     data["chrony_filter"] = config.chrony_filter
+    data["features"] = sorted(config.features)
+    data["features_changed"] = config.features_changed
+    if config.ntp_key is not None:
+        key = config.ntp_key
+        data["ntp_key"] = {"id": key.id, "key": key.key, **({"previous_id": key.previous_id, "previous_key":
+                                                             key.previous_key} if key.previous_key else {})}
+    data["ntp_key_changed"] = config.ntp_key_changed
     if config.devices:
         data["devices"] = {
             mac: {"native_ptpv2": settings.native_ptpv2, "aes67": settings.aes67}
@@ -221,6 +267,28 @@ def _whole(data: dict, key: str, default: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
         raise ConfigError(f"{key} must be a whole number from {low} to {high}")
     return value
+
+
+def _features(data: dict) -> list[str]:
+    from virgil.features import FEATURES
+
+    value = data.get("features", [])
+    if not isinstance(value, list) or not all(isinstance(f, str) for f in value):
+        raise ConfigError("features must be a list of names")
+    return sorted({f for f in value if f in FEATURES})  # one a later Virgil knows of, and this one doesn't, is left out
+
+
+def _ntp_key(data: dict) -> NtpKey | None:
+    value = data.get("ntp_key")
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ConfigError("ntp_key must be a table")
+    key = NtpKey(value.get("id"), value.get("key"), value.get("previous_id"), value.get("previous_key"))
+    if not valid_ntp_key(key):
+        raise ConfigError("ntp_key must have an ID from 1 to 65535 and a key of 64 hex digits (and the same for the "
+                          "previous key, if there is one)")
+    return key
 
 
 def _time(data: dict, key: str) -> float:

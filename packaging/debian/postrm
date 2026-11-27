@@ -1,6 +1,7 @@
 #!/bin/sh
 # After Virgil is removed: what uninstall.sh does. Removing keeps the config (/etc/dante-virgil) and the logs and
-# history (/var/lib/dante-virgil); purging removes those too, and the dante-virgil user.
+# history (/var/lib/dante-virgil, and netaudio's in /var/lib/dante-virgil-netaudio); purging removes those too, and the
+# dante-virgil and dante-virgil-netaudio users.
 set -e
 
 PREFIX=/opt/dante-virgil
@@ -19,7 +20,7 @@ case "$1" in
             sed -i '/^# Begin: set by Virgil$/,/^# End: set by Virgil$/d' /etc/dhcpcd.conf
         fi
         if [ -e "$APPARMOR_LOCAL" ]; then
-            sed -i -e '\|^# Added by Virgil$|d' -e '\|^/run/dante-virgil-generated/chrony\.conf r,$|d' "$APPARMOR_LOCAL"
+            sed -i -e '\|^# Added by Virgil$|d' -e '\|^/run/dante-virgil-generated/chrony\.conf r,$|d' -e '\|^/run/dante-virgil-generated/chrony\.keys r,$|d' "$APPARMOR_LOCAL"
             if [ -e "$APPARMOR_PROFILE" ] && [ -d /sys/kernel/security/apparmor ] && command -v apparmor_parser >/dev/null; then
                 apparmor_parser -r "$APPARMOR_PROFILE" || true
             fi
@@ -34,7 +35,8 @@ case "$1" in
 esac
 
 if [ "$1" = purge ]; then
-    rm -rf /etc/dante-virgil /var/lib/dante-virgil /var/lib/dante-virgil-root
+    rm -rf /etc/dante-virgil /var/lib/dante-virgil /var/lib/dante-virgil-root /var/lib/dante-virgil-netaudio
     userdel dante-virgil 2>/dev/null || true
+    userdel dante-virgil-netaudio 2>/dev/null || true
 fi
 exit 0

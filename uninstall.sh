@@ -2,7 +2,8 @@
 # Remove Virgil from this machine, and give timekeeping back to Debian's chrony.
 #
 #   sudo ./uninstall.sh           keeps the config (/etc/dante-virgil), and the logs and history (/var/lib/dante-virgil)
-#   sudo ./uninstall.sh --purge   removes those too, and the dante-virgil user
+#   sudo ./uninstall.sh --purge   removes those too (and netaudio's, in /var/lib/dante-virgil-netaudio), and the
+#                                 dante-virgil and dante-virgil-netaudio users
 #
 # The same as the package's "apt remove" and "apt purge" (see packaging/debian/postrm).
 #
@@ -55,7 +56,7 @@ fi
 
 if [[ -e "$APPARMOR_LOCAL" ]]; then
     echo "Removing Virgil's AppArmor rule"
-    sed -i -e '\|^# Added by Virgil$|d' -e '\|^/run/dante-virgil-generated/chrony\.conf r,$|d' "$APPARMOR_LOCAL"
+    sed -i -e '\|^# Added by Virgil$|d' -e '\|^/run/dante-virgil-generated/chrony\.conf r,$|d' -e '\|^/run/dante-virgil-generated/chrony\.keys r,$|d' "$APPARMOR_LOCAL"
     if [[ -d /sys/kernel/security/apparmor ]] && command -v apparmor_parser >/dev/null; then
         apparmor_parser -r "$APPARMOR_PROFILE"
     fi
@@ -66,9 +67,11 @@ systemctl unmask chrony.service >/dev/null 2>&1 || true
 systemctl enable --now chrony.service
 
 if $purge; then
-    echo "Removing the config, the logs and history, and the $SERVICE_USER user"
-    rm -rf "$CONFIG_DIR" /var/lib/dante-virgil /var/lib/dante-virgil-root
+    echo "Removing the config, the logs and history, and the $SERVICE_USER and dante-virgil-netaudio users"
+    rm -rf "$CONFIG_DIR" /var/lib/dante-virgil /var/lib/dante-virgil-root /var/lib/dante-virgil-netaudio
     userdel "$SERVICE_USER" 2>/dev/null || true
+    userdel dante-virgil-netaudio 2>/dev/null || true
 else
-    echo "The config is still in $CONFIG_DIR, and the logs and history in /var/lib/dante-virgil."
+    echo "The config is still in $CONFIG_DIR, the logs and history in /var/lib/dante-virgil, and netaudio's in"
+    echo "/var/lib/dante-virgil-netaudio."
 fi

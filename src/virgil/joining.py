@@ -14,10 +14,10 @@ from typing import Any
 
 import aiohttp
 
-from virgil import shared
+from virgil import __version__, features, shared
 from virgil.config import Config
 from virgil.membership import parse, snapshot
-from virgil.group import Group, GroupError, InviteToken, Member, redeem_invite
+from virgil.group import Group, GroupError, InviteToken, Member, redeem_invite, valid_invite
 from virgil.tls import TlsError, fingerprint
 
 VIRGIL_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -32,7 +32,8 @@ class JoinError(Exception):
 
 
 def join_request(config: Config, cert: str, secret: str) -> dict[str, str]:
-    return {"secret": secret, "id": config.id, "name": config.name, "cert": cert}
+    # The version, so a group can refuse a Virgil too old for its features (see virgil.features).
+    return {"secret": secret, "id": config.id, "name": config.name, "cert": cert, "version": __version__}
 
 
 def handle_join(config: Config, body: Any, now: float) -> dict[str, Any]:
@@ -53,13 +54,21 @@ def handle_join(config: Config, body: Any, now: float) -> dict[str, Any]:
     except TlsError as error:
         raise JoinError(400, "bad certificate") from error
 
-    # Check the secret before revealing anything else about the group.
-    if not redeem_invite(config.group, secret, now):
+    # Check the secret before revealing anything else about the group, but only use the invite up once everything
+    # else has passed, so a join refused for another reason (an ID already taken, a Virgil too old) can try again.
+    if valid_invite(config.group, secret, now) is None:
         raise JoinError(403, "that invite isn't valid, has been used, or has expired")
 
     existing = config.group.members.get(virgil_id)
     if existing is not None and fingerprint(existing.cert) != fingerprint(cert):
         raise JoinError(409, "a different Virgil with the same Virgil ID is already a member")
+    version = body.get("version") if isinstance(body.get("version"), str) else None
+    missing = features.too_old_for(version, config.features)
+    if missing:
+        names = " and ".join(features.LABELS[f] for f in missing)
+        raise JoinError(409, f"this group uses {names}, which this Virgil ({version or 'an older version'}) "
+                             "doesn't support: update it, then join")
+    redeem_invite(config.group, secret, now)
     # Joining now beats any earlier removal of the same Virgil (see virgil.membership). "Now" alone isn't enough
     # for that: a removal stamped while the group's clock was ahead (before its time was corrected) is later
     # than now, and every other member still holds it, so their lists would have removed the newcomer again

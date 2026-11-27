@@ -64,9 +64,15 @@ class TimingRequest:
     ntp_hwtimestamp: str | None = None
     # Whether virgil-root may measure the PTP interface's transmit timestamp slots during a setup from scratch.
     probe_timestamps: bool = True
-    # Whether ptp4l serves PTPv2. Without it (the "only" PTPv1 mode), virgil-root sets the card up for
+    # Whether ptp4l serves PTPv2. Without it (the "only" PTPv1 mode), virgil-root sets the NIC up for
     # hardware timestamping itself, since ptp4l normally does.
     serve_ptpv2: bool = True
+    # The group's NTP key, once the group authenticates NTP (see virgil.ntpauth), and the one it replaced, which a
+    # leader goes on accepting while followers move over. A follower signs its requests with the current one.
+    ntp_key_id: int | None = None
+    ntp_key: str | None = None
+    ntp_previous_key_id: int | None = None
+    ntp_previous_key: str | None = None
 
 
 def to_json(request: TimingRequest) -> str:
@@ -183,6 +189,8 @@ def from_json(text: str | bytes) -> TimingRequest:
     if not isinstance(serve_ptpv2, bool):
         raise RequestError("serve_ptpv2 must be true or false")
 
+    keys = _ntp_keys(data)
+
     return TimingRequest(
         role=role,
         ptp_interface=interface,
@@ -194,4 +202,28 @@ def from_json(text: str | bytes) -> TimingRequest:
         ntp_hwtimestamp=hwtimestamp,
         probe_timestamps=probe,
         serve_ptpv2=serve_ptpv2,
+        **keys,
     )
+
+
+NTP_KEY = re.compile(r"[0-9a-f]{64}")
+
+
+def _ntp_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """The NTP keys: each a chrony key ID (1 to 65535) and exactly 64 lowercase hex digits, since they go into a file
+    root's chronyd reads. A previous key only with a current one, under a different ID."""
+    found = {}
+    for id_name, key_name in (("ntp_key_id", "ntp_key"), ("ntp_previous_key_id", "ntp_previous_key")):
+        key_id, key = data.get(id_name), data.get(key_name)
+        if key_id is None and key is None:
+            continue
+        if isinstance(key_id, bool) or not isinstance(key_id, int) or not 1 <= key_id <= 65535:
+            raise RequestError(f"{id_name} must be a whole number from 1 to 65535")
+        if not isinstance(key, str) or not NTP_KEY.fullmatch(key):
+            raise RequestError(f"{key_name} must be 64 lowercase hex digits")
+        found[id_name], found[key_name] = key_id, key
+    if "ntp_previous_key" in found and "ntp_key" not in found:
+        raise RequestError("a previous NTP key needs a current one")
+    if "ntp_previous_key" in found and found["ntp_previous_key_id"] == found["ntp_key_id"]:
+        raise RequestError("the previous NTP key needs an ID of its own")
+    return found
