@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 from collections.abc import Callable
 
@@ -45,7 +46,9 @@ def redirect_app() -> web.Application:
 
 
 def _login_page(request: web.Request) -> web.Response:
-    host = request.host.rsplit(":", 1)[0]
+    # The host comes from the request's Host header, so it's escaped before it goes into the page. (A browser
+    # won't send a Host that could break out of the link, but nothing here should rely on that.)
+    host = html.escape(request.host.rsplit(":", 1)[0], quote=True)
     page = (
         "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width, initial-scale=1'>"
         "<title>Log in to Virgil</title><body style='font-family:system-ui,sans-serif;max-width:32rem;margin:3rem auto;"

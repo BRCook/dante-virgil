@@ -714,6 +714,8 @@ Running it again from a newer copy of the repository updates Virgil, keeping its
 
 Each release comes as a Debian package for each of amd64 and arm64.
 
+Releases are built by GitHub Actions when a version is tagged, and only if the test suite passes on Debian 13 first. Each release includes a `SHA256SUMS` file listing every file's SHA-256, so a download can be checked with `sha256sum -c SHA256SUMS --ignore-missing`.
+
 The package serves the same function as `install.sh`, with three differences:
 
 - Virgil's Python dependencies come with it;

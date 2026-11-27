@@ -1880,3 +1880,18 @@ def test_status_doesnt_reread_the_system_for_every_page(tmp_path, monkeypatch):
     a._brief = {key: (when - 1.1, value) for key, (when, value) in a._brief.items()}
     a.status_data()
     assert len(lookups) > after_one  # and read again once it's a second old
+
+
+def test_only_so_many_adverts_are_remembered_and_never_at_a_members_expense(tmp_path):
+    """Anyone on the network can advertise under as many IDs as they like; they used to be kept for ever."""
+    import virgil.daemon as daemon_module
+
+    paths, identities, configs = make_pair(tmp_path)
+    a = Daemon(paths["A"], identities["A"])
+    advert = lambda virgil_id: discovery.Advert(virgil_id, "x", "1.1.0", None, 8740, 8741, ("10.0.0.9",))  # noqa: E731
+    a.on_advert(advert(configs["B"].id))  # a member, heard first: the oldest of all
+    for n in range(daemon_module.MAX_ADVERTS * 3):
+        a.on_advert(advert(f"{n:032x}"))
+    assert len(a.adverts) == daemon_module.MAX_ADVERTS
+    assert configs["B"].id in a.adverts  # never dropped to make room
+    assert f"{daemon_module.MAX_ADVERTS * 3 - 1:032x}" in a.adverts and f"{0:032x}" not in a.adverts

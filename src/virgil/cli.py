@@ -520,7 +520,7 @@ def cmd_group_join(args: argparse.Namespace) -> int:
     asyncio.run(joining.join(token, config, cert))
     config_file.save(config, args.config)
     names = sorted(m.name for virgil_id, m in config.group.members.items() if virgil_id != config.id)
-    print(f"Joined group {config.group.id}, with {', '.join(names)}")
+    print(f"Joined group {config.group.id}, with {_clean(', '.join(names))}")
     return 0
 
 
@@ -533,7 +533,7 @@ def cmd_group_remove(args: argparse.Namespace) -> int:
     status, body = asyncio.run(_control("POST", REMOVE_PATH, args.control, {"member": args.member}))
     if status != 200:
         raise CliError(body.get("error", f"virgild refused ({status})"))
-    print(f"Removed {body['removed']} from the group")
+    print(f"Removed {_clean(body['removed'])} from the group")
     return 0
 
 
@@ -561,7 +561,7 @@ def cmd_group_show(args: argparse.Namespace) -> int:
             code = tls.short_code(tls.fingerprint(member.cert))
         except tls.TlsError:
             code = "bad certificate"
-        print(f"  {member.name}{marker}  {virgil_id}  {code}")
+        print(f"  {_clean(member.name)}{marker}  {virgil_id}  {code}")
     pending = [e for e in config.group.invites.values() if e > time.time()]
     if pending:
         print(f"{len(pending)} unused invite(s) outstanding")
@@ -571,8 +571,29 @@ def cmd_group_show(args: argparse.Namespace) -> int:
 # status
 
 
+def _clean(value):
+    """Text from the network, made safe to print: every control character replaced.
+
+    Names of Dante devices and of other Virgils, alert titles and the like come from whatever is on the network,
+    and virgilctl prints them to a terminal, often as root. A name containing escape sequences could otherwise
+    move the cursor, recolour or rewrite what's on the screen, or worse on some terminals. Works through lists
+    and dicts, so a whole status reply can be cleaned at once.
+    """
+    if isinstance(value, str):
+        return "".join(c if c.isprintable() else "\N{REPLACEMENT CHARACTER}" for c in value)
+    if isinstance(value, list):
+        return [_clean(item) for item in value]
+    if isinstance(value, dict):
+        return {_clean(key): _clean(item) for key, item in value.items()}
+    return value
+
+
 def fetch_status(tls_dir: Path, port: int = groups.PUBLIC_PORT) -> dict:
-    """Ask the local virgild for its status, trusting only this Virgil's own certificate."""
+    """Ask the local virgild for its status, trusting only this Virgil's own certificate.
+
+    The reply is as virgild gave it. Anything printed from it goes through _clean first; only --json prints it
+    untouched (JSON escapes control characters itself, and whatever reads it should get the names exactly).
+    """
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.check_hostname = False
     cert_path = tls.default_identity(tls_dir).cert_path
@@ -705,7 +726,7 @@ def _clock_time(value) -> str:
 
 
 def cmd_events(args: argparse.Namespace) -> int:
-    status = fetch_status(args.tls_dir)
+    status = _clean(fetch_status(args.tls_dir))
     alerts = status.get("alerts")
     events = status.get("events")
     if events is None:  # an older virgild
@@ -747,6 +768,8 @@ def _update_lines(status: dict) -> list[str]:
 
 def cmd_status(args: argparse.Namespace) -> int:
     status = fetch_status(args.tls_dir)
+    if not args.json:
+        status = _clean(status)
     if args.json:
         print(json.dumps(status, indent=2))
         return 0
@@ -916,7 +939,7 @@ def _auto_trim_line(status: dict) -> str | None:
 
 def cmd_trim(args: argparse.Namespace) -> int:
     if args.ppm is None:
-        status = fetch_status(args.tls_dir)
+        status = _clean(fetch_status(args.tls_dir))
         leading = status.get("state") == "leader"
         print(f"{status['name']}: trim {status.get('trim_ppb', 0) / 1000:+.3f} ppm, "
               + ("leading" if leading else "not leading, so not in use"))
@@ -973,8 +996,9 @@ def _find_device_mac(who: str, args: argparse.Namespace) -> tuple[str, str]:
     for device in devices:
         if who in (device.get("name"), device.get("address")) or (mac and device.get("mac") == mac):
             if not device.get("mac"):
-                raise CliError(f"netaudio doesn't know {device.get('name')}'s MAC address yet")
-            return device["mac"], device.get("name") or device["mac"]
+                raise CliError(f"netaudio doesn't know {_clean(device.get('name'))}'s MAC address yet")
+            # Matched by its real name (above); cleaned for whoever prints it.
+            return device["mac"], _clean(device.get("name") or device["mac"])
     if mac is not None:
         return mac, mac
     names = ", ".join(d.get("name", "?") for d in devices) or "none"

@@ -94,7 +94,7 @@ PTPV1_SETTLE = 15.0
 # How long a self-assigned 169.254.x.x address has to be the only one before
 # it counts, so DHCP has time to finish on networks that have it.
 LINK_LOCAL_GRACE = 30.0
-# Exiting with this has systemd start virgild again (Restart=on-failure).
+# Exiting with this has systemd start virgild again (as any exit does: Restart=always).
 RESTART_EXIT = 75
 # Seconds without any PTP from outside this Virgil before it says so.
 PTP_QUIET_AFTER = 60.0
@@ -104,6 +104,8 @@ MEMBERS_PATH = "/group/v1/members"
 # Dante marks its audio EF (46); pings across the Dante network are marked the same, to share its queues.
 DANTE_AUDIO_DSCP = 46
 MEMBERSHIP_PATH = "/api/v1/membership"
+# How many other Virgils' mDNS adverts are remembered: far more than any network of Clock Boxes has.
+MAX_ADVERTS = 64
 # Fetch a member's list at most this often, when its digest differs from ours.
 MEMBERS_FETCH_EVERY = 5.0
 # With no member heard for this long, ask them (on their public ports) whether this Virgil was removed.
@@ -1911,6 +1913,17 @@ class Daemon:
         if advert.id == self.config.id:
             return
         is_new = advert.id not in self.adverts
+        if is_new and len(self.adverts) >= MAX_ADVERTS:
+            # Anyone on the network can advertise, under as many IDs as they like, and adverts were kept for
+            # ever (and listed in every status reply). Past the limit, the longest-unheard one that isn't a
+            # member's makes way; with none to drop, the newcomer isn't kept, unless it's a member's.
+            members = set(self.member_ids())
+            oldest = next((i for i in self.adverts if i not in members), None)
+            if oldest is not None:
+                del self.adverts[oldest]
+            elif advert.id not in members:
+                return
+        self.adverts.pop(advert.id, None)  # so that the latest heard is always last
         self.adverts[advert.id] = advert
         if is_new:
             member = advert.id in self.member_ids()
@@ -2215,7 +2228,7 @@ class Daemon:
         """Restart virgild shortly, once the current reply has gone out.
 
         virgild can't restart its own unit through polkit, on purpose, so it
-        exits instead, and systemd's Restart=on-failure starts it again.
+        exits instead, and systemd's Restart=always starts it again.
         Restarting never disturbs the timing services.
         """
         asyncio.get_running_loop().call_later(delay, self.restart.set)

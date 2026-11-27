@@ -1,7 +1,10 @@
-"""This Virgil's config file.
+"""This Virgil's config file: /etc/dante-virgil/virgil.toml.
 
-This holds only the settings the daemon core needs so far. Group settings,
-the web password and tuning will be added as those parts are built.
+Everything one Virgil is set up with: its ID and name, its interfaces, its trim and tuning, the web UI's
+password (as a hash), its local Dante devices' settings, and its group (the members and their certificates,
+outstanding invites, and removals). The design document's "Configuration" describes each setting.
+
+virgild and virgilctl both read and write this file (see Daemon.save for how they stay out of each other's way).
 """
 
 from __future__ import annotations

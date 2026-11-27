@@ -167,8 +167,14 @@ def _name(fields) -> str | None:
 
 def inspect(cert_path: Path) -> dict:
     """Who a certificate is for, who issued it, when it's valid, and which names it covers."""
+    # Python's standard library has no public way to read a certificate file's details; this is the helper its
+    # own tests use, and it has been there, unchanged, for many versions. Virgil only runs on the Python it was
+    # packaged for (3.13: see packaging/debian/control), and the tests cover this, so a Python without it would be
+    # caught before release; but if it ever is missing, say so plainly rather than fall over.
     try:
         decoded = ssl._ssl._test_decode_cert(str(cert_path))  # the first certificate in the file
+    except AttributeError as error:
+        raise TlsError("this version of Python can't read a certificate's details") from error
     except (ssl.SSLError, OSError) as error:
         raise TlsError(f"couldn't read the certificate: {error}") from error
     names = [f"{kind}:{value}" for kind, value in decoded.get("subjectAltName", ())]

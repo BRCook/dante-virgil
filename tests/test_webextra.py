@@ -179,3 +179,17 @@ def test_a_browser_closing_a_live_stream_is_not_an_error(caplog):
     caplog.set_level(logging.INFO)
     asyncio.run(scenario())
     assert "Couldn't reach netaudio" not in caplog.text
+
+
+def test_the_login_page_escapes_the_host_it_was_asked_for():
+    async def scenario():
+        runner, proxy = await _serve(netaudio_app(lambda token: False))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{proxy}/", headers={"Host": "x'><script>alert(1)</script>"}) as reply:
+                    return await reply.text()
+        finally:
+            await runner.cleanup()
+
+    page = asyncio.run(scenario())
+    assert "<script>" not in page and "&lt;script&gt;" in page

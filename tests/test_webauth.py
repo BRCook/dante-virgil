@@ -41,3 +41,17 @@ def test_guessing_is_slowed():
     assert not attempts.blocked("10.0.0.8")
     now[0] += 61
     assert not attempts.blocked("10.0.0.9")
+
+
+def test_stronger_hashes_than_this_version_makes_can_still_be_checked():
+    """So a group can move to stronger settings later without every member having to be updated at once: Python's
+    default memory limit is just too small for the next step up (N=2**15, r=8)."""
+    import base64
+    import hashlib
+
+    from virgil.webauth import check_password
+
+    salt = b"0123456789abcdef"
+    digest = hashlib.scrypt(b"showtime-2026", salt=salt, n=2**15, r=8, p=1, maxmem=64 * 1024 * 1024, dklen=32)
+    stored = f"scrypt${2**15}$8$1${base64.b64encode(salt).decode()}${base64.b64encode(digest).decode()}"
+    assert check_password("showtime-2026", stored) and not check_password("showtime-2027", stored)
