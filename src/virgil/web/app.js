@@ -963,9 +963,16 @@ function renderRecording() {
     const note = draft("note", "input", { type: "text", "aria-label": "Note", placeholder: "What just happened?",
       maxlength: "500", disabled: !can, class: "note-field" });
     const addNote = async () => {
-      if (!note.value.trim()) return;
-      const data = await act("/api/v1/recording/note", { text: note.value.trim() }, "Noted");
-      if (data) { delete drafts.note; note.value = ""; }
+      const text = note.value.trim();
+      if (!text) return;
+      const data = await act("/api/v1/recording/note", { text }, "Noted");
+      if (!data) return;
+      // act() refreshes before returning, and a new note redraws this section: the box on the page by now may be a
+      // new one, refilled from the draft. Clear whichever is there, if it still holds what was sent.
+      delete drafts.note;
+      for (const field of [note, document.querySelector(".note-field")]) {
+        if (field && field.value.trim() === text) field.value = "";
+      }
     };
     note.addEventListener("keydown", (event) => { if (event.key === "Enter") addNote(); });
     parts.push(el("p", {}, el("strong", { class: "stale" }, "● "), el("strong", {}, `Logging since ${clockTime(rec.since)}`),
